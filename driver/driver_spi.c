@@ -15,6 +15,8 @@
  * sections of the MSLA applicable to Source Code.
  *
  ******************************************************************************/
+#define _GNU_SOURCE
+#include <pthread.h>
 
 #include <unistd.h>
 #include <sys/types.h>
@@ -33,7 +35,7 @@
 #include "hdlc.h"
 #include "gpio.h"
 
-#define MAX_EPOLL_EVENTS 1
+#define MAX_EPOLL_EVENTS 5
 
 static int fd_core;
 static int fd_epoll;
@@ -225,26 +227,18 @@ static void driver_spi_open(const char *device,
 
   // SPIDEV0: MOSI (GPIO10); MISO (GPIO9); SCLK (GPIO11); RX_IRQ (GPIO23); CS (GPIO24)
   fd = open(device, O_RDWR | O_CLOEXEC);
-  if (fd < 0) {
-    FATAL("%s: %m", device);
-  }
+  FATAL_SYSCALL_ON(fd < 0);
 
   ret = ioctl(fd, SPI_IOC_WR_MODE, &mode);
-  if (ret == -1) {
-    FATAL("invalid mode: %d", mode);
-  }
+  FATAL_SYSCALL_ON(ret < 0);
 
   ret = ioctl(fd, SPI_IOC_WR_BITS_PER_WORD, &bit_per_word);
-  if (ret == -1) {
-    FATAL("invalid bit per word: %d", bit_per_word);
-  }
+  FATAL_SYSCALL_ON(ret < 0);
 
   spi_tranfer.bits_per_word = (uint8_t)bit_per_word;
 
   ret = ioctl(fd, SPI_IOC_WR_MAX_SPEED_HZ, &speed);
-  if (ret == -1) {
-    FATAL("invalid speed: %d", speed);
-  }
+  FATAL_SYSCALL_ON(ret < 0);
 
   spi_tranfer.speed_hz = speed;
 

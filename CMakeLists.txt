@@ -10,21 +10,30 @@ if(EXISTS "${LOC_PATH}")
     message(FATAL_ERROR "You cannot build in a source directory (or any directory with a CMakeLists.txt file). Please make a build subdirectory.")
 endif()
 
-add_definitions(-D_GNU_SOURCE)
 add_compile_options(-Wall -Wextra -Wconversion -Wmissing-declarations -Wsign-conversion -Wswitch-default)
-
 add_library(cpc SHARED lib/sl_cpc.c)
 target_include_directories(cpc PRIVATE misc/ misc/tracing/ interface/)
 target_include_directories(cpc PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/autogen")
 set_target_properties(cpc PROPERTIES VERSION ${PROJECT_VERSION})
 set_target_properties(cpc PROPERTIES PUBLIC_HEADER lib/sl_cpc.h)
 set_target_properties(cpc PROPERTIES PRIVATE_HEADER misc/sl_enum.h)
-target_compile_options(cpc PRIVATE -Werror)
+
+include(GNUInstallDirs)
+add_definitions(-DDEFAULT_CONFIG_FILE_PATH="/${CMAKE_INSTALL_SYSCONFDIR}/cpcd.conf")
 
 set(TARGET_GROUP release CACHE STRING "Group to build")
+set(WARN_AS_ERROR "FALSE" CACHE STRING "Treat warnings as errors")
+
+if(WARN_AS_ERROR STREQUAL "TRUE")
+target_compile_options(cpc PRIVATE -Werror)
+endif()
 
 # Build CPC Daemon if building for release or debug
-if((TARGET_GROUP STREQUAL release) OR (TARGET_GROUP STREQUAL debug) OR (TARGET_GROUP STREQUAL blackbox_test))
+if((TARGET_GROUP STREQUAL release) OR
+   (TARGET_GROUP STREQUAL debug) OR
+   (TARGET_GROUP STREQUAL blackbox_test) OR
+   (TARGET_GROUP STREQUAL blackbox_test_spurious_reset) OR
+   (TARGET_GROUP STREQUAL blackbox_test_large_buf))
   message(STATUS "Building CPC Daemon")
 
   add_executable(cpcd
@@ -45,7 +54,9 @@ if((TARGET_GROUP STREQUAL release) OR (TARGET_GROUP STREQUAL debug) OR (TARGET_G
                       misc/sl_slist.c
                       main.c)
 
+  if(WARN_AS_ERROR STREQUAL "TRUE")
   target_compile_options(cpcd PRIVATE -Werror)
+  endif()
 
   target_include_directories(cpcd PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/autogen")
   target_include_directories(cpcd PRIVATE
@@ -63,15 +74,13 @@ if((TARGET_GROUP STREQUAL release) OR (TARGET_GROUP STREQUAL debug) OR (TARGET_G
   target_link_libraries(cpcd util)
   target_link_libraries(cpcd pthread)
 
-  include(GNUInstallDirs)
   install(TARGETS cpc cpcd
           LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
           RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
           PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
           PRIVATE_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
-  install(FILES cpcd.conf DESTINATION /etc/ COMPONENT config)
-
+  install(FILES cpcd.conf DESTINATION ${CMAKE_INSTALL_SYSCONFDIR} COMPONENT config)
 endif()
 
 # Build CPC Daemon for release, nothing to do
@@ -97,7 +106,7 @@ elseif((TARGET_GROUP STREQUAL unit_test) OR (TARGET_GROUP STREQUAL unit_test_wit
       set(UNITY_SOURCES ${UNITY_PATH})
     endif()
 
-    add_compile_definitions(HOST_BUILD)
+    add_definitions(-DHOST_BUILD)
     add_library(unity STATIC ${UNITY_SOURCES}/src/unity.c)
     set_target_properties(unity PROPERTIES PUBLIC_HEADER ${UNITY_SOURCES}/src/unity.h)
     target_include_directories(unity PUBLIC ${UNITY_SOURCES}/src/)
@@ -153,7 +162,7 @@ elseif(TARGET_GROUP STREQUAL target_test)
     set(CMAKE_BUILD_TYPE Debug)
     add_definitions(-DTARGET_TESTING)
 
-    add_compile_definitions(SL_CLI_USE_STDIO)
+    add_definitions(-DSL_CLI_USE_STDIO)
 
     include_directories(test/target/)
 
@@ -203,7 +212,7 @@ elseif(TARGET_GROUP STREQUAL target_test)
                                                  server_core/server/
                                                  interface/
                                                  test/taget/
-												 ../../test/linux/emlib/inc
+                                                 ../../test/linux/emlib/inc
                                                  ../../iostream/inc/
                                                  ../../cli/inc/
                                                  ../../cli/src/)
@@ -233,7 +242,7 @@ elseif(TARGET_GROUP STREQUAL blackbox_test)
       set(UNITY_SOURCES ${UNITY_PATH})
     endif()
 
-    add_compile_definitions(HOST_BUILD)
+    add_definitions(-DHOST_BUILD)
     add_library(unity STATIC ${UNITY_SOURCES}/src/unity.c)
     set_target_properties(unity PROPERTIES PUBLIC_HEADER ${UNITY_SOURCES}/src/unity.h)
     target_include_directories(unity PUBLIC ${UNITY_SOURCES}/src/)
@@ -267,8 +276,8 @@ elseif(TARGET_GROUP STREQUAL blackbox_test_spurious_reset)
       set(UNITY_SOURCES ${UNITY_PATH})
     endif()
 
-    add_compile_definitions(HOST_BUILD)
-    add_compile_definitions(TEST_SECONDARY_CRASH)
+    add_definitions(-DHOST_BUILD)
+    add_definitions(-DTEST_SECONDARY_CRASH)
 
     add_library(unity STATIC ${UNITY_SOURCES}/src/unity.c)
     set_target_properties(unity PROPERTIES PUBLIC_HEADER ${UNITY_SOURCES}/src/unity.h)
@@ -286,7 +295,7 @@ elseif(TARGET_GROUP STREQUAL blackbox_test_large_buf)
     set(CMAKE_BUILD_TYPE Debug)
     include_directories(test/blackbox/)
 
-	add_compile_definitions(DATA_CHUNK_SIZE=4092)
+    add_definitions(-DDATA_CHUNK_SIZE=4092)
 
     add_executable(lib_client
                    test/blackbox/cpc_lib_client.c)
@@ -305,7 +314,7 @@ elseif(TARGET_GROUP STREQUAL blackbox_test_large_buf)
       set(UNITY_SOURCES ${UNITY_PATH})
     endif()
 
-    add_compile_definitions(HOST_BUILD)
+    add_definitions(-DHOST_BUILD)
     add_library(unity STATIC ${UNITY_SOURCES}/src/unity.c)
     set_target_properties(unity PROPERTIES PUBLIC_HEADER ${UNITY_SOURCES}/src/unity.h)
     target_include_directories(unity PUBLIC ${UNITY_SOURCES}/src/)

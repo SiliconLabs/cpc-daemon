@@ -517,7 +517,7 @@ static void on_timer_expired(epoll_private_data_t *private_data)
 
       case CMD_SYSTEM_PROP_VALUE_IS: //fall through
       default:
-        FATAL("illegal");
+        BUG("Illegal switch");
         break;
     }
 
@@ -548,7 +548,7 @@ static void write_command(sl_cpc_system_command_handle_t *command_handle)
     const struct itimerspec timeout = { .it_interval = { .tv_sec = 0, .tv_nsec = (long int)command_handle->retry_timeout_us * 1000 },
                                         .it_value    = { .tv_sec = 0, .tv_nsec = (long int)command_handle->retry_timeout_us * 1000 } };
 
-    timer_fd = timerfd_create(CLOCK_MONOTONIC, 0);
+    timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
 
     FATAL_SYSCALL_ON(timer_fd < 0);
 

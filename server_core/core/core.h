@@ -19,7 +19,7 @@
 #ifndef CPC_PROTOCOL_H
 #define CPC_PROTOCOL_H
 
-#include <pthread.h>
+#include <time.h>
 
 #include "sl_cpc.h"
 #include "sl_slist.h"
@@ -36,6 +36,9 @@
 
 // Maximum number of retry while sending a frame
 #define SLI_CPC_RE_TRANSMIT 3
+#define SL_CPC_MAX_RE_TRANSMIT_TIMEOUT_MS 5000 // 5s
+#define SL_CPC_MIN_RE_TRANSMIT_TIMEOUT_MS 250  // 250ms
+#define SL_CPC_MIN_RE_TRANSMIT_TIMEOUT_MINIMUM_VARIATION_MS  50 // 50ms
 
 #define TRANSMIT_WINDOW_MIN_SIZE  1u
 #define TRANSMIT_WINDOW_MAX_SIZE  1u
@@ -105,12 +108,16 @@ typedef struct endpoint {
   uint8_t current_tx_window_space;
   uint8_t frames_count_re_transmit_queue;
   uint8_t packet_re_transmit_count;
+  long    re_transmit_timeout_ms;
   void*   re_transmit_timer_private_data;
   cpc_endpoint_state_t state;
   sl_slist_node_t *re_transmit_queue;
   sl_slist_node_t *holding_list;
   sl_cpc_on_data_reception_t on_uframe_data_reception;
   sl_cpc_poll_final_t poll_final;
+  struct timeval last_iframe_sent_timestamp;
+  long smoothed_rtt;
+  long rtt_variation;
 }sl_cpc_endpoint_t;
 
 typedef struct {
