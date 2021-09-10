@@ -19,6 +19,9 @@
 #ifndef DRIVER_SPI_H
 #define DRIVER_SPI_H
 
+#define _GNU_SOURCE
+#include <pthread.h>
+
 #include <stdbool.h>
 #include "gpio.h"
 

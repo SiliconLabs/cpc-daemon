@@ -15,6 +15,8 @@
  * sections of the MSLA applicable to Source Code.
  *
  ******************************************************************************/
+#define _GNU_SOURCE
+#include <pthread.h>
 
 #include <stdio.h>
 #include <sys/stat.h>
@@ -258,6 +260,7 @@ static void on_unsolicited_status(sl_cpc_system_status_t status)
 {
   if (status <= STATUS_RESET_WATCHDOG && status >= STATUS_RESET_POWER_ON) {
     TRACE_RESET("Received reset reason : %u", status);
+    TRACE_RESET("Reset sequence: %u", reset_sequence_state);
 
     if (reset_sequence_state == WAIT_RESET_REASON) {
       reset_reason_received = true;
@@ -370,7 +373,7 @@ static void process_reset_sequence(void)
       break;
 
     default:
-      FATAL("Impossible state");
+      BUG("Impossible state");
       break;
   }
 }

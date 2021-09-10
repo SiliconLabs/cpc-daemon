@@ -203,7 +203,7 @@ int cpc_init(cpc_handle_t *handle, bool enable_tracing, cpc_reset_callback_t res
   }
 
   if (connect(lib_handle->ctrl_sock_fd, (struct sockaddr *) &server_addr, sizeof(server_addr)) < 0) {
-    trace_lib("connect() : /tmp/cpcd/ctrl.cpcd.sock is a zombie socket. The daemon already ran and right now it is not started or the reset sequence is not done of the secondary is not responsive.");
+    trace_lib("connect() : could not connect to /tmp/cpcd/ctrl.cpcd.sock. Either the process does not have the correct permissions or the secondary is not responsive.");
     free(lib_handle);
     return -1;
   }

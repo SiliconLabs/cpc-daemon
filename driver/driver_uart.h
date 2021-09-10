@@ -19,8 +19,10 @@
 #ifndef DRIVER_UART_H
 #define DRIVER_UART_H
 
-#include <stdbool.h>
+#define _GNU_SOURCE
 #include <pthread.h>
+
+#include <stdbool.h>
 
 /*
  * Initialize the uart driver. Crashes the app if the init fails.

@@ -16,14 +16,17 @@
  *
  ******************************************************************************/
 
+#define _GNU_SOURCE
+#include <pthread.h>
+
 #include <stdio.h>
 #include <stdlib.h>
-#include <pthread.h>
 #include <stdint.h>
 #include <stdarg.h>
 #include <errno.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <string.h>
 
 #include "log.h"
 #include "tracing.h"
@@ -65,7 +68,7 @@ void tracing_init(void)
 void trace(const char* string, ...)
 {
   va_list vl;
-  char time_string[10];
+  char time_string[15];
 
   if (!config_file_tracing && !config_stdout_tracing) {
     return;
@@ -78,15 +81,15 @@ void trace(const char* string, ...)
 
     current_time = time(NULL);
 
-    if (current_time == ((time_t)-1)) {
+    if (current_time != ((time_t)-1)) {
+      tm_info = localtime(&current_time);
+      strftime(time_string, sizeof(time_string), "%H:%M:%S", tm_info);
+    } else {
       WARN("cannot retreive time");
-      return;
+      strncpy(time_string, "time error", sizeof(time_string));
     }
-
-    tm_info = localtime(&current_time);
-
-    strftime(time_string, sizeof(time_string), "%H:%M:%S", tm_info);
   }
+
   va_start(vl, string);
   {
     pthread_mutex_lock(&trace_mutex);

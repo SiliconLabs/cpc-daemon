@@ -15,15 +15,18 @@
  * sections of the MSLA applicable to Source Code.
  *
  ******************************************************************************/
+#define _GNU_SOURCE
+#include <pthread.h>
 
 #include <fcntl.h>
 #include <unistd.h>
 #include <termios.h>
+#include <errno.h>
+#include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
-#include <errno.h>
 
 #include "log.h"
 #include "utils.h"
@@ -32,7 +35,7 @@
 #include "crc.h"
 
 #define UART_BUFFER_SIZE 4096 + SLI_CPC_HDLC_HEADER_RAW_SIZE
-#define MAX_EPOLL_EVENTS 1
+#define MAX_EPOLL_EVENTS 5
 
 static int fd_uart;
 static int fd_core;
@@ -185,25 +188,22 @@ static int driver_uart_open(const char *device, unsigned int bitrate, bool hardf
   int sym_bitrate = -1;
   int fd;
 
-  TRACE_DRIVER("Opening UART device");
   fd = open(device, O_RDWR | O_CLOEXEC);
-  if (fd < 0) {
-    FATAL("%s: %m", device);
-  }
+  FATAL_SYSCALL_ON(fd < 0);
 
-  TRACE_DRIVER("Configuring UART device");
-  if (tcgetattr(fd, &tty) == -1) {
-    FATAL("tcgetattr: %m");
-  }
+  FATAL_SYSCALL_ON(tcgetattr(fd, &tty) < 0);
+
   size_t i;
   for (i = 0; i < ARRAY_SIZE(conversion); i++) {
     if (conversion[i].val == bitrate) {
       sym_bitrate = conversion[i].symbolic;
     }
   }
+
   if (sym_bitrate < 0) {
     FATAL("invalid bitrate: %d", bitrate);
   }
+
   cfsetispeed(&tty, (speed_t)sym_bitrate);
   cfsetospeed(&tty, (speed_t)sym_bitrate);
   cfmakeraw(&tty);
@@ -220,9 +220,18 @@ static int driver_uart_open(const char *device, unsigned int bitrate, bool hardf
   } else {
     tty.c_cflag &= ~CRTSCTS;
   }
-  if (tcsetattr(fd, TCSAFLUSH, &tty) < 0) {
-    FATAL("tcsetattr: %m");
+
+  FATAL_SYSCALL_ON(tcsetattr(fd, TCSAFLUSH, &tty) < 0);
+
+  /* Flush the content of the UART in case there was stale data */
+  {
+    /* There was once a bug in the kernel requiring a delay before flushing the uart.
+     * Keep it there for backward compatibility */
+    usleep(10000);
+
+    tcflush(fd, TCIOFLUSH);
   }
+
   return fd;
 }
 
@@ -260,7 +269,7 @@ static void driver_uart_process_uart(void)
         break;
 
       default:
-        BUG();
+        BUG("Illegal switch");
         break;
     }
   }
@@ -269,56 +278,60 @@ static void driver_uart_process_uart(void)
 /* Append UART new data to the frame delimiter processing buffer */
 static size_t read_and_append_uart_received_data(uint8_t *buffer, size_t buffer_head, size_t buffer_size)
 {
-  size_t available_bytes;
-  size_t available_space;
-  size_t actual_read_bytes;
+  size_t available_bytes_to_read;
+  size_t actual_bytes_to_read;
   uint8_t* temp_buffer;
+
+  BUG_ON(buffer_head >= buffer_size);
 
   /* Poll the uart to get the available bytes */
   {
-    int retval = ioctl(fd_uart, FIONREAD, &available_bytes);
+    int value;
+    int retval = ioctl(fd_uart, FIONREAD, &value);
+
+    available_bytes_to_read = (size_t) value;
 
     FATAL_SYSCALL_ON(retval < 0);
 
     /* The uart had no data. The epoll is supposed to wake us up when the uart has data. */
-    BUG_ON(available_bytes == 0);
+    BUG_ON(available_bytes_to_read == 0);
   }
 
   /* Make sure we don't read more data than the supplied buffer can handle */
   {
-    available_space = buffer_size - buffer_head;
+    const size_t available_space = buffer_size - buffer_head - 1;
 
-    if (available_bytes < available_space) {
-      actual_read_bytes = available_bytes;
+    if (available_space >= available_bytes_to_read) {
+      actual_bytes_to_read = available_bytes_to_read;
     } else {
-      actual_read_bytes = available_space;
+      actual_bytes_to_read = available_space;
     }
   }
 
   /* Get a temporary buffer of the right size */
   {
-    temp_buffer = (uint8_t*) malloc(actual_read_bytes);
+    temp_buffer = (uint8_t*) malloc(actual_bytes_to_read);
 
     FATAL_ON(temp_buffer == NULL);
   }
 
   /* Read the uart data into the temp buffer */
   {
-    ssize_t read_retval = read(fd_uart, temp_buffer, actual_read_bytes);
+    ssize_t read_retval = read(fd_uart, temp_buffer, actual_bytes_to_read);
 
     FATAL_ON(read_retval < 0);
 
-    FATAL_ON((size_t) read_retval != actual_read_bytes);
+    BUG_ON((size_t) read_retval != actual_bytes_to_read);
+
+    //TRACE_FRAME("Driver : received chunck from uart: ", temp_buffer, (size_t)actual_bytes_to_read);
   }
 
-  //TRACE_FRAME("Driver : received chunck from uart: ", temp_buffer, (size_t)actual_read_bytes);
-
   /* copy the data in the main buffer */
-  memcpy(&buffer[buffer_head], temp_buffer, actual_read_bytes);
+  memcpy(&buffer[buffer_head], temp_buffer, actual_bytes_to_read);
 
   free(temp_buffer);
 
-  return actual_read_bytes;
+  return actual_bytes_to_read;
 }
 
 static bool validate_header(uint8_t *header_start)
@@ -366,7 +379,7 @@ static bool header_re_synch(uint8_t *buffer, size_t *buffer_head)
 
         /* We crushed 'i' bytes at the start of the buffer */
         *buffer_head -= i;
-        TRACE_DRIVER("re-sync : had 'i' number of bad bytes until we struck a good header", i);
+        TRACE_DRIVER("re-sync : had '%u' number of bad bytes until we struck a good header", i);
       }
       return true;
     } else {

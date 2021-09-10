@@ -170,7 +170,7 @@ void server_init(void)
 
     /* Periodic no-op timer  */
     {
-      fd_timer_noop = timerfd_create(CLOCK_MONOTONIC, 0);
+      fd_timer_noop = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
       FATAL_SYSCALL_ON(fd_timer_noop < 0);
 
       ret = timerfd_settime(fd_timer_noop,
@@ -234,7 +234,7 @@ void server_process_core(cpc_interface_buffer_t* interface_buffer, size_t interf
       break;
 
     default:
-      BUG();
+      BUG("Illegal switch");
       break;
   }
 }
@@ -882,7 +882,7 @@ void server_push_data_to_endpoint(uint8_t endpoint_number, const uint8_t* data, 
                           MSG_DONTWAIT);
 
     /* Close unresponsive sockets */
-    if (retval == -1 && errno == EAGAIN) {
+    if (retval == -1 && (errno == EAGAIN || errno == EPIPE)) {
       WARN("Unresponsive data socket on endpoint_number %d, closing", endpoint_number);
       /* Properly shutdown and close this socket on our side */
       int ret = shutdown(item->data_socket_epoll_private_data.file_descriptor, SHUT_RDWR);
@@ -976,7 +976,7 @@ void server_notify_connected_libs_of_secondary_reset(void)
     if (item->pid > 1) {
       kill(item->pid, SIGUSR1);
     } else {
-      WARN("Connected library's pid it not set");
+      BUG("Connected library's pid it not set");
     }
   }
 }

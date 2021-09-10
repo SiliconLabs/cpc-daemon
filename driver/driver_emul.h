@@ -19,8 +19,10 @@
 #ifndef DRV_UART_H
 #define DRV_UART_H
 
-#include <stdbool.h>
+#define _GNU_SOURCE
 #include <pthread.h>
+
+#include <stdbool.h>
 #include "sl_status.h"
 #include "core.h"
 

@@ -16,9 +16,11 @@
  *
  ******************************************************************************/
 
+#define _GNU_SOURCE
+#include <pthread.h>
+
 #include <fcntl.h>
 #include <unistd.h>
-#include <pthread.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/select.h>

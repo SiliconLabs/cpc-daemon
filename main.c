@@ -15,10 +15,12 @@
  * sections of the MSLA applicable to Source Code.
  *
  ******************************************************************************/
+#define _GNU_SOURCE
+#include <pthread.h>
 
 #include <stdbool.h>
 #include <stddef.h>
-#include <pthread.h>
+
 #include <stdio.h>
 #include <string.h>
 #include <signal.h>
@@ -34,17 +36,17 @@
 #include "config.h"
 #include "epoll.h"
 
-pthread_t driver_thread;
-pthread_t server_core_thread;
+pthread_t driver_thread = 0;
+pthread_t server_core_thread = 0;
 
 /* Global copy of argv to be able to restart the daemon with the same arguments */
 char **argv_g;
 
 int main(int argc, char *argv[])
 {
-  int fd_socket_driver_core;
-  int ret;
-  void* join_value;
+  int fd_socket_driver_core = 0;
+  int ret = 0;
+  void* join_value = NULL;
 
   argv_g = argv;
 
@@ -57,19 +59,24 @@ int main(int argc, char *argv[])
 
   // Init the driver
   {
-    if (config_bus == UART) {
-      driver_thread = driver_uart_init(&fd_socket_driver_core, config_uart_file, config_uart_baudrate, config_uart_hardflow);
-    } else if (config_bus == SPI) {
-      driver_thread = driver_spi_init(&fd_socket_driver_core,
-                                      config_spi_file,
-                                      config_spi_mode,
-                                      config_spi_bit_per_word,
-                                      config_spi_bitrate,
-                                      config_spi_cs_pin,
-                                      config_spi_irq_pin);
-    } else {
-      BUG();
-      return 1;
+    switch (config_bus) {
+      case UART:
+        driver_thread = driver_uart_init(&fd_socket_driver_core, config_uart_file, config_uart_baudrate, config_uart_hardflow);
+        break;
+
+      case SPI:
+        driver_thread = driver_spi_init(&fd_socket_driver_core,
+                                        config_spi_file,
+                                        config_spi_mode,
+                                        config_spi_bit_per_word,
+                                        config_spi_bitrate,
+                                        config_spi_cs_pin,
+                                        config_spi_irq_pin);
+        break;
+
+      default:
+        FATAL("Bus type configuration not set");
+        break;
     }
   }
 

@@ -109,13 +109,13 @@ void system_noop_cmd_callback_t(sl_cpc_system_command_handle_t *handle,
 
   switch (status) {
     case SL_STATUS_OK:
-      TRACE_SERVER("NOOP success!");
+      TRACE_SERVER("NOOP success");
       break;
     case SL_STATUS_IN_PROGRESS:
-      TRACE_SERVER("NOOP success with a least one retry!");
+      TRACE_SERVER("NOOP success with a least one retry");
       break;
     case SL_STATUS_TIMEOUT:
-      WARN("The noop keep alive failed, link dead");
+      WARN("The noop keep alive timed out, link dead");
       TRACE_SERVER("NOOP timed out!");
       break;
     case SL_STATUS_FAIL:

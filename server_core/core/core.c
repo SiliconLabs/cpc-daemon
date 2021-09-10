@@ -24,6 +24,7 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <errno.h>
+#include <sys/time.h>
 
 #include "log.h"
 #include "utils.h"
@@ -48,6 +49,8 @@
 #if defined(UNIT_TESTING) || defined(TARGET_TESTING)
 #define USE_ON_WRITE_COMPLETE
 #endif
+
+#define ABS(a)  ((a) < 0 ? -(a) : (a))
 
 /*******************************************************************************
  ***************************  LOCAL DECLARATIONS   *****************************
@@ -94,6 +97,65 @@ static void core_push_data_to_server(uint8_t ep_id, const void *data, size_t dat
 /*******************************************************************************
  **************************   IMPLEMENTATION    ********************************
  ******************************************************************************/
+static void core_compute_re_transmit_timeout(sl_cpc_endpoint_t *endpoint)
+{
+  // Implemented using Karn’s algorithm
+  // Based off of RFC 2988 Computing TCP's Retransmission Timer
+  static bool first_rtt_measurement = true;
+  struct timeval current_time;
+  long current_timestamp_ms;
+  long previous_timestamp_ms;
+  long round_trip_time_ms = 0;
+  long rto = 0;
+
+  const long k = 4; // This value is recommended by the Karn’s algorithm
+
+  FATAL_ON(endpoint == NULL);
+
+  gettimeofday(&current_time, NULL);
+
+  current_timestamp_ms = (current_time.tv_sec * 1000) + (current_time.tv_usec / 1000);
+  previous_timestamp_ms = (endpoint->last_iframe_sent_timestamp.tv_sec * 1000) + (endpoint->last_iframe_sent_timestamp.tv_usec / 1000);
+
+  round_trip_time_ms = current_timestamp_ms - previous_timestamp_ms;
+
+  if (round_trip_time_ms < 0) {
+    FATAL("RTT is negative (%ldms), current timestamp is %ldms, previous timestamp is %ldms", round_trip_time_ms, current_timestamp_ms, previous_timestamp_ms);
+  }
+
+  TRACE_CORE("RTT on ep %d is %ldms", endpoint->id, round_trip_time_ms);
+  FATAL_ON(round_trip_time_ms < 0);
+
+  if (first_rtt_measurement) {
+    endpoint->smoothed_rtt = round_trip_time_ms;
+    endpoint->rtt_variation = round_trip_time_ms / 2;
+    first_rtt_measurement = false;
+  } else {
+    // RTTVAR <- (1 - beta) * RTTVAR + beta * |SRTT - R'| where beta is 0.25
+    endpoint->rtt_variation = 3 * (endpoint->rtt_variation / 4) +  ABS(endpoint->smoothed_rtt - round_trip_time_ms) / 4;
+
+    //SRTT <- (1 - alpha) * SRTT + alpha * R' where alpha is 0.125
+    endpoint->smoothed_rtt = 7 * (endpoint->smoothed_rtt / 8) + round_trip_time_ms / 8;
+  }
+
+  // Impose a lowerbound on the variation, we don't want the RTO to converge too close to the RTT
+  if (endpoint->rtt_variation < SL_CPC_MIN_RE_TRANSMIT_TIMEOUT_MINIMUM_VARIATION_MS) {
+    endpoint->rtt_variation = SL_CPC_MIN_RE_TRANSMIT_TIMEOUT_MINIMUM_VARIATION_MS;
+  }
+
+  rto = endpoint->smoothed_rtt + k * endpoint->rtt_variation;
+  FATAL_ON(rto <= 0);
+
+  if (rto > SL_CPC_MAX_RE_TRANSMIT_TIMEOUT_MS) {
+    rto = SL_CPC_MAX_RE_TRANSMIT_TIMEOUT_MS;
+  } else if (rto < SL_CPC_MIN_RE_TRANSMIT_TIMEOUT_MS) {
+    rto = SL_CPC_MIN_RE_TRANSMIT_TIMEOUT_MS;
+  }
+
+  endpoint->re_transmit_timeout_ms = rto;
+  TRACE_CORE("RTO on ep %d is calulated to %ldms", endpoint->id, endpoint->re_transmit_timeout_ms);
+}
+
 void core_init(int driver_fd)
 {
   driver_sock_fd = driver_fd;
@@ -108,6 +170,9 @@ void core_init(int driver_fd)
     core_endpoints[i].current_tx_window_space = 1;
     core_endpoints[i].re_transmit_timer_private_data = NULL;
     core_endpoints[i].on_uframe_data_reception = NULL;
+    core_endpoints[i].last_iframe_sent_timestamp = (struct timeval){0 };
+    core_endpoints[i].re_transmit_timeout_ms = SL_CPC_MAX_RE_TRANSMIT_TIMEOUT_MS;
+    core_endpoints[i].packet_re_transmit_count = 0;
   }
 
   /* Setup epoll */
@@ -143,7 +208,7 @@ cpc_endpoint_state_t core_get_endpoint_state(uint8_t ep_id)
 
 static void core_process_rx_driver(epoll_private_data_t *event_private_data)
 {
-  (void) event_private_data;
+  (void)event_private_data;
   frame_t *rx_frame;
   size_t frame_size;
 
@@ -284,9 +349,8 @@ static void core_process_rx_i_frame(frame_t *rx_frame)
     transmit_ack(endpoint);
   } else if (is_seq_valid(seq, endpoint->ack)) {
     // The packet was already received. We must re-send a ACK because the other side missed it the first time
-    transmit_ack(endpoint);
-
     TRACE_ENDPOINT_RXD_DUPLICATE_DATA_FRAME(endpoint);
+    transmit_ack(endpoint);
   } else {
     transmit_reject(endpoint, address, endpoint->ack, HDLC_REJECT_SEQUENCE_MISMATCH);
     //TODO : goto endpoint_cleanup_check;
@@ -363,13 +427,12 @@ static void core_process_rx_s_frame(frame_t *rx_frame)
       break;
 
     default:
-      // Should not reach this case
-      BUG();
+      BUG("Illegal switch");
       break;
   }
 
   if (fatal_error) {
-    WARN("Fatal error %d, closing endoint #%d", endpoint->id, *((sl_cpc_reject_reason_t *)rx_frame->payload));
+    WARN("Fatal error %d, closing endoint #%d", *((sl_cpc_reject_reason_t *)rx_frame->payload), endpoint->id);
     server_close_endpoint(endpoint->id);
     server_expect_close(endpoint->id);
     core_close_endpoint(endpoint->id, false);
@@ -470,7 +533,7 @@ void core_write(uint8_t endpoint_number, const void* message, size_t message_len
   {
     /* Make sure the endpoint it opened */
     if (endpoint->state != SL_CPC_STATE_OPEN) {
-      BUG();
+      WARN();
       return;
     }
 
@@ -508,6 +571,7 @@ void core_write(uint8_t endpoint_number, const void* message, size_t message_len
       // Update endpoint sequence number
       endpoint->seq++;
       endpoint->seq %= 8;
+      TRACE_CORE("Sequence # is now %d on ep %d", endpoint->seq, endpoint->id);
     } else {
       FATAL_ON(type == SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_UNKNOWN);
       buffer_handle->control = hdlc_create_control_unumbered(type);
@@ -558,7 +622,7 @@ void core_open_endpoint(uint8_t endpoint_number, uint8_t flags, uint8_t tx_windo
 
   /* Check if endpoint was already opened */
   if (ep->state != SL_CPC_STATE_CLOSED) {
-    BUG();
+    BUG("Endpoint already opened");
     return;
   }
 
@@ -571,7 +635,7 @@ void core_open_endpoint(uint8_t endpoint_number, uint8_t flags, uint8_t tx_windo
   ep->frames_count_re_transmit_queue = 0;
   ep->state = SL_CPC_STATE_OPEN;
 
-  int timer_fd = timerfd_create(CLOCK_MONOTONIC, 0);
+  int timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
   FATAL_SYSCALL_ON(timer_fd < 0);
 
   /* Setup epoll */
@@ -725,7 +789,7 @@ void core_set_endpoint_option(uint8_t endpoint_number,
       ep->poll_final.on_fnct_arg = value;
       break;
     default:
-      FATAL("invalid option");
+      BUG("invalid option");
       break;
   }
 }
@@ -746,7 +810,6 @@ static void process_ack(sl_cpc_endpoint_t *endpoint, uint8_t ack)
 
   // Return if no frame to acknowledge
   if (endpoint->re_transmit_queue == NULL) {
-    //BUG(); //?
     return;
   }
 
@@ -786,8 +849,13 @@ static void process_ack(sl_cpc_endpoint_t *endpoint, uint8_t ack)
     frames_count_ack = (uint8_t)(frames_count_ack + ack);
   }
 
+  TRACE_CORE("%d Received ack %d seq number %d", endpoint->id, ack, seq_number);
+
   // Reset re-transmit counter
   endpoint->packet_re_transmit_count = 0u;
+
+  // Calculate re_transmit_timeout
+  core_compute_re_transmit_timeout(endpoint);
 
   // Stop incomming re-transmit timeout
   stop_re_transmit_timer(endpoint);
@@ -796,7 +864,7 @@ static void process_ack(sl_cpc_endpoint_t *endpoint, uint8_t ack)
   // Remove all acknowledged frames in re-transmit queue
   for (i = 0; i < frames_count_ack; i++) {
     item_node = sl_slist_pop(&endpoint->re_transmit_queue);
-    FATAL_ON(item_node == NULL);
+    BUG_ON(item_node == NULL);
 
     item = SL_SLIST_ENTRY(item_node, sl_cpc_transmit_queue_item_t, node);
     frame = item->handle;
@@ -838,12 +906,6 @@ static void transmit_ack(sl_cpc_endpoint_t *endpoint)
   sl_cpc_buffer_handle_t *handle;
   sl_cpc_transmit_queue_item_t *item;
 
-  // Check if data frame are pending
-  if (endpoint->holding_list != NULL) {
-    // ACK will be piggyback so no need for ACK frame
-    return;
-  }
-
   // Get new frame handler
   handle = (sl_cpc_buffer_handle_t*) calloc(1, sizeof(sl_cpc_buffer_handle_t));
   FATAL_ON(handle == NULL);
@@ -861,6 +923,9 @@ static void transmit_ack(sl_cpc_endpoint_t *endpoint)
   item->handle = handle;
 
   sl_slist_push_back(&transmit_queue, &item->node);
+  TRACE_CORE("Endpoint #%d sent ACK: %d\n", endpoint->id, endpoint->ack);
+
+  core_process_transmit_queue();
 
   TRACE_ENDPOINT_TXD_ACK(endpoint);
 }
@@ -882,11 +947,11 @@ static void re_transmit_frame(sl_cpc_endpoint_t *endpoint)
   // Free the previous header buffer. The tx queue process will malloc a new one and fill it.
   free(item->handle->hdlc_header);
 
-  //Put frame in Tx Q so that it can be transmitted by CPC Core later
-  sl_slist_push(&transmit_queue, &item->node);
-
   endpoint->packet_re_transmit_count++;
   endpoint->frames_count_re_transmit_queue--;
+
+  //Put frame in Tx Q so that it can be transmitted by CPC Core later
+  sl_slist_push(&transmit_queue, &item->node);
 
   // Signal task/process_action that frame is in Tx Queue
 
@@ -1001,6 +1066,12 @@ static bool core_process_tx_queue(void)
 
   if (frame_type == SLI_CPC_HDLC_FRAME_TYPE_INFORMATION) {
     hdlc_set_control_ack(&frame->control, frame->endpoint->ack);
+
+    // Remember when we sent this i-frame in order to calculate round trip time
+    // Only do so if this is not a re_transmit
+    if (frame->endpoint->packet_re_transmit_count == 0u) {
+      gettimeofday(&frame->endpoint->last_iframe_sent_timestamp, NULL);
+    }
   }
 
   hdlc_create_header(frame->hdlc_header, frame->address, data_length, frame->control, true);
@@ -1054,7 +1125,7 @@ static bool core_process_tx_queue(void)
       break;
 
     default:
-      FATAL();
+      BUG();
       break;
   }
 
@@ -1066,12 +1137,40 @@ static bool core_process_tx_queue(void)
  ******************************************************************************/
 static void re_transmit_timeout(sl_cpc_endpoint_t* endpoint)
 {
+  int ret;
+  epoll_private_data_t* fd_timer_private_data;
+
   if (endpoint->packet_re_transmit_count >= SLI_CPC_RE_TRANSMIT) {
     WARN("Retransmit limit reached, closing endoint #%d", endpoint->id);
     server_close_endpoint(endpoint->id);
     core_close_endpoint(endpoint->id, true);
     endpoint->state = SL_CPC_STATE_ERROR_DESTINATION_UNREACHABLE;
   } else {
+    endpoint->re_transmit_timeout_ms *= 2; // RTO(new) = RTO(before retransmission) *2 )
+                                           // this is explained in Karn’s Algorithm
+    if (endpoint->re_transmit_timeout_ms > SL_CPC_MAX_RE_TRANSMIT_TIMEOUT_MS) {
+      endpoint->re_transmit_timeout_ms = SL_CPC_MAX_RE_TRANSMIT_TIMEOUT_MS;
+    }
+
+    TRACE_CORE("New RTO calculated on ep %d, after re_transmit timeout: %ldms", endpoint->id, endpoint->re_transmit_timeout_ms);
+
+    fd_timer_private_data = endpoint->re_transmit_timer_private_data;
+    stop_re_transmit_timer(endpoint);
+
+    /* Make sure the timer file descriptor is open*/
+    FATAL_ON(fd_timer_private_data == NULL);
+    FATAL_ON(fd_timer_private_data->file_descriptor < 0);
+
+    struct itimerspec timeout_time = { .it_interval = { .tv_sec = 0, .tv_nsec = 0 },
+                                       .it_value    = { .tv_sec = endpoint->re_transmit_timeout_ms / 1000, .tv_nsec = (endpoint->re_transmit_timeout_ms % 1000) * 1000000 } };
+
+    ret = timerfd_settime(fd_timer_private_data->file_descriptor,
+                          0,
+                          &timeout_time,
+                          NULL);
+
+    FATAL_SYSCALL_ON(ret < 0);
+
     re_transmit_frame(endpoint);
   }
 }
@@ -1100,9 +1199,6 @@ static sl_cpc_endpoint_t* find_endpoint(uint8_t endpoint_number)
   return &core_endpoints[endpoint_number];
 }
 
-/***************************************************************************//**
- * Returns a pointer to the endpoint struct for a given endpoint_number
- ******************************************************************************/
 //FIXME : for debug purpose, to be completed
 void core_reset_endpoint_sequence(uint8_t endpoint_number)
 {
@@ -1165,9 +1261,8 @@ static void start_re_transmit_timer(sl_cpc_endpoint_t* endpoint)
   FATAL_ON(fd_timer_private_data == NULL);
   FATAL_ON(fd_timer_private_data->file_descriptor < 0);
 
-  /* fires every 2 second */
-  const struct itimerspec timeout_time = { .it_interval = { .tv_sec = 2, .tv_nsec = 0 },
-                                           .it_value    = { .tv_sec = 2, .tv_nsec = 0 } };
+  struct itimerspec timeout_time = { .it_interval = { .tv_sec = 0, .tv_nsec = 0 },
+                                     .it_value    = { .tv_sec = endpoint->re_transmit_timeout_ms / 1000, .tv_nsec = (endpoint->re_transmit_timeout_ms % 1000) * 1000000 } };
 
   ret = timerfd_settime(fd_timer_private_data->file_descriptor,
                         0,
@@ -1208,6 +1303,7 @@ static void core_process_ep_timeout(epoll_private_data_t *event_private_data)
  ******************************************************************************/
 static void core_push_frame_to_driver(const void *frame, size_t frame_len)
 {
+  TRACE_FRAME("Core: Pushed frame to driver: ", frame, frame_len);
   ssize_t ret = send(driver_sock_fd, frame, frame_len, 0);
 
   FATAL_SYSCALL_ON(ret < 0);

@@ -19,8 +19,10 @@
 #ifndef SERVER_CORE_H
 #define SERVER_CORE_H
 
-#include <stdint.h>
+#define _GNU_SOURCE
 #include <pthread.h>
+
+#include <stdint.h>
 
 uint32_t server_core_get_secondary_rx_capability(void);
 pthread_t server_core_init(int fd_socket_driver_core);

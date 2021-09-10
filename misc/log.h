@@ -22,23 +22,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
-#include <pthread.h>
 
 #include "tracing/tracing.h"
-/*
- * Macro used to exit with error or raise a signal that acts like
- * setting a breakpoint to inspect the code with a debugger
- * TODO : Missing cli arg to chose between the two
- */
-#define EXIT_OR_BREAKPOINT()  \
-  do                          \
-  {                           \
-    while (1) ;               \
-    raise(SIGTRAP);           \
-    /* exit(EXIT_FAILURE); */ \
-  } while (0)
 
 #define OUT_FILE stderr
+
+#ifdef EXIT_BREAKPOINT
+#define EXIT_OR_BREAKPOINT() do { raise(SIGTRAP); } while (0)
+#else
+#define EXIT_OR_BREAKPOINT() do { exit(EXIT_FAILURE); } while (0)
+#endif
 
 #define WARN(msg, ...)                                                                                                             \
   do {                                                                                                                             \

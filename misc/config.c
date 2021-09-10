@@ -52,7 +52,7 @@ unsigned int  config_spi_bit_per_word = 8;
 unsigned int  config_spi_cs_pin = 24;
 unsigned int  config_spi_irq_pin = 23;
 
-const char*   config_socket_folder = "/tmp/";
+const char*   config_socket_folder = "/tmp";
 
 bool          config_reset_sequence = true;
 
@@ -60,7 +60,7 @@ bool          config_reset_sequence = true;
  **********************  LOCAL CONFIGURATION VALUES   **************************
  ******************************************************************************/
 
-static const char* config_file_path = "/etc/cpcd.conf";
+static const char* config_file_path = DEFAULT_CONFIG_FILE_PATH;
 
 /*New number of concurrent opened file descriptor */
 static rlim_t config_rlimit_nofile = 1024;
@@ -172,7 +172,10 @@ static void config_parse_config_file(void)
   char *endptr;
 
   config_file = fopen(config_file_path, "r");
-  FATAL_SYSCALL_ON(config_file == NULL);
+
+  if (config_file == NULL) {
+    FATAL("Could not open the configuration file under: %s, please install the configuration file and/or provide a valid path with --conf\n", config_file_path);
+  }
 
   /* Iterate through every line of the file*/
   while (fgets(line, sizeof(line), config_file) != NULL) {
@@ -182,8 +185,7 @@ static void config_parse_config_file(void)
 
     /* Exctract name=value pair */
     if (sscanf(line, "%127[^=]=%127[^\n]%*c", name, val) != 2) {
-      WARN("Config file line \"%s\" doesn't respect syntax", line);
-      continue;
+      FATAL("Config file line \"%s\" doesn't respect syntax", line);
     }
 
     if (0 == strcmp(name, "BUS_TYPE")) {
@@ -192,128 +194,81 @@ static void config_parse_config_file(void)
       } else if (0 == strcmp(val, "SPI")) {
         config_bus = SPI;
       } else {
-        fprintf(stderr, "Config file error : bad BUS_TYPE value\n");
+        FATAL("Config file error : bad BUS_TYPE value\n");
       }
-      continue;
-    }
-
-    if (0 == strcmp(name, "SPI_DEVICE_FILE")) {
+    } else if (0 == strcmp(name, "SPI_DEVICE_FILE")) {
       config_spi_file = malloc_and_copy_str(val);
-      continue;
-    }
-
-    if (0 == strcmp(name, "SPI_CS_GPIO")) {
+    } else if (0 == strcmp(name, "SPI_CS_GPIO")) {
       config_spi_cs_pin = (unsigned int)strtoul(val, &endptr, 10);
       if (*endptr != '\0') {
         FATAL("Bad config line \"%s\"", line);
       }
-      continue;
-    }
-
-    if (0 == strcmp(name, "SPI_RX_IRQ_GPIO")) {
+    } else if (0 == strcmp(name, "SPI_RX_IRQ_GPIO")) {
       config_spi_irq_pin = (unsigned int)strtoul(val, &endptr, 10);
       if (*endptr != '\0') {
         FATAL("Bad config line \"%s\"", line);
       }
-      continue;
-    }
-
-    if (0 == strcmp(name, "SPI_DEVICE_BITRATE")) {
+    } else if (0 == strcmp(name, "SPI_DEVICE_BITRATE")) {
       config_spi_bitrate = (unsigned int)strtoul(val, &endptr, 10);
       if (*endptr != '\0') {
         FATAL("Bad config line \"%s\"", line);
       }
-      continue;
-    }
-
-    if (0 == strcmp(name, "UART_DEVICE_FILE")) {
+    } else if (0 == strcmp(name, "UART_DEVICE_FILE")) {
       config_uart_file = malloc_and_copy_str(val);
-      continue;
-    }
-
-    if (0 == strcmp(name, "UART_DEVICE_BAUD")) {
+    } else if (0 == strcmp(name, "UART_DEVICE_BAUD")) {
       config_uart_baudrate = (unsigned int)strtoul(val, &endptr, 10);
       if (*endptr != '\0') {
         FATAL("Bad config line \"%s\"", line);
       }
-      continue;
-    }
-
-    if (0 == strcmp(name, "UART_HARDFLOW")) {
+    } else if (0 == strcmp(name, "UART_HARDFLOW")) {
       if (0 == strcmp(val, "true")) {
         config_uart_hardflow = true;
       } else if (0 == strcmp(val, "false")) {
         config_uart_hardflow = false;
       } else {
-        fprintf(stderr, "Config file error : bad UART_HARDFLOW value\n");
+        FATAL("Config file error : bad UART_HARDFLOW value");
       }
-      continue;
-    }
-
-//TODO : evaluate if we would still like this to be configurable
-/*
-    if (0 == strcmp(name, "SOCKET_FOLDER")) {
-      config_socket_folder = malloc_and_copy_str(val);
-      continue;
-    }
-
- */
-
-    if (0 == strcmp(name, "NOOP_KEEP_ALIVE")) {
+    } else if (0 == strcmp(name, "NOOP_KEEP_ALIVE")) {
       if (0 == strcmp(val, "true")) {
         config_use_noop_keep_alive = true;
       } else if (0 == strcmp(val, "false")) {
         config_use_noop_keep_alive = false;
       } else {
-        fprintf(stderr, "Config file error : bad NOOP_KEEP_ALIVE value\n");
+        FATAL("Config file error : bad NOOP_KEEP_ALIVE value");
       }
-      continue;
-    }
-
-    if (0 == strcmp(name, "STDOUT_TRACE")) {
+    } else if (0 == strcmp(name, "STDOUT_TRACE")) {
       if (0 == strcmp(val, "true")) {
         config_stdout_tracing = true;
       } else if (0 == strcmp(val, "false")) {
         config_stdout_tracing = false;
       } else {
-        fprintf(stderr, "Config file error : bad STDOUT_TRACE value\n");
+        FATAL("Config file error : bad STDOUT_TRACE value");
       }
-      continue;
-    }
-
-    if (0 == strcmp(name, "TRACE_TO_FILE")) {
+    } else if (0 == strcmp(name, "TRACE_TO_FILE")) {
       if (0 == strcmp(val, "true")) {
         config_file_tracing = true;
       } else if (0 == strcmp(val, "false")) {
         config_file_tracing = false;
       } else {
-        fprintf(stderr, "Config file error : bad TRACE_TO_FILE value\n");
+        FATAL("Config file error : bad TRACE_TO_FILE value");
       }
-      continue;
-    }
-
-    if (0 == strcmp(name, "RESET_SEQUENCE")) {
+    } else if (0 == strcmp(name, "RESET_SEQUENCE")) {
       if (0 == strcmp(val, "true")) {
         config_reset_sequence = true;
       } else if (0 == strcmp(val, "false")) {
         config_reset_sequence = false;
       } else {
-        fprintf(stderr, "Config file error : bad RESET_SEQUENCE value\n");
+        FATAL("Config file error : bad RESET_SEQUENCE value");
       }
-      continue;
-    }
-
-    if (0 == strcmp(name, "TRACES_FOLDER")) {
+    } else if (0 == strcmp(name, "TRACES_FOLDER")) {
       config_traces_folder = malloc_and_copy_str(val);
-      continue;
-    }
-
-    if (0 == strcmp(name, "RLIMIT_NOFILE")) {
+    } else if (0 == strcmp(name, "RLIMIT_NOFILE")) {
       config_rlimit_nofile = strtoul(val, &endptr, 10);
       if (*endptr != '\0') {
-        FATAL("Bad config line \"%s\"", line);
+        FATAL("Config file error : bad RLIMIT_NOFILE value");
       }
-      continue;
+    } else {
+      FATAL("Config file error : key \"%s\" not recognized", name);
     }
   }
 
@@ -351,8 +306,6 @@ static void config_set_rlimit_nofile(void)
   FATAL_SYSCALL_ON(ret < 0);
 
   if (limit.rlim_cur < config_rlimit_nofile) {
-    //WARN("Main : Current RLIMIT_NOFILE is %ul, increasing it to %ul", (unsigned int) limit.rlim_cur, (unsigned int)config_rlimit_nofile);
-
     if (config_rlimit_nofile > limit.rlim_max) {
       FATAL("The OS doesn't support our requested RLIMIT_NOFILE value");
     }
