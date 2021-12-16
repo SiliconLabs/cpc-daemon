@@ -1,6 +1,6 @@
 /***************************************************************************//**
  * @file
- * @brief Co-Processor Communication Protocol(CPC) - Poll
+ * @brief Co-Processor Communication Protocol(CPC) - GPIO Interface
  * @version 3.2.0
  *******************************************************************************
  * # License
@@ -16,35 +16,35 @@
  *
  ******************************************************************************/
 
-#ifndef EPOLL_H
-#define EPOLL_H
+#ifndef GPIO_H
+#define GPIO_H
 
-#include "stdint.h"
-#include <sys/epoll.h>
+#include <stdint.h>
+#include "sl_cpc.h"
 
-//forward declaration for interdependency
-struct epoll_private_data;
-
-typedef struct epoll_private_data epoll_private_data_t;
-
-typedef void (*epoll_callback_t)(epoll_private_data_t *private_data);
-
-struct epoll_private_data{
-  epoll_callback_t callback;
-  int file_descriptor;
-  uint8_t endpoint_number;
+SL_ENUM(gpio_direction_t){
+  IN = 0,
+  OUT,
+  HIGH
 };
 
-void epoll_init(void);
+SL_ENUM(gpio_edge_t){
+  FALLING = 0,
+  RISING,
+  BOTH
+};
 
-void epoll_register(epoll_private_data_t *private_data);
+typedef struct gpio{
+  int value_fd;
+  int irq_fd;
+  unsigned int pin;
+} gpio_t;
 
-void epoll_unregister(epoll_private_data_t *private_data);
+int gpio_init(gpio_t *gpio, unsigned int pin);
+int gpio_deinit(gpio_t *gpio);
+int gpio_direction(gpio_t gpio, gpio_direction_t direction);
+int gpio_setedge(gpio_t gpio, gpio_edge_t edge);
+int gpio_write(gpio_t gpio, int value);
+int gpio_read(gpio_t gpio);
 
-void epoll_unwatch(epoll_private_data_t *private_data);
-
-void epoll_watch_back(uint8_t endpoint_number);
-
-size_t epoll_wait_for_event(struct epoll_event events[], size_t max_event_number);
-
-#endif //EPOLL_H
+#endif /* GPIO_H */

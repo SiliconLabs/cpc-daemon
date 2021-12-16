@@ -24,8 +24,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "sl_enum.h"
-#include "endianess.h"
+#include "sl_cpc.h"
+#include "misc/endianess.h"
 
 #define SLI_CPC_HDLC_HEADER_SIZE      5U
 #define SLI_CPC_HDLC_HEADER_RAW_SIZE  7U
@@ -43,16 +43,18 @@
 #define SLI_CPC_HDLC_FRAME_TYPE_UNNUMBERED   3
 
 #define SLI_CPC_HDLC_CONTROL_FRAME_TYPE_SHIFT          6
+#define SLI_CPC_HDLC_CONTROL_P_F_SHIFT                 3
 #define SLI_CPC_HDLC_CONTROL_SEQ_SHIFT                 4
 #define SLI_CPC_HDLC_CONTROL_SUPERVISORY_FNCT_ID_SHIFT 4
 #define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_SHIFT     0
 
-#define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_MASK  0x3B
+#define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_MASK  0x37
 
 #define SLI_CPC_HDLC_ACK_SUPERVISORY_FUNCTION   0
 
 #define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_INFORMATION  0x00
-#define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_POLL_FINAL   0x10
+#define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_POLL_FINAL   0x04
+#define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_RESET_SEQ    0x31
 #define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_UNKNOWN      0xFF
 
 #define SLI_CPC_HDLC_REJECT_SUPERVISORY_FUNCTION   1
@@ -173,7 +175,7 @@ static inline uint8_t hdlc_get_frame_type(uint8_t control)
 {
   uint8_t type = control >> SLI_CPC_HDLC_CONTROL_FRAME_TYPE_SHIFT;
 
-  if (type == 1) {
+  if (type == 1 || type == 0) {
     type = SLI_CPC_HDLC_FRAME_TYPE_INFORMATION;
   }
 
@@ -229,6 +231,21 @@ static inline uint8_t hdlc_get_unumbered_type(uint8_t control)
 }
 
 /***************************************************************************//**
+ * Gets HDLC u-frame poll/final bit.
+ *
+ * @param control Control value specified in HDLC header.
+ *
+ * @return true if HDLC frame poll/frame bit is set.
+ ******************************************************************************/
+static inline bool hdlc_is_poll_final(uint8_t control)
+{
+  if (control & (1 << SLI_CPC_HDLC_CONTROL_P_F_SHIFT)) {
+    return true;
+  }
+  return false;
+}
+
+/***************************************************************************//**
  * Creates HDLC header.
  *
  * @param header_buf Pointer to the buffer where to write HDLC header.
@@ -252,12 +269,13 @@ void hdlc_create_header(uint8_t *header_buf,
  *
  * @return HDLC header control value.
  ******************************************************************************/
-static inline uint8_t hdlc_create_control_data(uint8_t seq, uint8_t ack)
+static inline uint8_t hdlc_create_control_data(uint8_t seq, uint8_t ack, bool poll_final)
 {
   uint8_t control = SLI_CPC_HDLC_FRAME_TYPE_INFORMATION << SLI_CPC_HDLC_CONTROL_FRAME_TYPE_SHIFT;
 
   control |= (uint8_t)(seq << SLI_CPC_HDLC_CONTROL_SEQ_SHIFT);
   control |= ack;
+  control |= (uint8_t)((uint8_t)poll_final << SLI_CPC_HDLC_CONTROL_P_F_SHIFT);
 
   return control;
 }

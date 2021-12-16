@@ -1,6 +1,6 @@
 /***************************************************************************//**
  * @file
- * @brief Co-Processor Communication Protocol(CPC) - Poll
+ * @brief Co-Processor Communication Protocol(CPC) - Normal Mode
  * @version 3.2.0
  *******************************************************************************
  * # License
@@ -16,35 +16,4 @@
  *
  ******************************************************************************/
 
-#ifndef EPOLL_H
-#define EPOLL_H
-
-#include "stdint.h"
-#include <sys/epoll.h>
-
-//forward declaration for interdependency
-struct epoll_private_data;
-
-typedef struct epoll_private_data epoll_private_data_t;
-
-typedef void (*epoll_callback_t)(epoll_private_data_t *private_data);
-
-struct epoll_private_data{
-  epoll_callback_t callback;
-  int file_descriptor;
-  uint8_t endpoint_number;
-};
-
-void epoll_init(void);
-
-void epoll_register(epoll_private_data_t *private_data);
-
-void epoll_unregister(epoll_private_data_t *private_data);
-
-void epoll_unwatch(epoll_private_data_t *private_data);
-
-void epoll_watch_back(uint8_t endpoint_number);
-
-size_t epoll_wait_for_event(struct epoll_event events[], size_t max_event_number);
-
-#endif //EPOLL_H
+void run_normal_mode(void);

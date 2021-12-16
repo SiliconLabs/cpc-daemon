@@ -29,16 +29,16 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
-#include "crc.h"
-#include "log.h"
-#include "utils.h"
-#include "driver_emul.h"
-#include "hdlc.h"
-#include "core.h"
-#include "sl_slist.h"
-#include "sl_status.h"
-#include "cpc_unity_common.h"
-#include "system_common.h"
+#include "server_core/core/crc.h"
+#include "misc/logging.h"
+#include "misc/utils.h"
+#include "driver/driver_emul.h"
+#include "server_core/core/hdlc.h"
+#include "server_core/core/core.h"
+#include "misc/sl_slist.h"
+#include "misc/sl_status.h"
+#include "test/unity/cpc_unity_common.h"
+#include "server_core/system_endpoint/system.h"
 
 static int fd_socket_drv;
 static pthread_t drv_thread;
@@ -129,6 +129,27 @@ static void sli_cpc_drv_emul_create_get_endpoint_status_reply(sl_cpc_system_cmd_
   tx_command->length = sizeof(sl_cpc_property_id_t) + sizeof(cpc_endpoint_state_t);
 }
 
+static void sli_cpc_drv_emul_create_set_endpoint_status_reply(sl_cpc_system_cmd_t *tx_command, uint8_t ep_id, uint8_t command_seq, cpc_endpoint_state_t state)
+{
+  FATAL_ON(tx_command == NULL);
+
+  sl_cpc_system_property_cmd_t *reply_prop_cmd_buff;
+  cpc_endpoint_state_t *reply_ep_state;
+
+  // Reply to a PROPERTY-GET with a PROPERTY-IS
+  tx_command->command_id = CMD_SYSTEM_PROP_VALUE_IS;
+  tx_command->command_seq = command_seq;
+
+  reply_prop_cmd_buff = (sl_cpc_system_property_cmd_t*) tx_command->payload;
+  reply_ep_state = (cpc_endpoint_state_t*) reply_prop_cmd_buff->payload;
+
+  reply_prop_cmd_buff->property_id = EP_ID_TO_PROPERTY_ID(ep_id);
+
+  *reply_ep_state = state;
+
+  tx_command->length = sizeof(sl_cpc_property_id_t) + sizeof(cpc_endpoint_state_t);
+}
+
 static void* driver_thread_func(void* param)
 {
   (void)param;
@@ -143,6 +164,8 @@ static void* driver_thread_func(void* param)
   uint8_t ack;
   uint8_t address;
   uint8_t  type;
+
+  pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 
   while (1) {
     FD_ZERO(&rfds);
@@ -171,6 +194,7 @@ static void* driver_thread_func(void* param)
       if (address == 0) {
         switch (rx_command->command_id) {
           case CMD_SYSTEM_PROP_VALUE_GET:
+          case CMD_SYSTEM_PROP_VALUE_SET:
 
             if (rx_property_cmd->property_id >= EP_ID_TO_PROPERTY_ID(1) && rx_property_cmd->property_id <= EP_ID_TO_PROPERTY_ID(255)) {
               uint8_t *buffer;
@@ -192,11 +216,21 @@ static void* driver_thread_func(void* param)
               buffer = malloc(buf_len);
               FATAL_ON(buffer == NULL);
 
-              // Create the get property reply
-              sli_cpc_drv_emul_create_get_endpoint_status_reply((sl_cpc_system_cmd_t *)buffer,
-                                                                PROPERTY_ID_TO_EP_ID(rx_property_cmd->property_id),
-                                                                rx_command->command_seq,
-                                                                ep_states[PROPERTY_ID_TO_EP_ID(rx_property_cmd->property_id)]);
+              if (rx_command->command_id == CMD_SYSTEM_PROP_VALUE_GET) {
+                // Create the get property reply
+                sli_cpc_drv_emul_create_get_endpoint_status_reply((sl_cpc_system_cmd_t *)buffer,
+                                                                  PROPERTY_ID_TO_EP_ID(rx_property_cmd->property_id),
+                                                                  rx_command->command_seq,
+                                                                  ep_states[PROPERTY_ID_TO_EP_ID(rx_property_cmd->property_id)]);
+              } else if (rx_command->command_id == CMD_SYSTEM_PROP_VALUE_SET) {
+                // Create the set property reply
+                sli_cpc_drv_emul_create_set_endpoint_status_reply((sl_cpc_system_cmd_t *)buffer,
+                                                                  PROPERTY_ID_TO_EP_ID(rx_property_cmd->property_id),
+                                                                  rx_command->command_seq,
+                                                                  ep_states[PROPERTY_ID_TO_EP_ID(rx_property_cmd->property_id)]);
+              } else {
+                BUG("Invalid command id");
+              }
 
               // Compute payload CRC
               uint16_t fcs = sli_cpc_get_crc_sw(buffer, (uint16_t)(buf_len - 2));
@@ -204,7 +238,7 @@ static void* driver_thread_func(void* param)
               buffer[buf_len - 1] = (uint8_t)(fcs >> 8);
 
               ack = (uint8_t)(ack + 1);
-              cpc_unity_test_push_pkt_in_driver(0, buffer, (uint16_t)buf_len, &seq, ack++, true);
+              cpc_unity_test_push_pkt_in_driver(0, buffer, (uint16_t)buf_len, &seq, ack++, false, true);
 
               free(buffer);
             } else if (rx_property_cmd->property_id == PROP_ENDPOINT_STATES) {

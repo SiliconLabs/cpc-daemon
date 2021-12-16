@@ -1,6 +1,6 @@
 /***************************************************************************//**
  * @file
- * @brief Co-Processor Communication Protocol(CPC) - Enum
+ * @brief Co-Processor Communication Protocol(CPC) - Server Initialization Synchronization
  * @version 3.2.0
  *******************************************************************************
  * # License
@@ -16,10 +16,6 @@
  *
  ******************************************************************************/
 
-#ifndef SL_ENUM_H
-#define SL_ENUM_H
+void server_ready_post(void);
 
-#define SL_ENUM(name) typedef uint8_t name; enum name##_enum
-#define SL_ENUM_GENERIC(name, type) typedef type name; enum name##_enum
-
-#endif //SL_ENUM_H
+void server_ready_wait(void);

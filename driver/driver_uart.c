@@ -27,12 +27,13 @@
 #include <sys/socket.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
+#include <signal.h>
 
-#include "log.h"
-#include "utils.h"
-#include "driver_uart.h"
-#include "hdlc.h"
-#include "crc.h"
+#include "misc/logging.h"
+#include "misc/utils.h"
+#include "driver/driver_uart.h"
+#include "server_core/core/hdlc.h"
+#include "server_core/core/crc.h"
 
 #define UART_BUFFER_SIZE 4096 + SLI_CPC_HDLC_HEADER_RAW_SIZE
 #define MAX_EPOLL_EVENTS 5
@@ -41,16 +42,15 @@ static int fd_uart;
 static int fd_core;
 static int fd_epoll;
 static pthread_t drv_thread;
-
 static unsigned int uart_bitrate;
+static volatile bool cancel_requested = false;
 
 typedef void (*driver_epoll_callback_t)(void);
 
 static void* driver_thread_func(void* param);
 
-static int driver_uart_open(const char *device, unsigned int bitrate, bool hardflow);
-
 static void driver_uart_process_uart(void);
+
 static void driver_uart_process_core(void);
 
 /*
@@ -71,6 +71,15 @@ static bool delimit_and_push_frames_to_core(uint8_t *buffer, size_t *buffer_head
  * and re-synch in case the buffer starts with garbage.
  */
 static bool header_re_synch(uint8_t *buffer, size_t *buffer_head);
+
+static void driver_uart_cleanup(void);
+
+static void driver_uart_term_sig_handler(int sig)
+{
+  FATAL_ON(sig != SIGTERM);
+
+  cancel_requested = true;
+}
 
 pthread_t driver_uart_init(int *fd_to_core, const char *device, unsigned int bitrate, bool hardflow)
 {
@@ -127,20 +136,51 @@ pthread_t driver_uart_init(int *fd_to_core, const char *device, unsigned int bit
   ret = pthread_setname_np(drv_thread, "drv_thread");
   FATAL_ON(ret != 0);
 
-  TRACE_DRIVER("Opening uart file %s\n", device);
+  TRACE_DRIVER("Opening uart file %s", device);
 
   TRACE_DRIVER("Init done");
 
   return drv_thread;
 }
 
+static void driver_uart_cleanup(void)
+{
+  close(fd_uart);
+  close(fd_core);
+  close(fd_epoll);
+
+  TRACE_DRIVER("Uart driver thread cancelled");
+
+  pthread_exit(0);
+}
+
 static void* driver_thread_func(void* param)
 {
   (void) param;
-
   struct epoll_event events[MAX_EPOLL_EVENTS] = {};
+  sigset_t emptyset;
+
+  pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 
   TRACE_DRIVER("Thread start");
+
+  /* Setup signaling for this thread */
+  {
+    struct sigaction sa = { 0 };
+    int ret;
+    sigset_t blockset;
+
+    sigemptyset(&blockset);         /* Clears the signal set*/
+    sigaddset(&blockset, SIGTERM);   /* Block only SIGTERM */
+    sigprocmask(SIG_BLOCK, &blockset, NULL); /* Apply the signal mask to this thread*/
+
+    sa.sa_handler = driver_uart_term_sig_handler;
+    sa.sa_flags = 0;
+    sigemptyset(&sa.sa_mask);
+
+    ret = sigaction(SIGTERM, &sa, NULL);
+    FATAL_SYSCALL_ON(ret != 0);
+  }
 
   while (1) {
     int event_count;
@@ -148,16 +188,30 @@ static void* driver_thread_func(void* param)
     /* Wait for action */
     {
       do {
-        event_count = epoll_wait(fd_epoll, events, MAX_EPOLL_EVENTS, -1);
-      } while ((event_count == -1) && (errno == EINTR));
+        sigemptyset(&emptyset);
+        event_count = epoll_pwait(fd_epoll, events, MAX_EPOLL_EVENTS, -1, &emptyset);
 
-      FATAL_SYSCALL_ON(event_count < 0);
+        if (event_count == -1) {
+          if (errno == EINTR) {
+            if (cancel_requested) {
+              driver_uart_cleanup();
+            } else {
+              /* Some other signal was received, go back to waiting */
+              continue;
+            }
+          } else {
+            FATAL_SYSCALL_ON(1);
+          }
+        } else {
+          break;
+        }
+      } while (1);
 
       /* Timeouts should not occur */
       FATAL_ON(event_count == 0);
     }
 
-    /* Process each ready file descriptor*/
+    /* Process each ready file descriptor */
     {
       size_t event_i;
       for (event_i = 0; event_i != (size_t)event_count; event_i++) {
@@ -166,10 +220,11 @@ static void* driver_thread_func(void* param)
       }
     }
   } //while(1)
+
   return 0;
 }
 
-static int driver_uart_open(const char *device, unsigned int bitrate, bool hardflow)
+int driver_uart_open(const char *device, unsigned int bitrate, bool hardflow)
 {
   static const struct {
     unsigned int val;
@@ -221,7 +276,7 @@ static int driver_uart_open(const char *device, unsigned int bitrate, bool hardf
     tty.c_cflag &= ~CRTSCTS;
   }
 
-  FATAL_SYSCALL_ON(tcsetattr(fd, TCSAFLUSH, &tty) < 0);
+  FATAL_SYSCALL_ON(tcsetattr(fd, TCSANOW, &tty) < 0);
 
   /* Flush the content of the UART in case there was stale data */
   {
@@ -310,7 +365,9 @@ static size_t read_and_append_uart_received_data(uint8_t *buffer, size_t buffer_
 
   /* Get a temporary buffer of the right size */
   {
-    temp_buffer = (uint8_t*) malloc(actual_bytes_to_read);
+    // Allocate a temporary buffer and pad it to 8 bytes because memcpy reads in chunks of 8.
+    // If we don't pad, Valgrind will complain.
+    temp_buffer = (uint8_t*) malloc(PAD_TO_8_BYTES(actual_bytes_to_read));
 
     FATAL_ON(temp_buffer == NULL);
   }
@@ -355,7 +412,6 @@ static bool header_re_synch(uint8_t *buffer, size_t *buffer_head)
 {
   if (*buffer_head < SLI_CPC_HDLC_HEADER_RAW_SIZE) {
     /* There's not enough data for a header, nothing to re-synch */
-    //TRACE_DRIVER("re-sync : not enough for a header");
     return false;
   }
 
@@ -490,5 +546,5 @@ static void driver_uart_process_core(void)
     FATAL_ON((size_t)write_retval != (size_t)read_retval);
   }
 
-  TRACE_FRAME("Driver : flushed frame to uart: ", buffer, (size_t)read_retval);
+  TRACE_FRAME("Driver : flushed frame to uart : ", buffer, (size_t)read_retval);
 }

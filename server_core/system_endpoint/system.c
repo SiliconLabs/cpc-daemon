@@ -21,12 +21,14 @@
 #include <sys/timerfd.h>
 #include <unistd.h>
 
-#include "server_internal.h"
+#include "sl_cpc.h"
 #include "system.h"
 
-#include "log.h"
-#include "server.h"
-#include "core.h"
+#include "misc/logging.h"
+#include "server_core/system_endpoint/system_callbacks.h"
+#include "server_core/server/server.h"
+#include "server_core/core/core.h"
+#include "misc/utils.h"
 
 /***************************************************************************//**
  * Used to return the size of a system command buffer, primarily to pass to
@@ -44,6 +46,8 @@ static sl_slist_node_t *commands;
 static sl_slist_node_t *retries;
 static sl_slist_node_t *commands_in_error;
 
+extern bool ignore_reset_reason;
+
 typedef struct {
   sl_slist_node_t node;
   sl_cpc_system_unsolicited_status_callback_t callback;
@@ -53,19 +57,12 @@ static sl_slist_node_t *prop_last_status_callbacks;
 
 static void on_unsolicited(uint8_t endpoint_id, const void* data, size_t data_len);
 static void on_reply(uint8_t endpoint_id, void *arg, void *answer, uint32_t answer_lenght);
+static void on_timer_expired(epoll_private_data_t *private_data);
 static void write_command(sl_cpc_system_command_handle_t *command_handle);
 
-void sl_cpc_system_init(void)
+static void sl_cpc_system_open_endpoint(void)
 {
-  sl_slist_init(&commands);
-  sl_slist_init(&retries);
-  sl_slist_init(&commands_in_error);
-  sl_slist_init(&prop_last_status_callbacks);
-
-  //Open system endpoint
-  core_open_endpoint(SL_CPC_ENDPOINT_SYSTEM,
-                     SL_CPC_OPEN_ENDPOINT_FLAG_IFRAME_DISABLE | SL_CPC_OPEN_ENDPOINT_FLAG_UFRAME_ENABLE,
-                     1);
+  core_open_endpoint(SL_CPC_ENDPOINT_SYSTEM, SL_CPC_OPEN_ENDPOINT_FLAG_UFRAME_ENABLE, 1);
 
   core_set_endpoint_option(SL_CPC_ENDPOINT_SYSTEM,
                            SL_CPC_ENDPOINT_ON_FINAL,
@@ -76,13 +73,135 @@ void sl_cpc_system_init(void)
                            on_unsolicited);
 }
 
+void sl_cpc_system_init(void)
+{
+  sl_slist_init(&commands);
+  sl_slist_init(&retries);
+  sl_slist_init(&commands_in_error);
+  sl_slist_init(&prop_last_status_callbacks);
+
+  sl_cpc_system_open_endpoint();
+}
+
 void sl_cpc_system_register_unsolicited_prop_last_status_callback(sl_cpc_system_unsolicited_status_callback_t callback)
 {
   prop_last_status_callback_list_item_t* item = malloc(sizeof(prop_last_status_callback_list_item_t));
+  FATAL_ON(item == NULL);
 
   item->callback = callback;
 
   sl_slist_push_back(&prop_last_status_callbacks, &item->node);
+}
+
+/***************************************************************************//**
+* Handle the case where the system command timed out
+*******************************************************************************/
+static void sl_cpc_system_cmd_timed_out(const void *frame_data)
+{
+  sl_cpc_system_command_handle_t *command_handle;
+  sl_cpc_system_cmd_t *timed_out_command;
+
+  FATAL_ON(frame_data == NULL);
+
+  timed_out_command = (sl_cpc_system_cmd_t *)frame_data;
+
+  /* Go through the list of pending requests to find the one for which this reply applies */
+  SL_SLIST_FOR_EACH_ENTRY(commands, command_handle, sl_cpc_system_command_handle_t, node_commands) {
+    if (command_handle->command_seq == timed_out_command->command_seq) {
+      break;
+    }
+  }
+
+  if (command_handle == NULL || command_handle->command_seq != timed_out_command->command_seq) {
+    BUG("A command timed out but it could not be found in the submitted commands list");
+  }
+
+  // We won't need this command anymore. It needs to be resubmitted.
+  sl_slist_remove(&commands, &command_handle->node_commands);
+
+  TRACE_SYSTEM("Command ID %u SEQ %u timeout", command_handle->command->command_id, command_handle->command->command_seq);
+
+  command_handle->error_status = SL_STATUS_TIMEOUT; //This will be propagated when calling the callbacks
+
+  switch (command_handle->command->command_id) {
+    case CMD_SYSTEM_NOOP:
+      ((sl_cpc_system_noop_cmd_callback_t)command_handle->on_final)(command_handle, command_handle->error_status);
+      break;
+
+    case CMD_SYSTEM_RESET:
+      ((sl_cpc_system_reset_cmd_callback_t)command_handle->on_final)(command_handle, command_handle->error_status, STATUS_FAILURE);
+      break;
+
+    case CMD_SYSTEM_PROP_VALUE_GET:
+    case CMD_SYSTEM_PROP_VALUE_SET:
+    {
+      sl_cpc_system_property_cmd_t *tx_property_command = (sl_cpc_system_property_cmd_t *)command_handle->command->payload;
+
+      ((sl_cpc_system_property_get_set_cmd_callback_t) command_handle->on_final)(command_handle,
+                                                                                 tx_property_command->property_id,
+                                                                                 NULL,
+                                                                                 0,
+                                                                                 command_handle->error_status);
+    }
+    break;
+
+    case CMD_SYSTEM_PROP_VALUE_IS: //fall through
+    default:
+      BUG("Illegal switch");
+      break;
+  }
+
+  /* Free the command handle and its buffer */
+  {
+    free(command_handle->command);
+    free(command_handle);
+  }
+}
+
+/***************************************************************************//**
+* Start the process timer once the poll command has been acknowledged
+*******************************************************************************/
+void sl_cpc_system_cmd_poll_acknowledged(const void *frame_data)
+{
+  int timer_fd, ret;
+  sl_cpc_system_command_handle_t *command_handle;
+  FATAL_ON(frame_data == NULL);
+  sl_cpc_system_cmd_t *acked_command = (sl_cpc_system_cmd_t *)frame_data;
+
+  // Go through the command list to figure out which command just got acknowledged
+  SL_SLIST_FOR_EACH_ENTRY(commands, command_handle, sl_cpc_system_command_handle_t, node_commands) {
+    if (command_handle->command_seq == acked_command->command_seq) {
+      TRACE_SYSTEM("Secondary acknowledged command_id #%d command_seq #%d", command_handle->command->command_id, command_handle->command_seq);
+      const struct itimerspec timeout = { .it_interval = { .tv_sec = 0, .tv_nsec = 0 },
+                                          .it_value    = { .tv_sec = 0, .tv_nsec = (long int)command_handle->retry_timeout_us * 1000 } };
+
+      /* Setup timeout timer.*/
+      if (command_handle->error_status == SL_STATUS_OK) {
+        timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
+
+        FATAL_SYSCALL_ON(timer_fd < 0);
+
+        ret = timerfd_settime(timer_fd, 0, &timeout, NULL);
+        FATAL_SYSCALL_ON(ret < 0);
+
+        /* Setup the timer in the server_core epoll set */
+        command_handle->re_transmit_timer_private_data.endpoint_number = SL_CPC_ENDPOINT_SYSTEM; //Irrelevant in this scenario
+        command_handle->re_transmit_timer_private_data.file_descriptor = timer_fd;
+        command_handle->re_transmit_timer_private_data.callback = on_timer_expired;
+
+        epoll_register(&command_handle->re_transmit_timer_private_data);
+      } else if (command_handle->error_status == SL_STATUS_IN_PROGRESS) {
+        // Simply restart the timer
+        ret = timerfd_settime(command_handle->re_transmit_timer_private_data.file_descriptor, 0, &timeout, NULL);
+        FATAL_SYSCALL_ON(ret < 0);
+      } else {
+        WARN("Received ACK on a command that timed out or is processed.. ignoring");
+      }
+      return; // Found the associated command
+    }
+  }
+
+  WARN("Received a system poll ack for which no pending poll is registered");
 }
 
 /***************************************************************************//**
@@ -97,7 +216,10 @@ void sl_cpc_system_cmd_noop(sl_cpc_system_noop_cmd_callback_t on_noop_reply,
   /* Malloc the command handle and the command buffer */
   {
     command_handle = malloc(sizeof(sl_cpc_system_command_handle_t));
+    FATAL_ON(command_handle == NULL);
+
     command_handle->command = malloc(sizeof(sl_cpc_system_cmd_t)); //noop had nothing in the 'payload field'
+    FATAL_ON(command_handle->command == NULL);
   }
 
   /* Fill the command handle */
@@ -124,18 +246,21 @@ void sl_cpc_system_cmd_noop(sl_cpc_system_noop_cmd_callback_t on_noop_reply,
 }
 
 /***************************************************************************//**
- * Send a reset query
+ * Send a reboot query
  ******************************************************************************/
-void sl_cpc_system_cmd_reset(sl_cpc_system_reset_cmd_callback_t on_reset_reply,
-                             uint8_t retry_count_max,
-                             uint32_t retry_timeout_us)
+void sl_cpc_system_cmd_reboot(sl_cpc_system_reset_cmd_callback_t on_reset_reply,
+                              uint8_t retry_count_max,
+                              uint32_t retry_timeout_us)
 {
   sl_cpc_system_command_handle_t *command_handle;
 
   /* Malloc the command handle and the command buffer */
   {
     command_handle = malloc(sizeof(sl_cpc_system_command_handle_t));
+    FATAL_ON(command_handle == NULL);
+
     command_handle->command = malloc(sizeof(sl_cpc_system_cmd_t)); //reset had nothing in the 'payload field'
+    FATAL_ON(command_handle->command == NULL);
   }
 
   /* Fill the command handle */
@@ -162,6 +287,40 @@ void sl_cpc_system_cmd_reset(sl_cpc_system_reset_cmd_callback_t on_reset_reply,
 }
 
 /***************************************************************************//**
+ * Reset the system endpoint
+ ******************************************************************************/
+void sl_cpc_system_reset_system_endpoint(void)
+{
+  sl_slist_node_t *item;
+  sl_cpc_system_command_handle_t *command_handle;
+
+  TRACE_SYSTEM("Requesting reset of sequence number on the remote");
+  core_write(SL_CPC_ENDPOINT_SYSTEM,
+             NULL,
+             0,
+             SL_CPC_FLAG_UNNUMBERED_RESET_COMMAND);
+
+  // Push the command right away
+  core_process_transmit_queue();
+
+  // Free any pending commands
+  item = sl_slist_pop(&commands);
+  while (item != NULL) {
+    command_handle = SL_SLIST_ENTRY(item, sl_cpc_system_command_handle_t, node_commands);
+    WARN("Dropped system command id #%d seq#%d", command_handle->command->command_id, command_handle->command_seq);
+    // Command handle will be dropped once we close the endpoint
+    free(command_handle);
+    item = sl_slist_pop(&commands);
+  }
+
+  // Close the system endpoint
+  core_close_endpoint(SL_CPC_ENDPOINT_SYSTEM, false, true);
+
+  // Re-open the system endpoint
+  sl_cpc_system_open_endpoint();
+}
+
+/***************************************************************************//**
  * Send a property-get query
  ******************************************************************************/
 void sl_cpc_system_cmd_property_get(sl_cpc_system_property_get_set_cmd_callback_t on_property_get_reply,
@@ -176,7 +335,12 @@ void sl_cpc_system_cmd_property_get(sl_cpc_system_property_get_set_cmd_callback_
     const size_t property_get_buffer_size = sizeof(sl_cpc_system_cmd_t) + sizeof(sl_cpc_property_id_t);
 
     command_handle = malloc(sizeof(sl_cpc_system_command_handle_t));
-    command_handle->command = malloc(property_get_buffer_size); //property-get has the property id as payload
+    FATAL_ON(command_handle == NULL);
+
+    // Allocate a buffer and pad it to 8 bytes because memcpy reads in chunks of 8.
+    // If we don't pad, Valgrind will complain.
+    command_handle->command = malloc(PAD_TO_8_BYTES(property_get_buffer_size)); //property-get has the property id as payload
+    FATAL_ON(command_handle->command == NULL);
   }
 
   /* Fill the command handle */
@@ -216,11 +380,18 @@ void sl_cpc_system_cmd_property_set(sl_cpc_system_property_get_set_cmd_callback_
 {
   sl_cpc_system_command_handle_t *command_handle;
 
+  BUG_ON(on_property_set_reply == NULL);
+
   {
     const size_t property_get_buffer_size = sizeof(sl_cpc_system_cmd_t) + sizeof(sl_cpc_property_id_t) + value_length;
 
     command_handle = malloc(sizeof(sl_cpc_system_command_handle_t));
-    command_handle->command = malloc(property_get_buffer_size); //property-get has the property id as payload
+    FATAL_ON(command_handle == NULL);
+
+    // Allocate a buffer and pad it to 8 bytes because memcpy reads in chunks of 8.
+    // If we don't pad, Valgrind will complain.
+    command_handle->command = malloc(PAD_TO_8_BYTES(property_get_buffer_size)); //property-get has the property id as payload
+    FATAL_ON(command_handle->command == NULL);
   }
 
   /* Fill the command handle */
@@ -318,6 +489,8 @@ static void on_final_reset(sl_cpc_system_command_handle_t * command_handle,
 {
   TRACE_SYSTEM("on_final_reset()");
 
+  ignore_reset_reason = false;
+
   // Deal with endianness of the returned status since its a 32bit value.
   sl_cpc_system_status_t reset_status_le = *((sl_cpc_system_status_t *)(reply->payload));
   sl_cpc_system_status_t reset_status_cpu = le32_to_cpu(reset_status_le);
@@ -407,7 +580,6 @@ static void on_reply(uint8_t endpoint_id,
       /* Cleanup this command now that it's been serviced */
       {
         sl_slist_remove(&commands, &command_handle->node_commands);
-
         free(command_handle->command);
         free(command_handle);
       }
@@ -415,6 +587,8 @@ static void on_reply(uint8_t endpoint_id,
       return;
     }
   }
+
+  WARN("Received a system final for which no pending poll is registered");
 }
 
 static void on_unsolicited(uint8_t endpoint_id, const void* data, size_t data_len)
@@ -440,6 +614,24 @@ static void on_unsolicited(uint8_t endpoint_id, const void* data, size_t data_le
 
         item->callback(*status);
       }
+    } else if (property->property_id >= PROP_ENDPOINT_STATE_0 && property->property_id <= PROP_ENDPOINT_STATE_255) {
+      uint8_t closed_endpoint_id = PROPERTY_ID_TO_EP_ID(property->property_id);
+      TRACE_SYSTEM("Secondary closed the endpoint #%d", closed_endpoint_id);
+
+      if (!server_listener_list_empty(closed_endpoint_id) && core_get_endpoint_state(closed_endpoint_id) == SL_CPC_STATE_OPEN) {
+        core_set_endpoint_in_error(closed_endpoint_id, SL_CPC_STATE_ERROR_DESTINATION_UNREACHABLE);
+      }
+
+      // Close the endpoint on the secondary
+      cpc_endpoint_state_t state = SL_CPC_STATE_CLOSED;
+      sl_cpc_system_cmd_property_set(reply_to_closing_endpoint_on_secondary_callback,
+                                     5,      /* 5 retries */
+                                     100000, /* 100ms between retries*/
+                                     property->property_id,
+                                     &state,
+                                     4);
+    } else {
+      FATAL("Invalid property id");
     }
   }
 }
@@ -453,7 +645,6 @@ static void on_timer_expired(epoll_private_data_t *private_data)
   sl_cpc_system_command_handle_t *command_handle = container_of(private_data,
                                                                 sl_cpc_system_command_handle_t,
                                                                 re_transmit_timer_private_data);
-
   /* Ack the timer */
   {
     uint64_t expiration;
@@ -469,63 +660,20 @@ static void on_timer_expired(epoll_private_data_t *private_data)
   }
 
   if (command_handle->retry_count > 0) {
-    TRACE_SYSTEM("Command ID %u retry", command_handle->command->command_id);
+    sl_slist_remove(&commands, &command_handle->node_commands);
+
+    TRACE_SYSTEM("Command ID #%u SEQ #%u. %u retry left", command_handle->command->command_id, command_handle->command->command_seq, command_handle->retry_count);
 
     command_handle->retry_count--;
 
     command_handle->error_status = SL_STATUS_IN_PROGRESS; //at least one timer retry occurred
 
-    core_write(SL_CPC_ENDPOINT_SYSTEM,
-               (void *)command_handle->command,
-               (uint16_t)SIZEOF_SYSTEM_COMMAND(command_handle->command),
-               SL_CPC_FLAG_UNNUMBERED_POLL);
+    write_command(command_handle);
   } else {
-    TRACE_SYSTEM("Command ID %u timeout", command_handle->command->command_id);
-
     /* Stop and close the timer */
-    {
-      epoll_unregister(&command_handle->re_transmit_timer_private_data);
-
-      close(command_handle->re_transmit_timer_private_data.file_descriptor);
-    }
-
-    sl_slist_remove(&commands, &command_handle->node_commands);
-
-    command_handle->error_status = SL_STATUS_TIMEOUT; //This will be propagated when calling the callbacks
-
-    switch (command_handle->command->command_id) {
-      case CMD_SYSTEM_NOOP:
-        ((sl_cpc_system_noop_cmd_callback_t)command_handle->on_final)(command_handle, command_handle->error_status);
-        break;
-
-      case CMD_SYSTEM_RESET:
-        ((sl_cpc_system_reset_cmd_callback_t)command_handle->on_final)(command_handle, command_handle->error_status, STATUS_FAILURE);
-        break;
-
-      case CMD_SYSTEM_PROP_VALUE_GET:
-      case CMD_SYSTEM_PROP_VALUE_SET:
-      {
-        sl_cpc_system_property_cmd_t *tx_property_command = (sl_cpc_system_property_cmd_t *)command_handle->command->payload;
-
-        ((sl_cpc_system_property_get_set_cmd_callback_t) command_handle->on_final)(command_handle,
-                                                                                   tx_property_command->property_id,
-                                                                                   NULL,
-                                                                                   0,
-                                                                                   command_handle->error_status);
-      }
-      break;
-
-      case CMD_SYSTEM_PROP_VALUE_IS: //fall through
-      default:
-        BUG("Illegal switch");
-        break;
-    }
-
-    /* Free the command handle and its buffer */
-    {
-      free(command_handle->command);
-      free(command_handle);
-    }
+    epoll_unregister(&command_handle->re_transmit_timer_private_data);
+    close(command_handle->re_transmit_timer_private_data.file_descriptor);
+    sl_cpc_system_cmd_timed_out(command_handle->command);
   }
 }
 
@@ -534,38 +682,12 @@ static void on_timer_expired(epoll_private_data_t *private_data)
  ******************************************************************************/
 static void write_command(sl_cpc_system_command_handle_t *command_handle)
 {
-  int timer_fd;
-
   sl_slist_push_back(&commands, &command_handle->node_commands);
 
   core_write(SL_CPC_ENDPOINT_SYSTEM,
              (void *)command_handle->command,
              (uint16_t)SIZEOF_SYSTEM_COMMAND(command_handle->command),
-             SL_CPC_FLAG_UNNUMBERED_POLL);
+             SL_CPC_FLAG_INFORMATION_POLL);
 
-  /* Setup timeout timer.*/
-  {
-    const struct itimerspec timeout = { .it_interval = { .tv_sec = 0, .tv_nsec = (long int)command_handle->retry_timeout_us * 1000 },
-                                        .it_value    = { .tv_sec = 0, .tv_nsec = (long int)command_handle->retry_timeout_us * 1000 } };
-
-    timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
-
-    FATAL_SYSCALL_ON(timer_fd < 0);
-
-    int ret = timerfd_settime(timer_fd,
-                              0,
-                              &timeout,
-                              NULL);
-
-    FATAL_SYSCALL_ON(ret < 0);
-  }
-
-  /* Setup the timer in the server_core epoll set */
-  {
-    command_handle->re_transmit_timer_private_data.endpoint_number = SL_CPC_ENDPOINT_SYSTEM; //Irrelevant in this scenario
-    command_handle->re_transmit_timer_private_data.file_descriptor = timer_fd;
-    command_handle->re_transmit_timer_private_data.callback = on_timer_expired;
-
-    epoll_register(&command_handle->re_transmit_timer_private_data);
-  }
+  TRACE_SYSTEM("Submitted command_id #%d command_seq #%d", command_handle->command->command_id, command_handle->command_seq);
 }

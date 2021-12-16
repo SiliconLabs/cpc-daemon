@@ -21,71 +21,164 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <execinfo.h>
 
-#include "server_core.h"
-#include "driver_uart.h"
-#include "driver_spi.h"
-#include "log.h"
-#include "tracing/tracing.h"
-#include "config.h"
-#include "epoll.h"
+#include "version.h"
+#include "misc/logging.h"
+#include "misc/config.h"
+#include "modes/normal.h"
+#include "modes/binding.h"
+#include "modes/firmware_update.h"
 
 pthread_t driver_thread = 0;
 pthread_t server_core_thread = 0;
+pthread_t main_thread = 0;
+pthread_t security_thread = 0;
 
-/* Global copy of argv to be able to restart the daemon with the same arguments */
+/* Global copy of argv to be able to restart the daemon with the same arguments. */
 char **argv_g;
+
+static void main_sig_handler(int sig)
+{
+  (void) sig;
+  cancel_all_threads(EXIT_SUCCESS);
+}
+
+#define BT_BUF_SIZE 100
+
+static void segv_handler(int sig)
+{
+  (void) sig;
+  int nptrs;
+  void *buffer[BT_BUF_SIZE];
+  char **strings;
+
+  fprintf(stderr, "SEGFAULT :\n");
+
+  nptrs = backtrace(buffer, BT_BUF_SIZE);
+  fprintf(stderr, "backtrace() returned %d addresses\n", nptrs);
+
+  // print out all the frames to stderr
+
+  strings = backtrace_symbols(buffer, nptrs);
+  if (strings == NULL) {
+    perror("backtrace_symbols");
+    exit(EXIT_FAILURE);
+  }
+
+  for (int j = 0; j < nptrs; j++) {
+    fprintf(stderr, "%s\n", strings[j]);
+  }
+
+  exit(EXIT_FAILURE);
+}
 
 int main(int argc, char *argv[])
 {
-  int fd_socket_driver_core = 0;
-  int ret = 0;
-  void* join_value = NULL;
-
   argv_g = argv;
 
-  ret = pthread_setname_np(pthread_self(), "main");
-  FATAL_ON(ret != 0);
+  /* Setup signaling for this thread */
+  {
+    struct sigaction sa = { 0 };
+
+    sa.sa_handler = main_sig_handler;
+    sa.sa_flags = 0;
+    sigemptyset(&sa.sa_mask);
+
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+
+    signal(SIGSEGV, segv_handler);   // install our handler
+  }
+
+  pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+
+  main_thread = pthread_self();
+
+  pthread_setname_np(main_thread, "main_thread");
+
+  logging_init();
+
+  PRINT_INFO("CPCd v%s", PROJECT_VER);
+
+  PRINT_INFO("Reading configuration file");
 
   config_init(argc, argv);
 
-  tracing_init();
+  switch (config_operation_mode) {
+    case MODE_NORMAL:
+      PRINT_INFO("Starting daemon in normal mode");
+      run_normal_mode();
+      break;
 
-  // Init the driver
-  {
-    switch (config_bus) {
-      case UART:
-        driver_thread = driver_uart_init(&fd_socket_driver_core, config_uart_file, config_uart_baudrate, config_uart_hardflow);
-        break;
+    case MODE_BINDING_PLAIN_TEXT:
+      PRINT_INFO("Starting daemon in binding mode");
+      run_binding_mode();
+      break;
 
-      case SPI:
-        driver_thread = driver_spi_init(&fd_socket_driver_core,
-                                        config_spi_file,
-                                        config_spi_mode,
-                                        config_spi_bit_per_word,
-                                        config_spi_bitrate,
-                                        config_spi_cs_pin,
-                                        config_spi_irq_pin);
-        break;
+    case MODE_FIRMWARE_UPDATE:
+      PRINT_INFO("Starting daemon in firmware update mode");
+      run_firmware_update();
+      break;
 
-      default:
-        FATAL("Bus type configuration not set");
-        break;
-    }
+    default:
+      BUG();
+      break;
   }
 
-  server_core_thread = server_core_init(fd_socket_driver_core);
-
-  pthread_join(driver_thread, &join_value);
-  pthread_join(server_core_thread, &join_value);
-
-  TRACE_MAIN("Init complete");
-
   return 0;
+}
+
+/* Meant to be called by either the main, driver or server_core thread to
+ * kill the process but allow the logging threads to flush the remaining
+ * logging data. */
+__attribute__((noreturn)) void cancel_all_threads(int status)
+{
+  static pthread_mutex_t crash_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+  /* Prevent two threads to crash at the same time */
+  pthread_mutex_lock(&crash_mutex);
+  {
+    pthread_t self = pthread_self();
+
+    /* Since the caller thread is either main, thread or server_core and
+     * that we want to kill the two others, make sure we don't kill ourself
+     * since we have a bit of work to do still. */
+    {
+      if (self != main_thread) {
+        pthread_cancel(main_thread);
+        //usleep(1000); /* BUG... */
+        pthread_join(main_thread, NULL);
+      }
+      if (self != driver_thread) {
+        pthread_cancel(driver_thread);
+        //usleep(1000); /* BUG... */
+        pthread_join(driver_thread, NULL);
+      }
+      if (self != server_core_thread) {
+        pthread_cancel(server_core_thread);
+        //usleep(1000); /* BUG... */
+        pthread_join(server_core_thread, NULL);
+      }
+      if (self != security_thread) {
+        pthread_cancel(security_thread);
+        //usleep(1000); /* BUG... */
+        pthread_join(security_thread, NULL);
+      }
+    }
+
+    PRINT_INFO("Daemon exiting with status %s", (status == 0) ? "EXIT_SUCCESS" : "EXIT_FAILURE");
+
+    /* Block until all logging data is flushed */
+    logging_kill();
+
+    exit(status);
+  }
 }

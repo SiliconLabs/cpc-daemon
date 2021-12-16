@@ -1,0 +1,12 @@
+include(FindPackageHandleStandardArgs)
+find_path(MBEDTLS_INCLUDE_DIR NAMES mbedtls/ssl.h)
+find_library(MBEDTLS_LIB NAMES mbedtls)
+find_package_handle_standard_args(MbedTLS REQUIRED_VARS MBEDTLS_INCLUDE_DIR MBEDTLS_LIB)
+
+if( ${MBEDTLS_LIBRARIES-NOTFOUND} )
+  message(FATAL_ERROR "Failed to find MbedTLS library")
+  return()
+endif()
+find_library(MBEDX509_LIB NAMES mbedx509)
+find_library(MBEDCRYPTO_LIB NAMES mbedcrypto)
+set(MBEDTLS_LIBRARIES ${MBEDX509_LIB} ${MBEDTLS_LIB} ${MBEDCRYPTO_LIB})

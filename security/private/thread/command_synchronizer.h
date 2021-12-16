@@ -1,6 +1,6 @@
 /***************************************************************************//**
  * @file
- * @brief Co-Processor Communication Protocol(CPC) - Poll
+ * @brief Co-Processor Communication Protocol(CPC) - Security Endpoint
  * @version 3.2.0
  *******************************************************************************
  * # License
@@ -16,35 +16,13 @@
  *
  ******************************************************************************/
 
-#ifndef EPOLL_H
-#define EPOLL_H
+#ifndef SECURITY_COMMAND_SYNCHRONIZER_H
+#define SECURITY_COMMAND_SYNCHRONIZER_H
 
-#include "stdint.h"
-#include <sys/epoll.h>
+#include "security/security.h"
 
-//forward declaration for interdependency
-struct epoll_private_data;
+void security_post_command(sl_cpc_security_command_t command);
 
-typedef struct epoll_private_data epoll_private_data_t;
+sl_cpc_security_command_t security_wait_for_command(void);
 
-typedef void (*epoll_callback_t)(epoll_private_data_t *private_data);
-
-struct epoll_private_data{
-  epoll_callback_t callback;
-  int file_descriptor;
-  uint8_t endpoint_number;
-};
-
-void epoll_init(void);
-
-void epoll_register(epoll_private_data_t *private_data);
-
-void epoll_unregister(epoll_private_data_t *private_data);
-
-void epoll_unwatch(epoll_private_data_t *private_data);
-
-void epoll_watch_back(uint8_t endpoint_number);
-
-size_t epoll_wait_for_event(struct epoll_event events[], size_t max_event_number);
-
-#endif //EPOLL_H
+#endif //SECURITY_COMMAND_SYNCHRONIZER_H

@@ -1,6 +1,6 @@
 /***************************************************************************//**
  * @file
- * @brief Co-Processor Communication Protocol(CPC) - Daemon Interface
+ * @brief Co-Processor Communication Protocol(CPC) - Security Endpoint
  * @version 3.2.0
  *******************************************************************************
  * # License
@@ -16,28 +16,33 @@
  *
  ******************************************************************************/
 
-#ifndef CPC_INTERFACE_H
-#define CPC_INTERFACE_H
+#define _GNU_SOURCE
+#include <pthread.h>
 
-#include "sl_enum.h"
-#include "sl_status.h"
+#include "security.h"
+#include "misc/config.h"
+#include "misc/logging.h"
+#include "server_core/server/server_ready_sync.h"
+#include "security/private/thread/security_thread.h"
 
-SL_ENUM(cpc_interface_exchange_type_t){
-  SERVER_CORE_EXCHANGE_WRITE_COMPLETED,
-  SERVER_CORE_EXCHANGE_READ_COMPLETED,
-  SERVER_CORE_EXCHANGE_ENDPOINT_STATUS_CHANGE,
-  EXCHANGE_ENDPOINT_STATUS_QUERY,
-  EXCHANGE_OPEN_ENDPOINT_QUERY,
-  EXCHANGE_MAX_WRITE_SIZE_QUERY,
-  EXCHANGE_VERSION_QUERY,
-  EXCHANGE_CLOSE_ENDPOINT_QUERY,
-  EXCHANGE_SET_PID_QUERY
-};
+extern pthread_t security_thread;
 
-typedef struct {
-  cpc_interface_exchange_type_t type;
-  uint8_t endpoint_number;
-  uint8_t payload[];
-} cpc_interface_buffer_t;
+bool security_session_initialized = false;
 
-#endif //CPC_INTERFACE_H
+void security_init(void)
+{
+  int ret;
+
+  if (config_use_encryption == false) {
+    TRACE_SECURITY("Encryption is disabled");
+    return;
+  }
+
+  ret = pthread_create(&security_thread, NULL, security_thread_func, NULL);
+  FATAL_ON(ret != 0);
+
+  ret = pthread_setname_np(security_thread, "security");
+  FATAL_ON(ret != 0);
+
+  TRACE_SECURITY("Thread created");
+}

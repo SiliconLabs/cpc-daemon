@@ -22,10 +22,9 @@
 #include <time.h>
 
 #include "sl_cpc.h"
-#include "sl_slist.h"
-#include "sl_enum.h"
+#include "misc/sl_slist.h"
 #include "hdlc.h"
-#include "cpc_interface.h"
+#include "server_core/cpcd_exchange.h"
 
 #define SL_CPC_OPEN_ENDPOINT_FLAG_IFRAME_DISABLE    0x01 << 0   // I-frame is enabled by default; This flag MUST be set to disable the i-frame support by the endpoint
 #define SL_CPC_OPEN_ENDPOINT_FLAG_UFRAME_ENABLE     0x01 << 1   // U-frame is disabled by default; This flag MUST be set to enable u-frame support by the endpoint
@@ -33,9 +32,11 @@
 
 #define SL_CPC_FLAG_UNNUMBERED_INFORMATION      0x01 << 1
 #define SL_CPC_FLAG_UNNUMBERED_POLL             0x01 << 2
+#define SL_CPC_FLAG_UNNUMBERED_RESET_COMMAND    0x01 << 3
+#define SL_CPC_FLAG_INFORMATION_POLL            0x01 << 4
 
 // Maximum number of retry while sending a frame
-#define SLI_CPC_RE_TRANSMIT 3
+#define SLI_CPC_RE_TRANSMIT 5
 #define SL_CPC_MAX_RE_TRANSMIT_TIMEOUT_MS 5000 // 5s
 #define SL_CPC_MIN_RE_TRANSMIT_TIMEOUT_MS 250  // 250ms
 #define SL_CPC_MIN_RE_TRANSMIT_TIMEOUT_MINIMUM_VARIATION_MS  50 // 50ms
@@ -54,11 +55,15 @@ void core_open_endpoint(uint8_t endpoit_number, uint8_t flags, uint8_t tx_window
 
 void core_process_transmit_queue(void);
 
+#ifdef UNIT_TESTING
+void core_reset_endpoint(uint8_t endpoint_number);
+#endif
+
 void core_reset_endpoint_sequence(uint8_t endpoint_number);
 
 bool core_ep_is_busy(uint8_t ep_id);
 
-sl_status_t core_close_endpoint(uint8_t endpoint_number, bool status_change);
+sl_status_t core_close_endpoint(uint8_t endpoint_number, bool notify_secondary, bool force_close);
 
 cpc_endpoint_state_t core_get_endpoint_state(uint8_t ep_id);
 
@@ -80,6 +85,10 @@ SL_ENUM(sl_cpc_endpoint_option_t){
 };
 
 void core_process_endpoint_change(uint8_t endpoint_number, cpc_endpoint_state_t ep_state);
+
+bool core_ep_is_closing(uint8_t ep_id);
+
+void core_set_endpoint_in_error(uint8_t endpoint_number, cpc_endpoint_state_t new_state);
 
 void core_set_endpoint_option(uint8_t endpoint_number,
                               sl_cpc_endpoint_option_t option,
@@ -115,7 +124,7 @@ typedef struct endpoint {
   sl_slist_node_t *holding_list;
   sl_cpc_on_data_reception_t on_uframe_data_reception;
   sl_cpc_poll_final_t poll_final;
-  struct timeval last_iframe_sent_timestamp;
+  struct timespec last_iframe_sent_timestamp;
   long smoothed_rtt;
   long rtt_variation;
 }sl_cpc_endpoint_t;

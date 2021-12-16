@@ -1,6 +1,6 @@
 /***************************************************************************//**
  * @file
- * @brief Co-Processor Communication Protocol(CPC) - Poll
+ * @brief Co-Processor Communication Protocol(CPC) - Security Endpoint
  * @version 3.2.0
  *******************************************************************************
  * # License
@@ -16,35 +16,28 @@
  *
  ******************************************************************************/
 
-#ifndef EPOLL_H
-#define EPOLL_H
+#include <stddef.h>
 
-#include "stdint.h"
-#include <sys/epoll.h>
+#ifndef SECURITY_KEYS_H
+#define SECURITY_KEYS_H
 
-//forward declaration for interdependency
-struct epoll_private_data;
+#include "mbedtls/ctr_drbg.h"
 
-typedef struct epoll_private_data epoll_private_data_t;
+#define BINDING_KEY_LENGTH_BYTES         16
+#define PUBLIC_KEY_LENGTH_BYTES          32
+#define SESSION_KEY_LENGTH_BYTES         32
+#define SESSION_ID_LENGTH_BYTES          8
+#define SESSION_INIT_RANDOM_LENGTH_BYTES 64
+#define SHA256_LENGTH_BYTES              32
 
-typedef void (*epoll_callback_t)(epoll_private_data_t *private_data);
+extern mbedtls_ctr_drbg_context rng_context;
 
-struct epoll_private_data{
-  epoll_callback_t callback;
-  int file_descriptor;
-  uint8_t endpoint_number;
-};
+void security_keys_init(void);
 
-void epoll_init(void);
+void security_compute_session_key_and_id(uint8_t * random1, uint8_t * random2);
 
-void epoll_register(epoll_private_data_t *private_data);
+void security_load_binding_key_from_file(void);
 
-void epoll_unregister(epoll_private_data_t *private_data);
+uint8_t* security_get_binding_key(void);
 
-void epoll_unwatch(epoll_private_data_t *private_data);
-
-void epoll_watch_back(uint8_t endpoint_number);
-
-size_t epoll_wait_for_event(struct epoll_event events[], size_t max_event_number);
-
-#endif //EPOLL_H
+#endif //SECURITY_KEYS_H

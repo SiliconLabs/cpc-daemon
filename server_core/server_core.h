@@ -23,8 +23,10 @@
 #include <pthread.h>
 
 #include <stdint.h>
+#include <stdbool.h>
 
 uint32_t server_core_get_secondary_rx_capability(void);
-pthread_t server_core_init(int fd_socket_driver_core);
+
+pthread_t server_core_init(int fd_socket_driver_core, bool firmware_update);
 
 #endif //SERVER_CORE_H
