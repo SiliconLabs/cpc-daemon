@@ -27,7 +27,7 @@
 #include <sys/ioctl.h>
 
 #include "gpio.h"
-#include "log.h"
+#include "logging.h"
 
 static int simple_write(const char *filename, const char *data);
 

@@ -19,9 +19,15 @@
 #ifndef SYSTEM_CALLBACKS_H
 #define SYSTEM_CALLBACKS_H
 
-#include "system/system.h"
+#include "server_core/system_endpoint/system.h"
 
 void sl_cpc_system_set_pending_connection(int fd);
+
+void reply_to_closing_endpoint_on_secondary_callback(sl_cpc_system_command_handle_t *handle,
+                                                     sl_cpc_property_id_t property_id,
+                                                     void* property_value,
+                                                     size_t property_length,
+                                                     sl_status_t status);
 
 void property_get_single_endpoint_state_and_reply_to_pending_open_callback(sl_cpc_system_command_handle_t *handle,
                                                                            sl_cpc_property_id_t property_id,

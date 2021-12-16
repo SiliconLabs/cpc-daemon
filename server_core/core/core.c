@@ -26,24 +26,24 @@
 #include <errno.h>
 #include <sys/time.h>
 
-#include "log.h"
-#include "utils.h"
-#include "endianess.h"
-#include "core.h"
-#include "crc.h"
-#include "hdlc.h"
-#include "sl_status.h"
-#include "cpc_interface.h"
-#include "server_internal.h"
-#include "epoll.h"
-#include "server.h"
+#include "misc/logging.h"
+#include "misc/utils.h"
+#include "misc/endianess.h"
+#include "misc/sl_status.h"
+#include "server_core/cpcd_exchange.h"
+#include "server_core/server/server.h"
+#include "server_core/epoll/epoll.h"
+#include "server_core/system_endpoint/system.h"
+#include "server_core/core/core.h"
+#include "server_core/core/hdlc.h"
+#include "server_core/core/crc.h"
 
 #if defined(TARGET_TESTING)
 #include "cpc_test_cmd.h"
 #endif
 
 #if defined(UNIT_TESTING)
-#include "cpc_unity_common.h"
+#include "test/unity/cpc_unity_common.h"
 #endif
 
 #if defined(UNIT_TESTING) || defined(TARGET_TESTING)
@@ -97,30 +97,60 @@ static void core_push_data_to_server(uint8_t ep_id, const void *data, size_t dat
 /*******************************************************************************
  **************************   IMPLEMENTATION    ********************************
  ******************************************************************************/
+static void on_disconnect_notification(sl_cpc_system_command_handle_t *handle,
+                                       sl_cpc_property_id_t property_id,
+                                       void* property_value,
+                                       size_t property_length,
+                                       sl_status_t status)
+{
+  (void)handle;
+  (void)property_length;
+  (void)property_value;
+
+  uint8_t ep_id = PROPERTY_ID_TO_EP_ID(property_id);
+
+  BUG_ON(core_endpoints[ep_id].state == SL_CPC_STATE_OPEN);
+
+  switch (status) {
+    case SL_STATUS_IN_PROGRESS:
+    case SL_STATUS_OK:
+      TRACE_CORE("Disconnection notification response received on ep#%d", ep_id);
+      break;
+
+    case SL_STATUS_TIMEOUT:
+    case SL_STATUS_FAIL:
+    default:
+      WARN("Secondary failed to receive disconnection notification response");
+      break;
+  }
+
+  core_endpoints[ep_id].state = SL_CPC_STATE_CLOSED;
+}
+
 static void core_compute_re_transmit_timeout(sl_cpc_endpoint_t *endpoint)
 {
   // Implemented using Karn’s algorithm
   // Based off of RFC 2988 Computing TCP's Retransmission Timer
   static bool first_rtt_measurement = true;
-  struct timeval current_time;
-  long current_timestamp_ms;
-  long previous_timestamp_ms;
+  struct timespec current_time;
+  int64_t current_timestamp_ms;
+  int64_t previous_timestamp_ms;
   long round_trip_time_ms = 0;
   long rto = 0;
 
-  const long k = 4; // This value is recommended by the Karn’s algorithm
+  const uint8_t k = 4; // This value is recommended by the Karn’s algorithm
 
   FATAL_ON(endpoint == NULL);
 
-  gettimeofday(&current_time, NULL);
+  clock_gettime(CLOCK_MONOTONIC, &current_time);
 
-  current_timestamp_ms = (current_time.tv_sec * 1000) + (current_time.tv_usec / 1000);
-  previous_timestamp_ms = (endpoint->last_iframe_sent_timestamp.tv_sec * 1000) + (endpoint->last_iframe_sent_timestamp.tv_usec / 1000);
+  current_timestamp_ms = (current_time.tv_sec * 1000) + (current_time.tv_nsec / 1000000);
+  previous_timestamp_ms = (endpoint->last_iframe_sent_timestamp.tv_sec * 1000) + (endpoint->last_iframe_sent_timestamp.tv_nsec / 1000000);
 
-  round_trip_time_ms = current_timestamp_ms - previous_timestamp_ms;
+  round_trip_time_ms = (long)(current_timestamp_ms - previous_timestamp_ms);
 
   if (round_trip_time_ms < 0) {
-    FATAL("RTT is negative (%ldms), current timestamp is %ldms, previous timestamp is %ldms", round_trip_time_ms, current_timestamp_ms, previous_timestamp_ms);
+    FATAL("RTT is negative (%ldms), current timestamp is %lldms, previous timestamp is %lldms", round_trip_time_ms, (long long)current_timestamp_ms, (long long)previous_timestamp_ms);
   }
 
   TRACE_CORE("RTT on ep %d is %ldms", endpoint->id, round_trip_time_ms);
@@ -170,7 +200,9 @@ void core_init(int driver_fd)
     core_endpoints[i].current_tx_window_space = 1;
     core_endpoints[i].re_transmit_timer_private_data = NULL;
     core_endpoints[i].on_uframe_data_reception = NULL;
-    core_endpoints[i].last_iframe_sent_timestamp = (struct timeval){0 };
+    core_endpoints[i].last_iframe_sent_timestamp = (struct timespec){0 };
+    core_endpoints[i].smoothed_rtt = 0;
+    core_endpoints[i].rtt_variation = 0;
     core_endpoints[i].re_transmit_timeout_ms = SL_CPC_MAX_RE_TRANSMIT_TIMEOUT_MS;
     core_endpoints[i].packet_re_transmit_count = 0;
   }
@@ -275,6 +307,14 @@ static void core_process_rx_driver(epoll_private_data_t *event_private_data)
   free(rx_frame);
 }
 
+bool core_ep_is_closing(uint8_t ep_id)
+{
+  if (core_endpoints[ep_id].state == SL_CPC_STATE_CLOSING) {
+    return true;
+  }
+  return false;
+}
+
 void core_process_endpoint_change(uint8_t endpoint_number, cpc_endpoint_state_t ep_state)
 {
   if (ep_state == SL_CPC_STATE_OPEN) {
@@ -286,7 +326,7 @@ void core_process_endpoint_change(uint8_t endpoint_number, cpc_endpoint_state_t 
                        0, /* No flags : iframe enables, uframe disabled*/
                        1);   /* tx window of 1*/
   } else {
-    core_close_endpoint(endpoint_number, true);
+    core_close_endpoint(endpoint_number, true, false);
   }
 }
 
@@ -310,7 +350,6 @@ static void core_process_rx_i_frame(frame_t *rx_frame)
 
   if (endpoint->id != 0 && (endpoint->state != SL_CPC_STATE_OPEN || server_listener_list_empty(endpoint->id))) {
     transmit_reject(endpoint, address, 0, HDLC_REJECT_UNREACHABLE_ENDPOINT);
-    //TODO : goto endpoint_cleanup_check;
     return;
   }
 
@@ -324,7 +363,6 @@ static void core_process_rx_i_frame(frame_t *rx_frame)
   /* Validate payload checksum. In case it is invalid, NAK the packet. */
   if (!sli_cpc_validate_crc_sw(rx_frame->payload, rx_frame_payload_length, fcs)) {
     transmit_reject(endpoint, address, endpoint->ack, HDLC_REJECT_CHECKSUM_MISMATCH);
-    //TODO : goto endpoint_cleanup_check;
     return;
   }
 
@@ -333,12 +371,21 @@ static void core_process_rx_i_frame(frame_t *rx_frame)
 
   // data received, Push in Rx Queue and send Ack
   if (seq == endpoint->ack) {
-    core_push_data_to_server(endpoint->id, rx_frame->payload, rx_frame_payload_length);
+    // Check if the received message is a final reply for the system endpoint
+    if (hdlc_is_poll_final(control)) {
+      BUG_ON(endpoint->id != 0); // Only system endpoint can receive final messages
+      BUG_ON(endpoint->poll_final.on_final == NULL); // Received final, but no callback assigned
+      endpoint->poll_final.on_final(endpoint->id, endpoint->poll_final.on_fnct_arg, rx_frame->payload, rx_frame_payload_length);
+    } else {
+      core_push_data_to_server(endpoint->id, rx_frame->payload, rx_frame_payload_length);
+    }
 
     TRACE_ENDPOINT_RXD_DATA_FRAME_QUEUED(endpoint);
 
 #ifdef UNIT_TESTING
-    cpc_unity_test_read_rx_callback(endpoint->id);
+    if (endpoint->id != SL_CPC_ENDPOINT_SYSTEM && endpoint->id != SL_CPC_ENDPOINT_SECURITY) {
+      cpc_unity_test_read_rx_callback(endpoint->id);
+    }
 #endif
 
     // Update endpoint acknowledge number
@@ -353,7 +400,6 @@ static void core_process_rx_i_frame(frame_t *rx_frame)
     transmit_ack(endpoint);
   } else {
     transmit_reject(endpoint, address, endpoint->ack, HDLC_REJECT_SEQUENCE_MISMATCH);
-    //TODO : goto endpoint_cleanup_check;
     return;
   }
 }
@@ -386,6 +432,7 @@ static void core_process_rx_s_frame(frame_t *rx_frame)
 
       switch (*((sl_cpc_reject_reason_t *)rx_frame->payload)) {
         case HDLC_REJECT_SEQUENCE_MISMATCH:
+          // This is not a fatal error when the tx window is > 1
           fatal_error = true;
           new_state = SL_CPC_STATE_ERROR_FAULT;
           TRACE_ENDPOINT_RXD_REJECT_SEQ_MISMATCH(endpoint);
@@ -399,9 +446,7 @@ static void core_process_rx_s_frame(frame_t *rx_frame)
           break;
 
         case HDLC_REJECT_OUT_OF_MEMORY:
-          if (endpoint->re_transmit_queue != NULL) {
-            re_transmit_frame(endpoint);
-          }
+          // Do nothing, let the re_transmit timer take care of retrying later
           TRACE_ENDPOINT_RXD_REJECT_OUT_OF_MEMORY(endpoint);
           break;
 
@@ -432,11 +477,8 @@ static void core_process_rx_s_frame(frame_t *rx_frame)
   }
 
   if (fatal_error) {
-    WARN("Fatal error %d, closing endoint #%d", *((sl_cpc_reject_reason_t *)rx_frame->payload), endpoint->id);
-    server_close_endpoint(endpoint->id);
-    server_expect_close(endpoint->id);
-    core_close_endpoint(endpoint->id, false);
-    endpoint->state = new_state;
+    WARN("Fatal error %d, endoint #%d is in error.", *((sl_cpc_reject_reason_t *)rx_frame->payload), endpoint->id);
+    core_set_endpoint_in_error(endpoint->id, new_state);
   }
 }
 
@@ -500,10 +542,7 @@ static void core_process_rx_u_frame(frame_t *rx_frame)
       break;
 
     case SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_POLL_FINAL:
-
-      if (endpoint->poll_final.on_final != NULL) {
-        endpoint->poll_final.on_final(endpoint->id, endpoint->poll_final.on_fnct_arg, rx_frame->payload, payload_length);
-      }
+      BUG("We received an unnumbered final frame, this shouldn't happen");
       break;
 
     default:
@@ -523,6 +562,7 @@ void core_write(uint8_t endpoint_number, const void* message, size_t message_len
   sl_cpc_buffer_handle_t* buffer_handle;
   sl_cpc_transmit_queue_item_t * transmit_queue_item;
   bool iframe = true;
+  bool poll = (flags & SL_CPC_FLAG_INFORMATION_POLL) ? true : false;
   uint8_t type = SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_UNKNOWN;
 
   FATAL_ON(message_len > UINT16_MAX);
@@ -533,21 +573,25 @@ void core_write(uint8_t endpoint_number, const void* message, size_t message_len
   {
     /* Make sure the endpoint it opened */
     if (endpoint->state != SL_CPC_STATE_OPEN) {
-      WARN();
+      WARN("Tried to write on closed endpoint #%d", endpoint_number);
       return;
     }
 
+    /* There should not be any reason (at the moment) to use U-Frame Polls */
+    if (flags & SL_CPC_FLAG_UNNUMBERED_POLL) {
+      BUG();
+    }
+
     /* if u-frame, make sure they are enabled */
-    if ((flags & SL_CPC_FLAG_UNNUMBERED_INFORMATION)
-        || (flags & SL_CPC_FLAG_UNNUMBERED_POLL)) {
+    if ((flags & SL_CPC_FLAG_UNNUMBERED_INFORMATION) || (flags & SL_CPC_FLAG_UNNUMBERED_RESET_COMMAND)) {
       FATAL_ON(!(endpoint->flags & SL_CPC_OPEN_ENDPOINT_FLAG_UFRAME_ENABLE));
 
       iframe = false;
 
       if (flags & SL_CPC_FLAG_UNNUMBERED_INFORMATION) {
         type = SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_INFORMATION;
-      } else if ((flags & SL_CPC_FLAG_UNNUMBERED_POLL)) {
-        type = SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_POLL_FINAL;
+      } else if (flags & SL_CPC_FLAG_UNNUMBERED_RESET_COMMAND) {
+        type = SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_RESET_SEQ;
       }
     }
     /* if I-frame, make sure they are not disabled */
@@ -567,7 +611,7 @@ void core_write(uint8_t endpoint_number, const void* message, size_t message_len
 
     if (iframe) {
       // Set the SEQ number and ACK number in the control byte
-      buffer_handle->control = hdlc_create_control_data(endpoint->seq, endpoint->ack);
+      buffer_handle->control = hdlc_create_control_data(endpoint->seq, endpoint->ack, poll);
       // Update endpoint sequence number
       endpoint->seq++;
       endpoint->seq %= 8;
@@ -587,6 +631,7 @@ void core_write(uint8_t endpoint_number, const void* message, size_t message_len
   }
 
   transmit_queue_item = (sl_cpc_transmit_queue_item_t*) malloc(sizeof(sl_cpc_transmit_queue_item_t));
+  FATAL_ON(transmit_queue_item == NULL);
 
   transmit_queue_item->handle = buffer_handle;
 
@@ -626,14 +671,13 @@ void core_open_endpoint(uint8_t endpoint_number, uint8_t flags, uint8_t tx_windo
     return;
   }
 
+  memset(ep, 0x00, sizeof(sl_cpc_endpoint_t));
   ep->id = endpoint_number;
   ep->flags = flags;
-  ep->seq = 0;
-  ep->ack = 0;
   ep->configured_tx_window_size = tx_window_size;
   ep->current_tx_window_space = ep->configured_tx_window_size;
-  ep->frames_count_re_transmit_queue = 0;
   ep->state = SL_CPC_STATE_OPEN;
+  ep->re_transmit_timeout_ms = SL_CPC_MIN_RE_TRANSMIT_TIMEOUT_MS;
 
   int timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
   FATAL_SYSCALL_ON(timer_fd < 0);
@@ -641,6 +685,7 @@ void core_open_endpoint(uint8_t endpoint_number, uint8_t flags, uint8_t tx_windo
   /* Setup epoll */
   {
     epoll_private_data_t* private_data = (epoll_private_data_t*) malloc(sizeof(epoll_private_data_t));
+    FATAL_ON(private_data == NULL);
 
     ep->re_transmit_timer_private_data = private_data;
 
@@ -660,14 +705,41 @@ void core_open_endpoint(uint8_t endpoint_number, uint8_t flags, uint8_t tx_windo
 }
 
 /***************************************************************************//**
+ * Set an endpoint in error
+ ******************************************************************************/
+void core_set_endpoint_in_error(uint8_t endpoint_number, cpc_endpoint_state_t new_state)
+{
+  FATAL_ON(endpoint_number == 0); // Can't handle an error on the system endpoint
+
+  WARN("Setting endpoint #%d in error, new state: %d", endpoint_number, new_state);
+
+  server_close_endpoint(endpoint_number, true);
+  core_close_endpoint(endpoint_number, false, false);
+  core_endpoints[endpoint_number].state = new_state;
+}
+
+/***************************************************************************//**
+ * Reset the sequence and ack on a specified endpoint
+ ******************************************************************************/
+void core_reset_endpoint_sequence(uint8_t endpoint_number)
+{
+  core_endpoints[endpoint_number].seq = 0;
+  core_endpoints[endpoint_number].ack = 0;
+}
+
+/***************************************************************************//**
  * Close an endpoint
  ******************************************************************************/
-sl_status_t core_close_endpoint(uint8_t endpoint_number, bool status_change)
+sl_status_t core_close_endpoint(uint8_t endpoint_number, bool notify_secondary, bool force_close)
 {
   sl_cpc_endpoint_t *ep;
   sl_cpc_transmit_queue_item_t *item;
 
   ep = find_endpoint(endpoint_number);
+
+  BUG_ON(ep->state == SL_CPC_STATE_CLOSED);
+
+  TRACE_CORE("Closing endpoint #%d", endpoint_number);
 
   stop_re_transmit_timer(ep);
 
@@ -729,8 +801,17 @@ sl_status_t core_close_endpoint(uint8_t endpoint_number, bool status_change)
                           node);
   }
 
-  if (status_change) {
-    ep->state = SL_CPC_STATE_CLOSED;
+  if (notify_secondary) {
+    // State will be set to closed once secondary is notified
+    ep->state = SL_CPC_STATE_CLOSING;
+
+    // Notify the secondary that the endpoint closed
+    sl_cpc_system_cmd_property_set(on_disconnect_notification,
+                                   5,      /* 5 retries */
+                                   100000, /* 100ms between retries*/
+                                   EP_ID_TO_PROPERTY_ID(ep->id),
+                                   &ep->state,
+                                   4);
   }
 
   if (ep->re_transmit_timer_private_data != NULL) {
@@ -740,6 +821,10 @@ sl_status_t core_close_endpoint(uint8_t endpoint_number, bool status_change)
     free(ep->re_transmit_timer_private_data);
 
     ep->re_transmit_timer_private_data = NULL;
+  }
+
+  if (force_close) {
+    ep->state = SL_CPC_STATE_CLOSED;
   }
 
   return SL_STATUS_OK;
@@ -755,34 +840,35 @@ void core_set_endpoint_option(uint8_t endpoint_number,
 
   switch (option) {
     case SL_CPC_ENDPOINT_ON_IFRAME_RECEIVE:
-      //ep->on_iframe_data_reception = (sl_cpc_on_data_reception_t)value;
+      BUG("invalid option");
       break;
     case SL_CPC_ENDPOINT_ON_IFRAME_RECEIVE_ARG:
-      //ep->on_iframe_data_reception_arg = value;
+      BUG("invalid option");
       break;
     case SL_CPC_ENDPOINT_ON_UFRAME_RECEIVE:
       ep->on_uframe_data_reception = (sl_cpc_on_data_reception_t)value;
       break;
     case SL_CPC_ENDPOINT_ON_UFRAME_RECEIVE_ARG:
-      //ep->on_uframe_data_reception_arg = value;
+      BUG("invalid option");
       break;
     case SL_CPC_ENDPOINT_ON_IFRAME_WRITE_COMPLETED:
-      //ep->on_iframe_write_completed = (sl_cpc_on_write_completed_t)value;
+      BUG("invalid option");
       break;
     case SL_CPC_ENDPOINT_ON_IFRAME_WRITE_COMPLETED_ARG:
-      //ep->on_iframe_write_completed_arg = value;
+      BUG("invalid option");
       break;
     case SL_CPC_ENDPOINT_ON_UFRAME_WRITE_COMPLETED:
-      //ep->on_uframe_write_completed = (sl_cpc_on_write_completed_t)value;
+      BUG("invalid option");
       break;
     case SL_CPC_ENDPOINT_ON_UFRAME_WRITE_COMPLETED_ARG:
-      //ep->on_uframe_write_completed_arg = value;
+      BUG("invalid option");
       break;
     case SL_CPC_ENDPOINT_ON_FINAL:
       ep->poll_final.on_final = value;
       break;
     case SL_CPC_ENDPOINT_ON_POLL:
-      //TODO cant happen on priamry
+      // Can't happen on the primary
+      BUG("invalid option");
       break;
     case SL_CPC_ENDPOINT_ON_POLL_ARG:
     case SL_CPC_ENDPOINT_ON_FINAL_ARG:
@@ -872,7 +958,13 @@ static void process_ack(sl_cpc_endpoint_t *endpoint, uint8_t ack)
 #ifdef USE_ON_WRITE_COMPLETE
     on_write_completed(endpoint->id, SL_STATUS_OK);
 #endif
-    free((void *)frame->data);
+
+    if (endpoint->id == SL_CPC_ENDPOINT_SYSTEM && hdlc_is_poll_final(control_byte)) {
+      sl_cpc_system_cmd_poll_acknowledged(frame->data);
+    } else {
+      free((void *)frame->data);
+    }
+
     free(frame->hdlc_header);
     free(frame);
     free(item);
@@ -893,6 +985,7 @@ static void process_ack(sl_cpc_endpoint_t *endpoint, uint8_t ack)
     sl_slist_node_t *item = sl_slist_pop(&endpoint->holding_list);
     sl_slist_push_back(&transmit_queue, item);
     endpoint->current_tx_window_space--;
+    epoll_watch_back(endpoint->id);
   }
 
   TRACE_ENDPOINT_RXD_ACK(endpoint);
@@ -923,7 +1016,7 @@ static void transmit_ack(sl_cpc_endpoint_t *endpoint)
   item->handle = handle;
 
   sl_slist_push_back(&transmit_queue, &item->node);
-  TRACE_CORE("Endpoint #%d sent ACK: %d\n", endpoint->id, endpoint->ack);
+  TRACE_CORE("Endpoint #%d sent ACK: %d", endpoint->id, endpoint->ack);
 
   core_process_transmit_queue();
 
@@ -953,8 +1046,6 @@ static void re_transmit_frame(sl_cpc_endpoint_t *endpoint)
   //Put frame in Tx Q so that it can be transmitted by CPC Core later
   sl_slist_push(&transmit_queue, &item->node);
 
-  // Signal task/process_action that frame is in Tx Queue
-
   TRACE_ENDPOINT_RETXD_DATA_FRAME(endpoint);
 
   return;
@@ -981,7 +1072,7 @@ static void transmit_reject(sl_cpc_endpoint_t *endpoint,
   handle->control = hdlc_create_control_supervisory(ack, SLI_CPC_HDLC_REJECT_SUPERVISORY_FUNCTION);
 
   handle->data = malloc(sizeof(uint8_t));
-  FATAL_ON(handle == NULL);
+  FATAL_ON(handle->data == NULL);
 
   // Set in reason
   *((uint8_t *)handle->data) = (uint8_t)reason;
@@ -1070,7 +1161,12 @@ static bool core_process_tx_queue(void)
     // Remember when we sent this i-frame in order to calculate round trip time
     // Only do so if this is not a re_transmit
     if (frame->endpoint->packet_re_transmit_count == 0u) {
-      gettimeofday(&frame->endpoint->last_iframe_sent_timestamp, NULL);
+      clock_gettime(CLOCK_MONOTONIC, &frame->endpoint->last_iframe_sent_timestamp);
+    }
+  } else if (frame_type == SLI_CPC_HDLC_FRAME_TYPE_UNNUMBERED) {
+    BUG_ON(frame->endpoint->id != SL_CPC_ENDPOINT_SYSTEM);
+    if (hdlc_get_unumbered_type(frame->control) == SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_POLL_FINAL) {
+      BUG(); // The deamon should never send an unnumbered poll frame
     }
   }
 
@@ -1081,6 +1177,7 @@ static bool core_process_tx_queue(void)
     const size_t frame_length = SLI_CPC_HDLC_HEADER_RAW_SIZE + data_length; //the +2 for fcs is in 'data_length'
 
     frame_t* frame_buffer = (frame_t*) malloc(frame_length);
+    FATAL_ON(frame_buffer == NULL);
 
     memcpy(frame_buffer->header, frame->hdlc_header, SLI_CPC_HDLC_HEADER_RAW_SIZE);
 
@@ -1119,9 +1216,15 @@ static bool core_process_tx_queue(void)
     // In case of unnumbered, all buffers can be freed since the core don't deal with retransmits
     // The frame->data though, isn't freed because it's the u-frame user who manages it.
     case SLI_CPC_HDLC_FRAME_TYPE_UNNUMBERED:
+      if (hdlc_is_poll_final(frame->control) == false) {
+        if (frame->data_length != 0) {
+          free((void*)frame->data); // Not expecting a reply
+        }
+      }
       free(item);
       free(frame->hdlc_header);
       free(frame);
+
       break;
 
     default:
@@ -1142,9 +1245,7 @@ static void re_transmit_timeout(sl_cpc_endpoint_t* endpoint)
 
   if (endpoint->packet_re_transmit_count >= SLI_CPC_RE_TRANSMIT) {
     WARN("Retransmit limit reached, closing endoint #%d", endpoint->id);
-    server_close_endpoint(endpoint->id);
-    core_close_endpoint(endpoint->id, true);
-    endpoint->state = SL_CPC_STATE_ERROR_DESTINATION_UNREACHABLE;
+    core_set_endpoint_in_error(endpoint->id, SL_CPC_STATE_ERROR_DESTINATION_UNREACHABLE);
   } else {
     endpoint->re_transmit_timeout_ms *= 2; // RTO(new) = RTO(before retransmission) *2 )
                                            // this is explained in Karn’s Algorithm
@@ -1199,8 +1300,8 @@ static sl_cpc_endpoint_t* find_endpoint(uint8_t endpoint_number)
   return &core_endpoints[endpoint_number];
 }
 
-//FIXME : for debug purpose, to be completed
-void core_reset_endpoint_sequence(uint8_t endpoint_number)
+#ifdef UNIT_TESTING
+void core_reset_endpoint(uint8_t endpoint_number)
 {
   sl_cpc_endpoint_t *ep;
 
@@ -1220,6 +1321,7 @@ void core_reset_endpoint_sequence(uint8_t endpoint_number)
   ep->packet_re_transmit_count = 0;
   ep->current_tx_window_space = ep->configured_tx_window_size;
 }
+#endif
 
 /***************************************************************************//**
  * Stops the re-transmit timer for a given endpoint
@@ -1303,7 +1405,7 @@ static void core_process_ep_timeout(epoll_private_data_t *event_private_data)
  ******************************************************************************/
 static void core_push_frame_to_driver(const void *frame, size_t frame_len)
 {
-  TRACE_FRAME("Core: Pushed frame to driver: ", frame, frame_len);
+  TRACE_FRAME("Core : Pushed frame to driver : ", frame, frame_len);
   ssize_t ret = send(driver_sock_fd, frame, frame_len, 0);
 
   FATAL_SYSCALL_ON(ret < 0);

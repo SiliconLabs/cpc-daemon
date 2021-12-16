@@ -1,8 +1,15 @@
-
 cmake_minimum_required(VERSION 3.10)
 
-project(cpcd VERSION "3.2.0.0")
+project(cpcd VERSION "4.0.0.0")
 configure_file(misc/version.h.in autogen/version.h)
+
+set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR})
+set(GIT_SHA1 "Unknown")
+set(GIT_REFSPEC "Unknown")
+include(GetGitRevisionDescription)
+get_git_head_revision(GIT_REFSPEC GIT_SHA1 ALLOW_LOOKING_ABOVE_CMAKE_SOURCE_DIR)
+add_definitions("-DGIT_SHA1=\"${GIT_SHA1}\"")
+add_definitions("-DGIT_REFSPEC=\"${GIT_REFSPEC}\"")
 
 ### Require out-of-source builds
 file(TO_CMAKE_PATH "${CMAKE_CURRENT_BINARY_DIR}/CMakeLists.txt" LOC_PATH)
@@ -12,17 +19,32 @@ endif()
 
 add_compile_options(-Wall -Wextra -Wconversion -Wmissing-declarations -Wsign-conversion -Wswitch-default)
 add_library(cpc SHARED lib/sl_cpc.c)
-target_include_directories(cpc PRIVATE misc/ misc/tracing/ interface/)
+
+if(COMPILE_LTTNG STREQUAL TRUE)
+  message(STATUS "Building CPC library with LTTNG tracing enabled.")
+  target_compile_definitions(cpc PUBLIC COMPILE_LTTNG)
+  target_link_libraries(cpc dl lttng-ust)
+endif()
+
+target_include_directories(cpc PRIVATE "${CMAKE_SOURCE_DIR}")
 target_include_directories(cpc PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/autogen")
 set_target_properties(cpc PROPERTIES VERSION ${PROJECT_VERSION})
 set_target_properties(cpc PROPERTIES PUBLIC_HEADER lib/sl_cpc.h)
-set_target_properties(cpc PROPERTIES PRIVATE_HEADER misc/sl_enum.h)
 
 include(GNUInstallDirs)
-add_definitions(-DDEFAULT_CONFIG_FILE_PATH="/${CMAKE_INSTALL_SYSCONFDIR}/cpcd.conf")
+add_definitions(-DDEFAULT_CONFIG_FILE_PATH="${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_SYSCONFDIR}/cpcd.conf")
 
 set(TARGET_GROUP release CACHE STRING "Group to build")
 set(WARN_AS_ERROR "FALSE" CACHE STRING "Treat warnings as errors")
+
+
+# Enable encryption support if the user requested it
+find_package(MbedTLS REQUIRED)
+if(MBEDTLS_INCLUDE_DIR  AND  MBEDTLS_LIBRARIES)
+  include_directories(${MBEDTLS_INCLUDE_DIR})
+else()
+  message(FATAL_ERROR "Failed to find MbedTLS library")
+endif()
 
 if(WARN_AS_ERROR STREQUAL "TRUE")
 target_compile_options(cpc PRIVATE -Werror)
@@ -36,6 +58,14 @@ if((TARGET_GROUP STREQUAL release) OR
    (TARGET_GROUP STREQUAL blackbox_test_large_buf))
   message(STATUS "Building CPC Daemon")
 
+  if((TARGET_GROUP STREQUAL debug) OR
+     (TARGET_GROUP STREQUAL blackbox_test) OR
+     (TARGET_GROUP STREQUAL blackbox_test_spurious_reset) OR
+     (TARGET_GROUP STREQUAL blackbox_test_large_buf))
+    add_compile_options(-funwind-tables -rdynamic)
+  endif()
+
+
   add_executable(cpcd
                       cpcd.conf
                       server_core/server_core.c
@@ -44,35 +74,44 @@ if((TARGET_GROUP STREQUAL release) OR
                       server_core/core/crc.c
                       server_core/core/hdlc.c
                       server_core/server/server.c
-                      server_core/server/system/system.c
-                      server_core/server/system_callbacks.c
+                      server_core/server/server_ready_sync.c
+                      server_core/system_endpoint/system.c
+                      server_core/system_endpoint/system_callbacks.c
                       driver/driver_spi.c
                       driver/driver_uart.c
-                      misc/tracing/tracing.c
+                      driver/driver_xmodem.c
+					  driver/driver_ezsp.c
+                      misc/logging.c
                       misc/config.c
-                      misc/gpio/gpio.c
+                      misc/gpio.c
                       misc/sl_slist.c
+                      modes/firmware_update.c
+                      modes/binding.c
+                      modes/normal.c
+                      security/security.c
+                      security/private/keys/keys.c
+                      security/private/protocol/protocol.c
+                      security/private/thread/command_synchronizer.c
+                      security/private/thread/security_thread.c
+                      lib/sl_cpc.c
                       main.c)
+
+  if(COMPILE_LTTNG STREQUAL TRUE)
+    message(STATUS "Building CPC Daemon with LTTNG tracing enabled. Set ENABLE_LTTNG_TRACING=true in config file to activate it.")
+    target_compile_definitions(cpcd PUBLIC COMPILE_LTTNG)
+    target_link_libraries(cpcd dl lttng-ust)
+  endif()
 
   if(WARN_AS_ERROR STREQUAL "TRUE")
   target_compile_options(cpcd PRIVATE -Werror)
   endif()
 
   target_include_directories(cpcd PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/autogen")
-  target_include_directories(cpcd PRIVATE
-                                          server_core/
-                                          server_core/core/
-                                          server_core/epoll/
-                                          server_core/server/
-                                          server_core/server/system
-                                          driver/
-                                          misc/
-                                          misc/gpio/
-                                          interface/
-                                          lib/
-                                          )
+  target_include_directories(cpcd PRIVATE "${CMAKE_SOURCE_DIR}")
+  target_include_directories(cpcd PRIVATE "${CMAKE_SOURCE_DIR}/lib")
   target_link_libraries(cpcd util)
   target_link_libraries(cpcd pthread)
+  target_link_libraries(cpcd ${MBEDTLS_LIBRARIES})
 
   install(TARGETS cpc cpcd
           LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -118,10 +157,17 @@ elseif((TARGET_GROUP STREQUAL unit_test) OR (TARGET_GROUP STREQUAL unit_test_wit
                             server_core/core/crc.c
                             server_core/core/hdlc.c
                             server_core/server/server.c
-                            server_core/server/system/system.c
-                            server_core/server/system_callbacks.c
+                            server_core/server/server_ready_sync.c
+                            server_core/system_endpoint/system.c
+                            server_core/system_endpoint/system_callbacks.c
+                            security/security.c
+                            security/private/keys/keys.c
+                            security/private/protocol/protocol.c
+                            security/private/thread/command_synchronizer.c
+                            security/private/thread/security_thread.c
                             driver/driver_emul.c
-                            misc/tracing/tracing.c
+                            lib/sl_cpc.c
+                            misc/logging.c
                             misc/config.c
                             misc/sl_slist.c
                             test/unity/endpoints.c
@@ -131,27 +177,19 @@ elseif((TARGET_GROUP STREQUAL unit_test) OR (TARGET_GROUP STREQUAL unit_test_wit
                             test/unity/write.c
                             test/unity/hdlc.c
                             test/unity/reject.c
+                            test/unity/security.c
                             test/unity/re_transmit.c
                             test/unity/cpc_unity_common.c
                             test/unity/main.c)
 
     target_include_directories(cpc_unity PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/autogen")
     target_include_directories(cpc_unity PRIVATE ${UNITY_SOURCES}/src/)
-    target_include_directories(cpc_unity PRIVATE
-                                                 server_core/
-                                                 server_core/epoll/
-                                                 server_core/core/
-                                                 server_core/server/system/
-                                                 server_core/server/
-                                                 lib/
-                                                 driver/
-                                                 misc/
-                                                 misc/tracing/
-                                                 interface/
-                                                 test/unity/)
+    target_include_directories(cpc_unity PRIVATE "${CMAKE_SOURCE_DIR}")
+    target_include_directories(cpc_unity PRIVATE "${CMAKE_SOURCE_DIR}/lib")
     target_link_libraries(cpc_unity pthread)
     target_link_libraries(cpc_unity unity)
     target_link_libraries(cpc_unity cpc)
+    target_link_libraries(cpc_unity ${MBEDTLS_LIBRARIES})
 
     # Run the tests
     add_subdirectory(test/unity)
@@ -173,15 +211,23 @@ elseif(TARGET_GROUP STREQUAL target_test)
                     server_core/core/crc.c
                     server_core/core/hdlc.c
                     server_core/server/server.c
-                    server_core/server/system/system.c
-                    server_core/server/system_callbacks.c
+                    server_core/server/server_ready_sync.c
+                    server_core/system_endpoint/system.c
+                    server_core/system_endpoint/system_callbacks.c
+                    security/security.c
+                    security/private/keys/keys.c
+                    security/private/protocol/protocol.c
+                    security/private/thread/command_synchronizer.c
+                    security/private/thread/security_thread.c
                     driver/driver_uart.c
                     driver/driver_spi.c
-                    misc/tracing/tracing.c
+                    driver/driver_xmodem.c
+					driver/driver_ezsp.c
+                    misc/logging.c
                     misc/config.c
                     misc/sl_slist.c
                     misc/sl_string.c
-                    misc/gpio/gpio.c
+                    misc/gpio.c
                     ../../test/linux/emlib/src/em_assert.c
                     ../../iostream/src/sl_iostream_stdio.c
                     ../../iostream/src/sl_iostream.c
@@ -196,28 +242,21 @@ elseif(TARGET_GROUP STREQUAL target_test)
                     test/target/cpc_test_multithread.c
                     test/target/cpc_test_cmd_large_buf.c
                     test/target/cpc_test_multithread.c
+                    lib/sl_cpc.c
                     test/target/main.c)
 
     target_include_directories(cpc_target PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/autogen")
-    target_include_directories(cpc_target PRIVATE core/
-                                                 lib/
-                                                 driver/
-                                                 misc/
-                                                 misc/tracing/
-                                                 misc/gpio/
-                                                 server_core/
-                                                 server_core/epoll/
-                                                 server_core/core/
-                                                 server_core/server/system/
-                                                 server_core/server/
-                                                 interface/
-                                                 test/taget/
-                                                 ../../test/linux/emlib/inc
-                                                 ../../iostream/inc/
-                                                 ../../cli/inc/
-                                                 ../../cli/src/)
+    target_include_directories(cpc_target PRIVATE "${CMAKE_SOURCE_DIR}")
+    target_include_directories(cpc_target PRIVATE "${CMAKE_SOURCE_DIR}/lib")
+    target_include_directories(cpc_target PRIVATE ../../test/linux/common/inc
+                                                  ../../test/linux/emlib/inc
+                                                  ../../iostream/inc/
+                                                  ../../cli/inc/
+                                                  ../../cli/src/
+                                                  misc/)
     target_link_libraries(cpc_target pthread)
     target_link_libraries(cpc_target cpc)
+    target_link_libraries(cpc_target ${MBEDTLS_LIBRARIES})
 
 elseif(TARGET_GROUP STREQUAL blackbox_test)
     message(STATUS "Building blackbox_test")
@@ -295,7 +334,7 @@ elseif(TARGET_GROUP STREQUAL blackbox_test_large_buf)
     set(CMAKE_BUILD_TYPE Debug)
     include_directories(test/blackbox/)
 
-    add_definitions(-DDATA_CHUNK_SIZE=4092)
+    add_definitions(-DDATA_CHUNK_SIZE=4087)
 
     add_executable(lib_client
                    test/blackbox/cpc_lib_client.c)
@@ -324,6 +363,8 @@ elseif(TARGET_GROUP STREQUAL blackbox_test_large_buf)
 
     # Run the tests
     add_subdirectory(test/blackbox)
+elseif(TARGET_GROUP STREQUAL libcpc_wrapper_test)
+	add_library(cpc_wrapper SHARED test/libcpc_wrapper/sl_cpc_mock.c)
 else()
     message(FATAL_ERROR "Given TARGET_GROUP unknown specify when running cmake.. i.g: -DTARGET_GROUP=release")
 endif()

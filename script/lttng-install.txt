@@ -1,0 +1,43 @@
+#update kernel and get kernel headers
+sudo apt-get update && sudo apt-get install --reinstall raspberrypi-bootloader raspberrypi-kernel
+sudo apt-get install raspberrypi-kernel-headers
+reboot
+
+#install lttng tools (which works fine from the repos)
+sudo apt install lttng-tools
+
+#install lttng ust (which works fine from the repos)
+sudo apt install liblttng-ust-dev
+
+#install libpopt
+sudo apt-get install -y libpopt-dev
+
+#install libxml2
+sudo apt-get install libxml2-dev
+
+#liburcu shall be installed by lttng-tools, if not do those two install steps (skip for now, you'll know later if you had to)
+    #scp liburcu6_0.12.2-1_armhf.deb on pi : https://packages.debian.org/bullseye/armhf/liburcu6/download
+    sudo dpkg -i liburcu6_0.12.2-1_armhf.deb
+
+    #scp liburcu-dev_0.12.2-1_armhf.deb on pi : https://packages.debian.org/bullseye/armhf/liburcu-dev/download
+    sudo dpkg -i liburcu-dev_0.12.2-1_armhf.deb
+
+#(Skip for now) if problem because of kernel headers absent even though we have run the previous install command, do those 3 steps
+sudo wget https://raw.githubusercontent.com/notro/rpi-source/master/rpi-source -O /usr/bin/rpi-source && sudo chmod +x /usr/bin/rpi-source && /usr/bin/rpi-source -q --tag-update
+
+  #insall dependencies
+  sudo apt install git bc bison flex libssl-dev
+
+  #run the updater to get appropriate kernel headers (at last ...)
+  sudo rpi-update
+
+#Install lttng kernel. Ignore final warning about missing System.map file
+cd $(mktemp -d) &&
+wget https://lttng.org/files/lttng-modules/lttng-modules-latest-2.13.tar.bz2 &&
+tar -xf lttng-modules-latest-2.13.tar.bz2 &&
+cd lttng-modules-2.13.* &&
+make &&
+sudo make modules_install &&
+sudo depmod -a
+
+

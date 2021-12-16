@@ -28,30 +28,34 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <linux/spi/spidev.h>
+#include <signal.h>
 
-#include "crc.h"
-#include "log.h"
-#include "driver_spi.h"
-#include "hdlc.h"
-#include "gpio.h"
+#include "server_core/core/crc.h"
+#include "server_core/core/hdlc.h"
+#include "misc/logging.h"
+#include "driver/driver_spi.h"
 
 #define MAX_EPOLL_EVENTS 5
+#define IRQ_LINE_TIMEOUT  10
 
 static int fd_core;
 static int fd_epoll;
 static pthread_t drv_thread;
 
-cpc_spi_dev_t spi_dev;
+static cpc_spi_dev_t spi_dev;
 
-struct spi_ioc_transfer spi_tranfer;
+static struct spi_ioc_transfer spi_tranfer;
 
-uint8_t rx_spi_buffer[4096];
-uint8_t tx_spi_buffer[4096];
+static uint8_t rx_spi_buffer[4096];
+static uint8_t tx_spi_buffer[4096];
+
+static volatile bool cancel_requested = false;
 
 typedef void (*driver_epoll_callback_t)(void);
 
 static void cs_assert(void);
 static void cs_deassert(void);
+static void clear_rx_interrupt(void);
 
 static bool validate_header(uint8_t *header);
 static int get_data_size(uint8_t *header);
@@ -66,6 +70,24 @@ static void driver_spi_open(const char *device,
                             unsigned int speed,
                             unsigned int cs_gpio_number,
                             unsigned int irq_gpio_number);
+
+static void driver_spi_cleanup(void)
+{
+  close(spi_dev.spi_dev_descriptor);
+  close(fd_core);
+  close(fd_epoll);
+
+  TRACE_DRIVER("SPI driver thread cancelled");
+
+  pthread_exit(0);
+}
+
+static void driver_spi_term_sig_handler(int sig)
+{
+  FATAL_ON(sig != SIGTERM);
+
+  cancel_requested = true;
+}
 
 pthread_t driver_spi_init(int *fd_to_core,
                           const char *device,
@@ -127,7 +149,7 @@ pthread_t driver_spi_init(int *fd_to_core,
   ret = pthread_setname_np(drv_thread, "drv_thread");
   FATAL_ON(ret != 0);
 
-  TRACE_DRIVER("Opening spi file %s\n", device);
+  TRACE_DRIVER("Opening spi file %s", device);
 
   TRACE_DRIVER("Init done");
 
@@ -137,10 +159,30 @@ pthread_t driver_spi_init(int *fd_to_core,
 static void* driver_thread_func(void* param)
 {
   (void) param;
-
   struct epoll_event events[MAX_EPOLL_EVENTS] = {};
+  sigset_t emptyset;
+
+  pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 
   TRACE_DRIVER("Thread start");
+
+  /* Setup signaling for this thread */
+  {
+    struct sigaction sa = { 0 };
+    int ret;
+    sigset_t blockset;
+
+    sigemptyset(&blockset);         /* Clears the signal set*/
+    sigaddset(&blockset, SIGTERM);   /* Block only SIGTERM */
+    sigprocmask(SIG_BLOCK, &blockset, NULL); /* Apply the signal mask to this thread*/
+
+    sa.sa_handler = driver_spi_term_sig_handler;
+    sa.sa_flags = 0;
+    sigemptyset(&sa.sa_mask);
+
+    ret = sigaction(SIGTERM, &sa, NULL);
+    FATAL_SYSCALL_ON(ret != 0);
+  }
 
   while (1) {
     int event_count;
@@ -148,16 +190,29 @@ static void* driver_thread_func(void* param)
     /* Wait for action */
     {
       do {
-        event_count = epoll_wait(fd_epoll, events, MAX_EPOLL_EVENTS, -1);
-      } while ((event_count == -1) && (errno == EINTR));
-
-      FATAL_SYSCALL_ON(event_count < 0);
+        sigemptyset(&emptyset);
+        event_count = epoll_pwait(fd_epoll, events, MAX_EPOLL_EVENTS, -1, &emptyset);
+        if (event_count == -1) {
+          if (errno == EINTR) {
+            if (cancel_requested) {
+              driver_spi_cleanup();
+            } else {
+              /* Some other signal was received, go back to waiting */
+              continue;
+            }
+          } else {
+            FATAL_SYSCALL_ON(1);
+          }
+        } else {
+          break;
+        }
+      } while (1);
 
       /* Timeouts should not occur */
       FATAL_ON(event_count == 0);
     }
 
-    /* Process each ready file descriptor*/
+    /* Process each ready file descriptor */
     {
       size_t event_i;
       for (event_i = 0; event_i != (size_t)event_count; event_i++) {
@@ -166,6 +221,10 @@ static void* driver_thread_func(void* param)
       }
     }
   } //while(1)
+
+  gpio_deinit(&spi_dev.cs_gpio);
+  gpio_deinit(&spi_dev.irq_gpio);
+
   return 0;
 }
 
@@ -209,6 +268,15 @@ static void cs_deassert(void)
 
   ret = gpio_write(spi_dev.cs_gpio, 1);
   FATAL_SYSCALL_ON(ret < 0);
+}
+
+static void clear_rx_interrupt(void)
+{
+  char buf[8];
+
+  // Consume interrupt
+  lseek(spi_dev.irq_gpio.irq_fd, 0, SEEK_SET);
+  read(spi_dev.irq_gpio.irq_fd, buf, sizeof(buf));
 }
 
 static void driver_spi_open(const char *device,
@@ -261,11 +329,17 @@ static void driver_spi_process_irq(void)
 {
   int ret = 0;
   int payload_size = 0;
+  size_t write_size = 0;
   uint8_t rx_buffer[4096];
   ssize_t write_retval;
+  int timeout = IRQ_LINE_TIMEOUT;
+
+  // Consume interrupt
+  clear_rx_interrupt();
 
   if (gpio_read(spi_dev.irq_gpio) == 0) {
     cs_assert();
+    usleep(1000);
 
     if (gpio_read(spi_dev.irq_gpio) != 0u) {
       cs_deassert();
@@ -280,27 +354,40 @@ static void driver_spi_process_irq(void)
     memcpy(rx_buffer, (uint8_t*)(long)spi_tranfer.rx_buf, SLI_CPC_HDLC_HEADER_RAW_SIZE);
 
     payload_size = get_data_size((uint8_t *)(long)spi_tranfer.rx_buf);
+    if (payload_size == -1) {
+      cs_deassert();
+      return;
+    }
 
     if (payload_size > 0) {
       spi_tranfer.len = (uint32_t)payload_size;
-
       ret = ioctl(spi_dev.spi_dev_descriptor, SPI_IOC_MESSAGE(1), &spi_tranfer);
       FATAL_ON(ret != payload_size);
-
       memcpy(&rx_buffer[SLI_CPC_HDLC_HEADER_RAW_SIZE], (uint8_t*)(long)spi_tranfer.rx_buf, (uint32_t)payload_size);
-
-      write_retval = write(fd_core, rx_buffer, (uint32_t)payload_size + SLI_CPC_HDLC_HEADER_RAW_SIZE);
-      FATAL_SYSCALL_ON(write_retval < 0);
-
-      TRACE_FRAME("Driver : flushed frame to core: ", rx_buffer, (size_t)write_retval);
+      write_size = (uint32_t)payload_size + SLI_CPC_HDLC_HEADER_RAW_SIZE;
     } else if (payload_size == 0) {
-      write_retval = write(fd_core, rx_buffer, SLI_CPC_HDLC_HEADER_RAW_SIZE);
-      FATAL_SYSCALL_ON(write_retval < 0);
+      write_size = SLI_CPC_HDLC_HEADER_RAW_SIZE;
+    }
 
-      TRACE_FRAME("Driver : flushed frame to core: ", rx_buffer, (size_t)write_retval);
+    // Wait for NCP to response
+    while ((gpio_read(spi_dev.irq_gpio) != 1)
+           && timeout > 0) {
+      usleep(100);
+      timeout--;
+    }
+
+    if (timeout == 0) {
+      FATAL("Secondary IRQ line is busy !!!!");
     }
 
     cs_deassert();
+
+    write_retval = write(fd_core, rx_buffer, write_size);
+    FATAL_SYSCALL_ON(write_retval < 0);
+
+    usleep(1000);
+
+    TRACE_FRAME("Driver : flushed frame to core : ", rx_buffer, (size_t)write_retval);
   }
 }
 
@@ -311,6 +398,8 @@ static void driver_spi_process_core(void)
   int ret;
 
   cs_assert();
+
+  usleep(1000);
 
   if (gpio_read(spi_dev.irq_gpio) == 0) {
     return;
@@ -328,5 +417,7 @@ static void driver_spi_process_core(void)
 
   cs_deassert();
 
-  TRACE_FRAME("Driver : flushed frame to SPI: ", buffer, (size_t)read_retval);
+  usleep(1000);
+
+  TRACE_FRAME("Driver : flushed frame to SPI : ", buffer, (size_t)read_retval);
 }

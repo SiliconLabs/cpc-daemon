@@ -21,15 +21,9 @@
 
 #include <stdint.h>
 
-#include "sl_slist.h"
-
-bool server_is_endpoint_open(uint8_t endpoint_number);
+#include "misc/sl_slist.h"
 
 void server_push_data_to_core(uint8_t endpoint_number, const void *data, size_t data_len);
-
-void server_open_endpoint(uint8_t endpoint_number);
-
-void server_close_endpoint(uint8_t endpoint_number);
 
 void server_tell_core_to_open_endpoint(uint8_t endpoint_number);
 

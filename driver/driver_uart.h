@@ -21,7 +21,6 @@
 
 #define _GNU_SOURCE
 #include <pthread.h>
-
 #include <stdbool.h>
 
 /*
@@ -29,6 +28,8 @@
  * Returns the file descriptor of the paired socket to the driver
  * to use in a select() call.
  */
-pthread_t driver_uart_init(int *fd_core_driver, const char *dev_name, unsigned  int bitrate, bool hardflow);
+pthread_t driver_uart_init(int *fd_to_core, const char *device, unsigned int bitrate, bool hardflow);
+
+int driver_uart_open(const char *device, unsigned int bitrate, bool hardflow);
 
 #endif //DRIVER_UART_H

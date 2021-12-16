@@ -1,6 +1,6 @@
 /***************************************************************************//**
  * @file
- * @brief Co-Processor Communication Protocol (CPC) -  SPI driver
+ * @brief Co-Processor Communication Protocol(CPC) - Daemon Exchange Structure
  * @version 3.2.0
  *******************************************************************************
  * # License
@@ -16,33 +16,25 @@
  *
  ******************************************************************************/
 
-#ifndef DRIVER_SPI_H
-#define DRIVER_SPI_H
+#ifndef CPCD_EXCHANGE_H
+#define CPCD_EXCHANGE_H
 
-#define _GNU_SOURCE
-#include <pthread.h>
+#include "lib/sl_cpc.h"
+#include "misc/sl_status.h"
 
-#include <stdbool.h>
-#include "misc/gpio.h"
+SL_ENUM(cpcd_exchange_type_t){
+  EXCHANGE_ENDPOINT_STATUS_QUERY,
+  EXCHANGE_OPEN_ENDPOINT_QUERY,
+  EXCHANGE_MAX_WRITE_SIZE_QUERY,
+  EXCHANGE_VERSION_QUERY,
+  EXCHANGE_CLOSE_ENDPOINT_QUERY,
+  EXCHANGE_SET_PID_QUERY
+};
 
 typedef struct {
-  int spi_dev_descriptor;
-  char *spi_dev_name;
-  gpio_t cs_gpio;
-  gpio_t irq_gpio;
-  gpio_t wake_gpio;
-}cpc_spi_dev_t;
+  cpcd_exchange_type_t type;
+  uint8_t endpoint_number;
+  uint8_t payload[];
+} cpcd_exchange_buffer_t;
 
-/*
- * Initialize the spi driver. Crashes the app if the init fails.
- * Returns the file descriptor of the paired socket to the driver
- * to use in a select() call.
- */
-pthread_t driver_spi_init(int *fd_to_core,
-                          const char *device,
-                          unsigned int mode,
-                          unsigned int bit_per_word,
-                          unsigned int speed,
-                          unsigned int cs_gpio,
-                          unsigned int irq_gpio);
-#endif//DRIVER_SPI_H
+#endif //CPCD_EXCHANGE_H

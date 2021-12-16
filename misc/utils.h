@@ -27,26 +27,20 @@
 #define FIELD_GET(mask, reg) (((reg) & (mask)) >> __bf_shf(mask))
 #define FIELD_PREP(mask, val) (((val) << __bf_shf(mask)) & (mask))
 
-#define min(x, y) ({    \
-    typeof(x) _x = (x); \
-    typeof(y) _y = (y); \
-    _x < _y ? _x : _y;  \
+#define min(x, y) ({   \
+    typeof(x)_x = (x); \
+    typeof(y)_y = (y); \
+    _x < _y ? _x : _y; \
   })
 
-#define max(x, y) ({    \
-    typeof(x) _x = (x); \
-    typeof(y) _y = (y); \
-    _x > _y ? _x : _y;  \
+#define max(x, y) ({   \
+    typeof(x)_x = (x); \
+    typeof(y)_y = (y); \
+    _x > _y ? _x : _y; \
   })
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 
-static inline void *zalloc(size_t size)
-{
-  void *ptr = malloc(size);
-
-  memset(ptr, 0, size);
-  return ptr;
-}
+#define PAD_TO_8_BYTES(x) (x + 8 - (x % 8))
 
 #endif

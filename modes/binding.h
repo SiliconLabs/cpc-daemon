@@ -1,6 +1,6 @@
 /***************************************************************************//**
  * @file
- * @brief Co-Processor Communication Protocol(CPC) - GPIO Interface
+ * @brief Co-Processor Communication Protocol(CPC) - Binding Mode
  * @version 3.2.0
  *******************************************************************************
  * # License
@@ -16,35 +16,4 @@
  *
  ******************************************************************************/
 
-#ifndef GPIO_H
-#define GPIO_H
-
-#include <stdint.h>
-#include "sl_enum.h"
-
-SL_ENUM(gpio_direction_t){
-  IN = 0,
-  OUT,
-  HIGH
-};
-
-SL_ENUM(gpio_edge_t){
-  FALLING = 0,
-  RISING,
-  BOTH
-};
-
-typedef struct gpio{
-  int value_fd;
-  int irq_fd;
-  unsigned int pin;
-} gpio_t;
-
-int gpio_init(gpio_t *gpio, unsigned int pin);
-int gpio_deinit(gpio_t *gpio);
-int gpio_direction(gpio_t gpio, gpio_direction_t direction);
-int gpio_setedge(gpio_t gpio, gpio_edge_t edge);
-int gpio_write(gpio_t gpio, int value);
-int gpio_read(gpio_t gpio);
-
-#endif /* GPIO_H */
+void run_binding_mode(void);

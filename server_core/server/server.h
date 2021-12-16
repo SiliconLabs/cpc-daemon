@@ -22,14 +22,16 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "cpc_interface.h"
+#include "server_core/cpcd_exchange.h"
 
 void server_init(void);
 
-void server_process_core(cpc_interface_buffer_t* interface_buffer, size_t interface_buffer_size);
+void server_open_endpoint(uint8_t endpoint_number);
+void server_close_endpoint(uint8_t endpoint_number, bool error);
+
 void server_push_data_to_endpoint(uint8_t endpoint_number, const uint8_t* data, size_t data_len);
 void server_process_pending_connections(void);
-void server_expect_close(uint8_t endpoint_number);
+bool server_is_endpoint_open(uint8_t endpoint_number);
 
 bool server_listener_list_empty(uint8_t endpoint_number);
 

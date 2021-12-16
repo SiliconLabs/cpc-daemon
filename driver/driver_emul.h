@@ -23,8 +23,8 @@
 #include <pthread.h>
 
 #include <stdbool.h>
-#include "sl_status.h"
-#include "core.h"
+#include "misc/sl_status.h"
+#include "server_core/core/core.h"
 
 /*
  * Initialize the uart driver. Crashes the app if the init fails.

@@ -1,6 +1,6 @@
 /***************************************************************************//**
  * @file
- * @brief Co-Processor Communication Protocol(CPC) - System Common
+ * @brief Co-Processor Communication Protocol(CPC) - System Endpoint
  * @version 3.2.0
  *******************************************************************************
  * # License
@@ -16,14 +16,18 @@
  *
  ******************************************************************************/
 
-#ifndef SYSTEM_COMMON_H_
-#define SYSTEM_COMMON_H_
+#ifndef EP_SYSTEM_H
+#define EP_SYSTEM_H
 
-#include "sl_enum.h"
-#include "sl_status.h"
+#include "server_core/epoll/epoll.h"
+#include "misc/sl_slist.h"
+#include "sl_cpc.h"
+#include "misc/sl_status.h"
 
 #include <stddef.h>
 #include <stdarg.h>
+
+#define CPC_EP_SYSTEM 0
 
 /***************************************************************************//**
  * System endpoint command id enum
@@ -421,7 +425,7 @@ SL_ENUM_GENERIC(sl_cpc_system_reboot_mode_t, uint32_t)
 typedef struct {
   sl_cpc_system_cmd_id_t command_id;   ///< Identifier of the command.
   uint8_t                command_seq;  ///< Command sequence number
-  uint8_t                length;       ///< Length of the payload in bytes.
+  uint16_t               length;       ///< Length of the payload in bytes.
   uint8_t                payload[];    ///< Command payload.
 }sl_cpc_system_cmd_t;
 
@@ -433,4 +437,126 @@ typedef struct {
   uint8_t              payload[];   ///< Property value.
 }sl_cpc_system_property_cmd_t;
 
-#endif /* SYSTEM_COMMON_H_ */
+/***************************************************************************//**
+ * System endpoint command handle type
+ ******************************************************************************/
+typedef struct  {
+  sl_slist_node_t node_commands;
+  sl_cpc_system_cmd_t *command; // has to be malloc'ed
+  void *on_final;
+  uint8_t retry_count;
+  uint32_t retry_timeout_us;
+  sl_status_t error_status;
+  uint8_t command_seq;
+  epoll_private_data_t re_transmit_timer_private_data; //for epoll for timerfd
+} sl_cpc_system_command_handle_t;
+
+void sl_cpc_system_init(void);
+
+/***************************************************************************//**
+ * Unsolicited status callback
+ *
+ * @brief
+ *   This callback is called when the PRIMARY receives an unsolicited propoperty-is PROP_LAST_STATUS
+ *
+ ******************************************************************************/
+typedef void (*sl_cpc_system_unsolicited_status_callback_t) (sl_cpc_system_status_t status);
+
+/***************************************************************************//**
+ * Callback for the no-op command
+ *
+ * @brief
+ *   This callback is called when the PRIMARY receives the reply from the SECONDARY
+ *
+ ******************************************************************************/
+typedef void (*sl_cpc_system_noop_cmd_callback_t) (sl_cpc_system_command_handle_t *handle,
+                                                   sl_status_t status);
+
+/***************************************************************************//**
+ * Callback for the reset command
+ *
+ * @brief
+ *   This callback is called when the PRIMARY receives the reply from the SECONDARY
+ *
+ * @param
+ *   [in] status
+ *     The SECONDARY will return STATUS_OK if the reset will occur in the
+ *     desired mode. STATUS_FAILURE will be returned otherwise.
+ ******************************************************************************/
+typedef void (*sl_cpc_system_reset_cmd_callback_t) (sl_cpc_system_command_handle_t *handle,
+                                                    sl_status_t command_status,
+                                                    sl_cpc_system_status_t reset_status);
+
+/***************************************************************************//**
+ * Callback for the property-get or set command
+ *
+ * @param
+ *   [in] property_id
+ *     The id of the property from the previously issued property-get/set
+ *
+ *   [in] property_value
+ *     A pointer to the value returned by the SECONDARY. Has to be casted to an
+ *     appropriate value in function of the property id.
+ *
+ *   [in] property_length
+ *     The length of the property value in bytes.
+ *
+ ******************************************************************************/
+typedef void (*sl_cpc_system_property_get_set_cmd_callback_t) (sl_cpc_system_command_handle_t *handle,
+                                                               sl_cpc_property_id_t property_id,
+                                                               void* property_value,
+                                                               size_t property_length,
+                                                               sl_status_t status);
+
+/***************************************************************************//**
+ * Send no-operation command query
+ *
+ * @brief
+ *   This command can be seen like a ping command. Like its name implies, this
+ *   command does nothing except generating a bidirectional transaction to
+ *   assert the link is functional.
+ ******************************************************************************/
+void sl_cpc_system_cmd_noop(sl_cpc_system_noop_cmd_callback_t on_noop_reply,
+                            uint8_t retry_count_max,
+                            uint32_t retry_timeout_us);
+
+/***************************************************************************//**
+ * Sends a reset query
+ ******************************************************************************/
+void sl_cpc_system_cmd_reboot(sl_cpc_system_reset_cmd_callback_t on_reset_reply,
+                              uint8_t retry_count_max,
+                              uint32_t retry_timeout_us);
+
+/***************************************************************************//**
+ * Sends a property-get query
+ ******************************************************************************/
+void sl_cpc_system_cmd_property_get(sl_cpc_system_property_get_set_cmd_callback_t on_property_get_reply,
+                                    sl_cpc_property_id_t property_id,
+                                    uint8_t retry_count_max,
+                                    uint32_t retry_timeout_us);
+
+/***************************************************************************//**
+ * Sends a property-set query
+ ******************************************************************************/
+void sl_cpc_system_cmd_property_set(sl_cpc_system_property_get_set_cmd_callback_t on_property_set_reply,
+                                    uint8_t retry_count_max,
+                                    uint32_t retry_timeout_us,
+                                    sl_cpc_property_id_t property_id,
+                                    const void *value,
+                                    size_t value_length);
+
+/***************************************************************************//**
+ * Registers an unsolicited prop last status callback
+ ******************************************************************************/
+void sl_cpc_system_register_unsolicited_prop_last_status_callback(sl_cpc_system_unsolicited_status_callback_t);
+
+/***************************************************************************//**
+ * Reset the system endpoint
+ ******************************************************************************/
+void sl_cpc_system_reset_system_endpoint(void);
+
+/***************************************************************************//**
+ * Acknowledge the system command
+ ******************************************************************************/
+void sl_cpc_system_cmd_poll_acknowledged(const void *data);
+#endif

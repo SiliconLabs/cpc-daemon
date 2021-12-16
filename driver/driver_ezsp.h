@@ -1,6 +1,6 @@
 /***************************************************************************//**
  * @file
- * @brief Co-Processor Communication Protocol (CPC) -  SPI driver
+ * @brief Co-Processor Communication Protocol (CPC) -  EZSP-SPI driver
  * @version 3.2.0
  *******************************************************************************
  * # License
@@ -16,8 +16,8 @@
  *
  ******************************************************************************/
 
-#ifndef DRIVER_SPI_H
-#define DRIVER_SPI_H
+#ifndef DRIVER_EZSP_H
+#define DRIVER_EZSP_H
 
 #define _GNU_SOURCE
 #include <pthread.h>
@@ -25,24 +25,13 @@
 #include <stdbool.h>
 #include "misc/gpio.h"
 
-typedef struct {
-  int spi_dev_descriptor;
-  char *spi_dev_name;
-  gpio_t cs_gpio;
-  gpio_t irq_gpio;
-  gpio_t wake_gpio;
-}cpc_spi_dev_t;
+int send_firmware(const char* image_file,
+                  const char *device,
+                  unsigned int mode,
+                  unsigned int bit_per_word,
+                  unsigned int speed,
+                  unsigned int cs_gpio,
+                  unsigned int irq_gpio,
+                  unsigned int wake_gpio);
 
-/*
- * Initialize the spi driver. Crashes the app if the init fails.
- * Returns the file descriptor of the paired socket to the driver
- * to use in a select() call.
- */
-pthread_t driver_spi_init(int *fd_to_core,
-                          const char *device,
-                          unsigned int mode,
-                          unsigned int bit_per_word,
-                          unsigned int speed,
-                          unsigned int cs_gpio,
-                          unsigned int irq_gpio);
-#endif//DRIVER_SPI_H
+#endif//DRIVER_EZSP_H

@@ -1,0 +1,27 @@
+TARGET_GROUP:
+  default: release
+  choices:
+    release:
+      short: Release
+      settings:
+        TARGET_GROUP: release
+    debug:
+      short: Debug
+      settings:
+        TARGET_GROUP: debug
+    blackbox_test:
+      short: Blackbox Test
+      settings:
+        TARGET_GROUP: blackbox_test
+    unit_test:
+      short: Unit Test
+      settings:
+        TARGET_GROUP: unit_test
+    unit_test_with_valgrind:
+      short: Unit Test With Valgrind
+      settings:
+        TARGET_GROUP: unit_test_with_valgrind
+    target_test:
+      short: Target Test
+      settings:
+        TARGET_GROUP: target_test
