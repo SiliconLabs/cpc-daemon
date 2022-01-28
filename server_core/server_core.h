@@ -29,4 +29,6 @@ uint32_t server_core_get_secondary_rx_capability(void);
 
 pthread_t server_core_init(int fd_socket_driver_core, bool firmware_update);
 
+void server_core_kill_signal(void);
+
 #endif //SERVER_CORE_H

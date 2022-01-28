@@ -26,6 +26,7 @@
 #include <errno.h>
 #include <sys/time.h>
 
+#include "misc/config.h"
 #include "misc/logging.h"
 #include "misc/utils.h"
 #include "misc/endianess.h"
@@ -53,6 +54,12 @@
 #define ABS(a)  ((a) < 0 ? -(a) : (a))
 
 /*******************************************************************************
+ ***************************  GLOBAL VARIABLES   *******************************
+ ******************************************************************************/
+core_debug_counters_t primary_core_debug_counters;
+core_debug_counters_t secondary_core_debug_counters;
+
+/*******************************************************************************
  ***************************  LOCAL DECLARATIONS   *****************************
  ******************************************************************************/
 
@@ -61,6 +68,7 @@
  ******************************************************************************/
 
 static int               driver_sock_fd;
+static int               stats_timer_fd;
 static sl_cpc_endpoint_t core_endpoints[256];
 static sl_slist_node_t   *transmit_queue = NULL;
 
@@ -93,6 +101,8 @@ static void  core_push_frame_to_driver(const void *frame, size_t frame_len);
 static void core_pull_frame_from_driver(frame_t** frame_buf, size_t* frame_buf_len);
 
 static void core_push_data_to_server(uint8_t ep_id, const void *data, size_t data_len);
+
+static void core_fetch_secondary_debug_counters(epoll_private_data_t *event_private_data);
 
 /*******************************************************************************
  **************************   IMPLEMENTATION    ********************************
@@ -220,6 +230,33 @@ void core_init(int driver_fd)
       epoll_register(&private_data);
     }
   }
+
+  /* Setup timer to fetch secondary debug counter */
+  if (config_stats_interval > 0) {
+    stats_timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
+    FATAL_SYSCALL_ON(stats_timer_fd < 0);
+
+    struct itimerspec timeout_time = { .it_interval = { .tv_sec = config_stats_interval, .tv_nsec = 0 },
+                                       .it_value    = { .tv_sec = config_stats_interval, .tv_nsec = 0 } };
+
+    int ret = timerfd_settime(stats_timer_fd,
+                              0,
+                              &timeout_time,
+                              NULL);
+
+    FATAL_SYSCALL_ON(ret < 0);
+
+    /* Setup epoll */
+    {
+      epoll_private_data_t* private_data = (epoll_private_data_t*) malloc(sizeof(epoll_private_data_t));
+      FATAL_ON(private_data == NULL);
+
+      private_data->callback = core_fetch_secondary_debug_counters;
+      private_data->file_descriptor = stats_timer_fd;
+
+      epoll_register(private_data);
+    }
+  }
 }
 
 void core_process_transmit_queue(void)
@@ -236,6 +273,43 @@ cpc_endpoint_state_t core_get_endpoint_state(uint8_t ep_id)
 {
   FATAL_ON(ep_id == 0);
   return core_endpoints[ep_id].state;
+}
+
+static void core_update_secondary_debug_counter(sl_cpc_system_command_handle_t *handle,
+                                                sl_cpc_property_id_t property_id,
+                                                void* property_value,
+                                                size_t property_length,
+                                                sl_status_t status)
+{
+  (void)handle;
+
+  FATAL_ON(status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS);
+
+  if (property_id == PROP_LAST_STATUS) {
+    FATAL("Secondary does not handle the DEBUG_COUNTERS property, please update secondary or disable print-stats");
+  }
+
+  FATAL_ON(property_id != PROP_CORE_DEBUG_COUNTERS);
+  FATAL_ON(property_value == NULL || property_length > sizeof(core_debug_counters_t));
+
+  memcpy(&secondary_core_debug_counters, property_value, property_length);
+}
+
+static void core_fetch_secondary_debug_counters(epoll_private_data_t *event_private_data)
+{
+  int fd_timer = event_private_data->file_descriptor;
+
+  /* Ack the timer */
+  {
+    uint64_t expiration;
+    ssize_t ret;
+
+    ret = read(fd_timer, &expiration, sizeof(expiration));
+    FATAL_ON(ret < 0);
+  }
+
+  sl_cpc_system_cmd_property_get(core_update_secondary_debug_counter,
+                                 PROP_CORE_DEBUG_COUNTERS, 0, 0);
 }
 
 static void core_process_rx_driver(epoll_private_data_t *event_private_data)
@@ -258,8 +332,6 @@ static void core_process_rx_driver(epoll_private_data_t *event_private_data)
       free(rx_frame);
       return;
     }
-
-    TRACE_CORE_RXD_VALID_FRAME();
   }
 
   uint16_t data_length = hdlc_get_length(rx_frame->header);
@@ -290,12 +362,15 @@ static void core_process_rx_driver(epoll_private_data_t *event_private_data)
   switch (type) {
     case SLI_CPC_HDLC_FRAME_TYPE_INFORMATION:
       core_process_rx_i_frame(rx_frame);
+      TRACE_CORE_RXD_VALID_IFRAME();
       break;
     case SLI_CPC_HDLC_FRAME_TYPE_SUPERVISORY:
       core_process_rx_s_frame(rx_frame);
+      TRACE_CORE_RXD_VALID_SFRAME();
       break;
     case SLI_CPC_HDLC_FRAME_TYPE_UNNUMBERED:
       core_process_rx_u_frame(rx_frame);
+      TRACE_CORE_RXD_VALID_UFRAME();
       break;
     default:
       transmit_reject(endpoint, address, endpoint->ack, HDLC_REJECT_ERROR);
@@ -363,6 +438,7 @@ static void core_process_rx_i_frame(frame_t *rx_frame)
   /* Validate payload checksum. In case it is invalid, NAK the packet. */
   if (!sli_cpc_validate_crc_sw(rx_frame->payload, rx_frame_payload_length, fcs)) {
     transmit_reject(endpoint, address, endpoint->ack, HDLC_REJECT_CHECKSUM_MISMATCH);
+    TRACE_CORE_INVALID_PAYLOAD_CHECKSUM();
     return;
   }
 
@@ -512,7 +588,7 @@ static void core_process_rx_u_frame(frame_t *rx_frame)
       uint16_t fcs = hdlc_get_fcs(rx_frame->payload, payload_length);
 
       if (!sli_cpc_validate_crc_sw(rx_frame->payload, payload_length, fcs)) {
-        //TODO SLI_CPC_SYSVIEW_MARK_EVENT_ON_ENDPOINT(SLI_CPC_SYSVIEW_INVALID_FCS_EVENT, endpoint->id);
+        TRACE_CORE_INVALID_PAYLOAD_CHECKSUM();
         TRACE_ENDPOINT_RXD_UNNUMBERED_DROPPED(endpoint, "Bad payload checksum");
         return;
       }
@@ -699,7 +775,7 @@ void core_open_endpoint(uint8_t endpoint_number, uint8_t flags, uint8_t tx_windo
   sl_slist_init(&ep->re_transmit_queue);
   sl_slist_init(&ep->holding_list);
 
-  TRACE_CORE_OPEN_ENDPOINT(ep);
+  TRACE_CORE_OPEN_ENDPOINT(ep->id);
 
   return;
 }
@@ -825,6 +901,7 @@ sl_status_t core_close_endpoint(uint8_t endpoint_number, bool notify_secondary, 
 
   if (force_close) {
     ep->state = SL_CPC_STATE_CLOSED;
+    TRACE_CORE_CLOSE_ENDPOINT(ep->id);
   }
 
   return SL_STATUS_OK;
@@ -1411,6 +1488,8 @@ static void core_push_frame_to_driver(const void *frame, size_t frame_len)
   FATAL_SYSCALL_ON(ret < 0);
 
   FATAL_ON((size_t) ret != frame_len);
+
+  TRACE_CORE_TXD_TRANSMIT_COMPLETED();
 }
 
 /***************************************************************************//**

@@ -42,7 +42,8 @@ int           config_file_tracing = 1; /* Set to true to have the chance to catc
                                           It will be set to false after config file parsing. */
 int           config_lttng_tracing = 0;
 
-const char *  config_traces_folder = "./cpcd-traces";
+const char *  config_traces_folder = "/dev/shm/cpcd-traces"; /* must be mounted on a tmpfs */
+bool          config_enable_frame_trace = false;
 
 bool          config_use_noop_keep_alive = false;
 bool          config_use_encryption = false;
@@ -74,6 +75,8 @@ operation_mode_t config_operation_mode = MODE_NORMAL;
 const char*   config_fu_file = NULL;
 
 const char*   config_binding_key_file = NULL;
+
+long config_stats_interval = 0;
 
 /*******************************************************************************
  **********************  LOCAL CONFIGURATION VALUES   **************************
@@ -119,6 +122,7 @@ static void config_parse_cli_arg(int argc, char *argv[])
   static const struct option opt_list[] =
   {
     { "conf", required_argument, 0, 'c' },
+    { "print-stats", required_argument, 0, 's' },
     { "help", no_argument, 0, 'h' },
     { "version", no_argument, 0, 'v' },
     { "bind", no_argument, 0, 'b' },
@@ -129,7 +133,7 @@ static void config_parse_cli_arg(int argc, char *argv[])
   int opt;
 
   while (1) {
-    opt = getopt_long(argc, argv, "c:bhvf:", opt_list, NULL);
+    opt = getopt_long(argc, argv, "c:bhvs:f:", opt_list, NULL);
 
     if (opt == -1) {
       break;
@@ -140,6 +144,10 @@ static void config_parse_cli_arg(int argc, char *argv[])
         break;
       case 'c':
         config_file_path = optarg;
+        break;
+      case 's':
+        config_stats_interval = strtol(optarg, NULL, 0);
+        FATAL_ON(config_stats_interval <= 0);
         break;
       case 'h':
         config_print_help(stdout, 0);
@@ -301,6 +309,14 @@ static void config_parse_config_file(void)
       } else {
         FATAL("Config file error : bad TRACE_TO_FILE value");
       }
+    } else if (0 == strcmp(name, "ENABLE_FRAME_TRACE")) {
+      if (0 == strcmp(val, "true")) {
+        config_enable_frame_trace = true;
+      } else if (0 == strcmp(val, "false")) {
+        config_enable_frame_trace = false;
+      } else {
+        FATAL("Config file error : bad ENABLE_FRAME_TRACE value");
+      }
     } else if (0 == strcmp(name, "DISABLE_ENCRYPTION")) {
       if (0 == strcmp(val, "true")) {
         config_use_encryption = false;
@@ -447,7 +463,7 @@ static void config_validate_configuration(void)
 
   if (config_operation_mode == MODE_FIRMWARE_UPDATE) {
     if ( access(config_fu_file, F_OK | R_OK) != 0 ) {
-      FATAL("Firmware update file is not accessible.");
+      FATAL("Firmware update file %s is not accessible.", config_fu_file);
     }
     /* TODO : Test for proper file extension and/or whether it is a valid image file for the bootloader */
   }
@@ -463,6 +479,10 @@ static void config_validate_configuration(void)
 
   if (config_file_tracing) {
     init_file_logging();
+  }
+
+  if (config_stats_interval > 0) {
+    init_stats_logging();
   }
 }
 
@@ -515,5 +535,6 @@ static void config_print_help(FILE *stream, int exit_code)
   fprintf(stream, "  cpcd -v/--version : get the version of the daemon\n");
   fprintf(stream, "  cpcd -f/--firmware-update : Specify the .gbl file to update the secondary's firmware with\n");
   fprintf(stream, "  cpcd -b/--bind: bind to the secondary using the provided key in the config file\n");
+  fprintf(stream, "  cpcd -s/--print-stats: print debug statistics to traces. Must provide a given interval in seconds\n");
   exit(exit_code);
 }

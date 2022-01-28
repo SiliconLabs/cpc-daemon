@@ -32,9 +32,17 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <time.h>
+#include <sys/statfs.h>
+#include <sys/timerfd.h>
+#include <linux/magic.h>
 
 #include "misc/logging.h"
+#include "server_core/epoll/epoll.h"
 #include "config.h"
+
+#ifndef UNIT_TESTING
+#include "driver/driver_uart.h"
+#endif
 
 #ifdef COMPILE_LTTNG
 #include <lttng/tracef.h>
@@ -77,6 +85,8 @@ static void write_until_success_or_error(int fd, uint8_t* buff, size_t size)
 #define ASYNC_LOGGER_DONT_TRIGG_UNLESS_THIS_CHUNK_SIZE ASYNC_LOGGER_PAGE_SIZE
 
 static volatile bool gracefully_exit = false;
+
+static int stats_timer_fd;
 
 typedef struct {
   int             fd;
@@ -154,9 +164,16 @@ static void file_logging_init(void)
 {
   int ret;
   FILE * file;
+  struct statfs statfs_buf;
 
   ret = mkdir(config_traces_folder, 0700);
   NO_LOGGING_FATAL_SYSCALL_ON(ret < 0 && errno != EEXIST);
+
+  ret = statfs(config_traces_folder, &statfs_buf);
+  NO_LOGGING_FATAL_SYSCALL_ON(ret < 0);
+  if (statfs_buf.f_type != TMPFS_MAGIC) {
+    WARN("Traces folder %s is not mounted on a tmpfs", config_traces_folder);
+  }
 
   ret = access(config_traces_folder, W_OK);
   NO_LOGGING_FATAL_SYSCALL_ON(ret < 0);
@@ -204,55 +221,45 @@ static void async_logger_write(async_logger_t* logger, void* data, size_t length
   bool do_signal = false;
   size_t count_cpy;
 
-  /* Main, driver and server_core thread have their cancel type to PTHREAD_CANCEL_ASYNCHRONOUS,
-   * meaning when pthread_cancel() is called on them, they will not reach any safe checkpoint
-   * like with PTHREAD_CANCEL_DEFERRED. The only thing we care about when the daemon is killed
-   * or crashes is that the logging be consistent. So, we want those threads to die immediately
-   * as soon as possible UNLESS they are actually writing logging data!
-   * For that reason, we disable their disability when writing to the async buffer. */
-  pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+  pthread_mutex_lock(&logger->mutex);
   {
-    pthread_mutex_lock(&logger->mutex);
-    {
-      if (logger->buffer_size - logger->buffer_count < length) {
-        /* Overflowing traces are discarded */
-        fprintf(stderr, "WARNING : %s logger buffer full, lost log.\n", logger->name);
-        logger->lost_logs++;
-      } else {
-        size_t remaining = logger->buffer_size - logger->buffer_head;
+    if (logger->buffer_size - logger->buffer_count < length) {
+      /* Overflowing traces are discarded */
+      fprintf(stderr, "WARNING : %s logger buffer full, lost log.\n", logger->name);
+      logger->lost_logs++;
+    } else {
+      size_t remaining = logger->buffer_size - logger->buffer_head;
 
-        if (remaining >= length) {
-          memcpy(&logger->buffer[logger->buffer_head], data, length);
-          logger->buffer_head += length;
-        } else { /* Split write at buffer boundary */
-          memcpy(&logger->buffer[logger->buffer_head], data, remaining);
-          memcpy(&logger->buffer[0], data + remaining, length - remaining);
-          logger->buffer_head = length - remaining;
-        }
-
-        logger->buffer_count += length;
-
-        /* Register the high water mark */
-        if (logger->buffer_count > logger->highwater_mark) {
-          logger->highwater_mark = logger->buffer_count;
-        }
-
-        do_signal = true;
-        count_cpy = logger->buffer_count;
+      if (remaining >= length) {
+        memcpy(&logger->buffer[logger->buffer_head], data, length);
+        logger->buffer_head += length;
+      } else { /* Split write at buffer boundary */
+        memcpy(&logger->buffer[logger->buffer_head], data, remaining);
+        memcpy(&logger->buffer[0], data + remaining, length - remaining);
+        logger->buffer_head = length - remaining;
       }
-    }
-    pthread_mutex_unlock(&logger->mutex);
 
-    if (do_signal == true) {
-      /* Don't wake up the logger thread until sufficient data is present.
-       * It will wake up at regular interval anyway to keep stdout traces (in a
-       * terminal for example) fluid. */
-      if (count_cpy >= ASYNC_LOGGER_DONT_TRIGG_UNLESS_THIS_CHUNK_SIZE) {
-        pthread_cond_signal(&logger->condition);
+      logger->buffer_count += length;
+
+      /* Register the high water mark */
+      if (logger->buffer_count > logger->highwater_mark) {
+        logger->highwater_mark = logger->buffer_count;
       }
+
+      do_signal = true;
+      count_cpy = logger->buffer_count;
     }
   }
-  pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+  pthread_mutex_unlock(&logger->mutex);
+
+  if (do_signal == true) {
+    /* Don't wake up the logger thread until sufficient data is present.
+     * It will wake up at regular interval anyway to keep stdout traces (in a
+     * terminal for example) fluid. */
+    if (count_cpy >= ASYNC_LOGGER_DONT_TRIGG_UNLESS_THIS_CHUNK_SIZE) {
+      pthread_cond_signal(&logger->condition);
+    }
+  }
 }
 
 static void* async_logger_thread_func(void* param)
@@ -377,6 +384,116 @@ void logging_init(void)
   async_logger_init(&file_logger,
                     -1,  /* No file descriptor for the moment */
                     "file");
+}
+
+static void logging_print_stats(epoll_private_data_t *event_private_data)
+{
+  int fd_timer = event_private_data->file_descriptor;
+
+  /* Ack the timer */
+  {
+    uint64_t expiration;
+    ssize_t ret;
+
+    ret = read(fd_timer, &expiration, sizeof(expiration));
+    FATAL_ON(ret < 0);
+  }
+
+  TRACE("Host core debug counters:"
+        "\nendpoint_opened %u"
+        "\nendpoint_closed %u"
+        "\nrxd_frame %u"
+        "\nrxd_valid_iframe %u"
+        "\nrxd_valid_uframe %u"
+        "\nrxd_valid_sframe %u"
+        "\nrxd_data_frame_dropped %u"
+        "\ntxd_reject_destination_unreachable %u"
+        "\ntxd_reject_error_fault %u"
+        "\ntxd_completed %u"
+        "\nretxd_data_frame %u"
+        "\ndriver_packet_dropped %u"
+        "\ninvalid_header_checksum %u"
+        "\ninvalid_payload_checksum %u\n",
+        primary_core_debug_counters.endpoint_opened,
+        primary_core_debug_counters.endpoint_closed,
+        primary_core_debug_counters.rxd_frame,
+        primary_core_debug_counters.rxd_valid_iframe,
+        primary_core_debug_counters.rxd_valid_uframe,
+        primary_core_debug_counters.rxd_valid_sframe,
+        primary_core_debug_counters.rxd_data_frame_dropped,
+        primary_core_debug_counters.txd_reject_destination_unreachable,
+        primary_core_debug_counters.txd_reject_error_fault,
+        primary_core_debug_counters.txd_completed,
+        primary_core_debug_counters.retxd_data_frame,
+        primary_core_debug_counters.driver_packet_dropped,
+        primary_core_debug_counters.invalid_header_checksum,
+        primary_core_debug_counters.invalid_payload_checksum);
+
+  TRACE("RCP core debug counters"
+        "\nendpoint_opened %u"
+        "\nendpoint_closed %u"
+        "\nrxd_frame %u"
+        "\nrxd_valid_iframe %u"
+        "\nrxd_valid_uframe %u"
+        "\nrxd_valid_sframe %u"
+        "\nrxd_data_frame_dropped %u"
+        "\ntxd_reject_destination_unreachable %u"
+        "\ntxd_reject_error_fault %u"
+        "\ntxd_completed %u"
+        "\nretxd_data_frame %u"
+        "\ndriver_error %u"
+        "\ndriver_packet_dropped %u"
+        "\ninvalid_header_checksum %u"
+        "\ninvalid_payload_checksum %u\n",
+        secondary_core_debug_counters.endpoint_opened,
+        secondary_core_debug_counters.endpoint_closed,
+        secondary_core_debug_counters.rxd_frame,
+        secondary_core_debug_counters.rxd_valid_iframe,
+        secondary_core_debug_counters.rxd_valid_uframe,
+        secondary_core_debug_counters.rxd_valid_sframe,
+        secondary_core_debug_counters.rxd_data_frame_dropped,
+        secondary_core_debug_counters.txd_reject_destination_unreachable,
+        secondary_core_debug_counters.txd_reject_error_fault,
+        secondary_core_debug_counters.txd_completed,
+        secondary_core_debug_counters.retxd_data_frame,
+        secondary_core_debug_counters.driver_error,
+        secondary_core_debug_counters.driver_packet_dropped,
+        secondary_core_debug_counters.invalid_header_checksum,
+        secondary_core_debug_counters.invalid_payload_checksum);
+
+#ifndef UNIT_TESTING
+  if (config_bus == UART) {
+    driver_uart_print_overruns();
+  }
+#endif
+}
+
+void init_stats_logging(void)
+{
+  /* Setup timer */
+  stats_timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
+  FATAL_SYSCALL_ON(stats_timer_fd < 0);
+
+  struct itimerspec timeout_time = { .it_interval = { .tv_sec = config_stats_interval, .tv_nsec = 0 },
+                                     .it_value    = { .tv_sec = config_stats_interval, .tv_nsec = 0 } };
+
+  int ret = timerfd_settime(stats_timer_fd,
+                            0,
+                            &timeout_time,
+                            NULL);
+
+  FATAL_SYSCALL_ON(ret < 0);
+
+  /* Setup epoll */
+  {
+    epoll_private_data_t* private_data = (epoll_private_data_t*) malloc(sizeof(epoll_private_data_t));
+    FATAL_ON(private_data == NULL);
+
+    private_data->callback = logging_print_stats;
+    private_data->file_descriptor = stats_timer_fd;
+
+    epoll_register(private_data);
+  }
 }
 
 void init_file_logging()
@@ -543,7 +660,7 @@ void trace_frame(const char* string, const void* buffer, size_t len)
   size_t log_string_length = 0;
   uint8_t* frame = (uint8_t*) buffer;
 
-  if (!config_file_tracing && !config_stdout_tracing) {
+  if ((!config_file_tracing && !config_stdout_tracing) || config_enable_frame_trace == false) {
     return;
   }
 

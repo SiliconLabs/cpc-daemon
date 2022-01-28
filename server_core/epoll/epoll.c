@@ -40,7 +40,7 @@ void epoll_init(void)
 {
   /* Create the epoll set */
   {
-    fd_epoll = epoll_create1(0);
+    fd_epoll = epoll_create1(EPOLL_CLOEXEC);
     FATAL_SYSCALL_ON(fd_epoll < 0);
   }
 

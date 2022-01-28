@@ -28,12 +28,14 @@
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include <signal.h>
+#include <linux/serial.h>
 
 #include "misc/logging.h"
 #include "misc/utils.h"
 #include "driver/driver_uart.h"
 #include "server_core/core/hdlc.h"
 #include "server_core/core/crc.h"
+#include "driver/driver_kill.h"
 
 #define UART_BUFFER_SIZE 4096 + SLI_CPC_HDLC_HEADER_RAW_SIZE
 #define MAX_EPOLL_EVENTS 5
@@ -43,7 +45,6 @@ static int fd_core;
 static int fd_epoll;
 static pthread_t drv_thread;
 static unsigned int uart_bitrate;
-static volatile bool cancel_requested = false;
 
 typedef void (*driver_epoll_callback_t)(void);
 
@@ -74,13 +75,6 @@ static bool header_re_synch(uint8_t *buffer, size_t *buffer_head);
 
 static void driver_uart_cleanup(void);
 
-static void driver_uart_term_sig_handler(int sig)
-{
-  FATAL_ON(sig != SIGTERM);
-
-  cancel_requested = true;
-}
-
 pthread_t driver_uart_init(int *fd_to_core, const char *device, unsigned int bitrate, bool hardflow)
 {
   int fd_sockets[2];
@@ -106,7 +100,7 @@ pthread_t driver_uart_init(int *fd_to_core, const char *device, unsigned int bit
 
     /* Create the epoll set */
     {
-      fd_epoll = epoll_create1(0);
+      fd_epoll = epoll_create1(EPOLL_CLOEXEC);
       FATAL_SYSCALL_ON(fd_epoll < 0);
     }
 
@@ -127,6 +121,17 @@ pthread_t driver_uart_init(int *fd_to_core, const char *device, unsigned int bit
       ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, fd_uart, &event);
       FATAL_SYSCALL_ON(ret < 0);
     }
+
+    /* Setup the kill file descriptor */
+    {
+      int eventfd_kill = driver_kill_init();
+
+      event.events = EPOLLIN; /* Level-triggered read() availability */
+      event.data.ptr = driver_uart_cleanup;
+
+      ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, eventfd_kill, &event);
+      FATAL_SYSCALL_ON(ret < 0);
+    }
   }
 
   /* create driver thread */
@@ -141,6 +146,14 @@ pthread_t driver_uart_init(int *fd_to_core, const char *device, unsigned int bit
   TRACE_DRIVER("Init done");
 
   return drv_thread;
+}
+
+void driver_uart_print_overruns(void)
+{
+  struct serial_icounter_struct counters;
+  int retval = ioctl(fd_uart, TIOCGICOUNT, &counters);
+  FATAL_SYSCALL_ON(retval < 0);
+  TRACE_DRIVER("Overruns %d,%d", counters.overrun, counters.buf_overrun);
 }
 
 static void driver_uart_cleanup(void)
@@ -158,29 +171,8 @@ static void* driver_thread_func(void* param)
 {
   (void) param;
   struct epoll_event events[MAX_EPOLL_EVENTS] = {};
-  sigset_t emptyset;
-
-  pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 
   TRACE_DRIVER("Thread start");
-
-  /* Setup signaling for this thread */
-  {
-    struct sigaction sa = { 0 };
-    int ret;
-    sigset_t blockset;
-
-    sigemptyset(&blockset);         /* Clears the signal set*/
-    sigaddset(&blockset, SIGTERM);   /* Block only SIGTERM */
-    sigprocmask(SIG_BLOCK, &blockset, NULL); /* Apply the signal mask to this thread*/
-
-    sa.sa_handler = driver_uart_term_sig_handler;
-    sa.sa_flags = 0;
-    sigemptyset(&sa.sa_mask);
-
-    ret = sigaction(SIGTERM, &sa, NULL);
-    FATAL_SYSCALL_ON(ret != 0);
-  }
 
   while (1) {
     int event_count;
@@ -188,23 +180,12 @@ static void* driver_thread_func(void* param)
     /* Wait for action */
     {
       do {
-        sigemptyset(&emptyset);
-        event_count = epoll_pwait(fd_epoll, events, MAX_EPOLL_EVENTS, -1, &emptyset);
-
-        if (event_count == -1) {
-          if (errno == EINTR) {
-            if (cancel_requested) {
-              driver_uart_cleanup();
-            } else {
-              /* Some other signal was received, go back to waiting */
-              continue;
-            }
-          } else {
-            FATAL_SYSCALL_ON(1);
-          }
-        } else {
-          break;
+        event_count = epoll_wait(fd_epoll, events, MAX_EPOLL_EVENTS, -1);
+        if (event_count == -1 && errno == EINTR) {
+          continue;
         }
+        FATAL_SYSCALL_ON(event_count == -1);
+        break;
       } while (1);
 
       /* Timeouts should not occur */
@@ -402,6 +383,7 @@ static bool validate_header(uint8_t *header_start)
   hcs = hdlc_get_hcs(header_start);
 
   if (!sli_cpc_validate_crc_sw(header_start, SLI_CPC_HDLC_HEADER_SIZE, hcs)) {
+    TRACE_DRIVER_INVALID_HEADER_CHECKSUM();
     return false;
   }
 
@@ -529,12 +511,6 @@ static void driver_uart_process_core(void)
       usleep(time_usec);
       ioctl(fd_uart, TIOCOUTQ, &bytes_remaining);
     }
-
-    // Wait at least twenty bytes to cause an idle event on the bus
-    // TODO: Find appropriate idle time
-    // TODO: Will be removed once secondary supports unsegmented frames
-    unsigned int time_usec = (unsigned int)(((double)(20 * 8) / uart_bitrate) * 1000000);
-    usleep(time_usec);
   }
 
   {

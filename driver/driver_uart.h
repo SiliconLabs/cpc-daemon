@@ -32,4 +32,6 @@ pthread_t driver_uart_init(int *fd_to_core, const char *device, unsigned int bit
 
 int driver_uart_open(const char *device, unsigned int bitrate, bool hardflow);
 
+void driver_uart_print_overruns(void);
+
 #endif //DRIVER_UART_H

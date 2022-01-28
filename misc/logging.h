@@ -25,9 +25,30 @@
 #include <stdio.h>
 #include <stdint.h>
 
+/// Struct representing CPC Core debug counters.
+typedef struct {
+  uint32_t endpoint_opened;
+  uint32_t endpoint_closed;
+  uint32_t rxd_frame;
+  uint32_t rxd_valid_iframe;
+  uint32_t rxd_valid_uframe;
+  uint32_t rxd_valid_sframe;
+  uint32_t rxd_data_frame_dropped;
+  uint32_t txd_reject_destination_unreachable;
+  uint32_t txd_reject_error_fault;
+  uint32_t txd_completed;
+  uint32_t retxd_data_frame;
+  uint32_t driver_error;
+  uint32_t driver_packet_dropped;
+  uint32_t invalid_header_checksum;
+  uint32_t invalid_payload_checksum;
+} core_debug_counters_t;
+
 void logging_init(void);
 
 void init_file_logging();
+
+void init_stats_logging(void);
 
 void logging_kill(void);
 
@@ -36,6 +57,14 @@ void trace(const bool force_stdout, const char* string, ...);
 void trace_no_timestamp(const char* string, ...);
 
 void trace_frame(const char* string, const void* buffer, size_t len);
+
+void logging_driver_print_stats(void);
+
+extern core_debug_counters_t primary_core_debug_counters;
+extern core_debug_counters_t secondary_core_debug_counters;
+
+#define EVENT_COUNTER_INIT()         (memset(&sl_cpc_core_debug_counters, sizeof(sl_cpc_core_debug_counters), 0))
+#define EVENT_COUNTER_INC(counter)   ((primary_core_debug_counters.counter)++)
 
 #ifdef COMPILE_LTTNG
 #include <lttng/tracef.h>
@@ -53,6 +82,8 @@ void trace_frame(const char* string, const void* buffer, size_t len);
 #define TRACE_DRIVER(string, ...)     TRACE("Driver : "  string "\n", ##__VA_ARGS__)
 
 #define TRACE_CORE(string, ...)       TRACE("Core : "  string "\n", ##__VA_ARGS__)
+
+#define TRACE_CORE_EVENT(event, string, ...)       do { EVENT_COUNTER_INC(event); TRACE("Core : "  string "\n", ##__VA_ARGS__); } while (0)
 
 #define TRACE_SECURITY(string, ...)   TRACE("Security : "  string "\n", ##__VA_ARGS__)
 
@@ -76,27 +107,33 @@ void trace_frame(const char* string, const void* buffer, size_t len);
 
 #define TRACE_SERVER_TXD_FRAME(buffer, len)                 TRACE_FRAME("Server : txd frame : ", buffer, len)
 
-#define TRACE_CORE_OPEN_ENDPOINT(ep)                      TRACE_CORE("open ep #%u", ep->id)
+#define TRACE_CORE_OPEN_ENDPOINT(ep_id)                      TRACE_CORE_EVENT(endpoint_opened, "open ep #%u", ep_id)
 
-#define TRACE_CORE_CLOSE_ENDPOINT(ep)                     TRACE_CORE("close ep #%u", ep->id)
+#define TRACE_CORE_CLOSE_ENDPOINT(ep_id)                     TRACE_CORE_EVENT(endpoint_closed, "close ep #%u", ep_id)
 
-#define TRACE_CORE_RXD_FRAME(buffer, len)                 TRACE_FRAME("Core : rxd frame : ", buffer, len)
+#define TRACE_CORE_RXD_FRAME(buffer, len)                 do { EVENT_COUNTER_INC(rxd_frame); TRACE_FRAME("Core : rxd frame : ", buffer, len); } while (0)
 
-#define TRACE_CORE_RXD_VALID_FRAME()                      TRACE_CORE("rxd frame with valid header checksum")
+#define TRACE_CORE_RXD_VALID_IFRAME()                     TRACE_CORE_EVENT(rxd_valid_iframe, "rxd iframe with valid header checksum")
 
-#define TRACE_CORE_RXD_DATA_FRAME_DROPPED()               TRACE_CORE("rxd data frame dropped")
+#define TRACE_CORE_RXD_VALID_UFRAME()                     TRACE_CORE_EVENT(rxd_valid_uframe, "rxd uframe with valid header checksum")
 
-#define TRACE_CORE_TXD_REJECT_DESTINATION_UNREACHABLE()   TRACE_CORE("txd reject destination unreachable")
+#define TRACE_CORE_RXD_VALID_SFRAME()                     TRACE_CORE_EVENT(rxd_valid_sframe, "rxd sframe with valid header checksum")
 
-#define TRACE_CORE_TXD_REJECT_ERROR_FAULT()               TRACE_CORE("txd reject error fault")
+#define TRACE_CORE_RXD_DATA_FRAME_DROPPED()               TRACE_CORE_EVENT(rxd_data_frame_dropped, "rxd data frame dropped")
+
+#define TRACE_CORE_TXD_REJECT_DESTINATION_UNREACHABLE()   TRACE_CORE_EVENT(txd_reject_destination_unreachable, "txd reject destination unreachable")
+
+#define TRACE_CORE_TXD_REJECT_ERROR_FAULT()               TRACE_CORE_EVENT(txd_reject_error_fault, "txd reject error fault")
 
 #define TRACE_CORE_DRIVER_READ_ERROR()                    TRACE_CORE("driver read error")
 
 #define TRACE_CORE_DRIVER_PACKET_DROPPED()                TRACE_CORE("driver packed dropped")
 
-#define TRACE_CORE_INVALID_HEADER_CHECKSUM()              TRACE_CORE("invalid header checksum")
+#define TRACE_CORE_INVALID_HEADER_CHECKSUM()              TRACE_CORE_EVENT(invalid_header_checksum, "invalid header checksum")
 
-#define TRACE_CORE_TXD_TRANSMIT_COMPLETED()               TRACE_CORE("txd transmit completed")
+#define TRACE_CORE_INVALID_PAYLOAD_CHECKSUM()              TRACE_CORE_EVENT(invalid_payload_checksum, "invalid payload checksum")
+
+#define TRACE_CORE_TXD_TRANSMIT_COMPLETED()               TRACE_CORE_EVENT(txd_completed, "txd transmit completed")
 
 #define TRACE_ENDPOINT_RXD_FRAME(ep)                      TRACE_CORE("Endpoint #%u: rxd frame", ep->id)
 
@@ -150,7 +187,7 @@ void trace_frame(const char* string, const void* buffer, size_t len);
 
 #define TRACE_ENDPOINT_TXD_REJECT_FAULT(ep)               TRACE_CORE("Endpoint #%u: txd reject fault", ep->id)
 
-#define TRACE_ENDPOINT_RETXD_DATA_FRAME(ep)               TRACE_CORE("Endpoint #%u: re-txd data frame", ep->id)
+#define TRACE_ENDPOINT_RETXD_DATA_FRAME(ep)               do { EVENT_COUNTER_INC(retxd_data_frame); TRACE_CORE("Endpoint #%u: re-txd data frame", ep->id); } while (0)
 
 #define TRACE_ENDPOINT_FRAME_TRANSMIT_SUBMITTED(ep)       TRACE_CORE("Endpoint #%d: frame transmit submitted", (ep == NULL) ? -1 : (signed) ep->id)
 
@@ -162,11 +199,13 @@ void trace_frame(const char* string, const void* buffer, size_t len);
 
 #define TRACE_DRIVER_RXD_FRAME(buffer, len)               TRACE_FRAME("Driver : rxd frame : ", buffer, len)
 
+#define TRACE_DRIVER_INVALID_HEADER_CHECKSUM()            do { EVENT_COUNTER_INC(invalid_header_checksum); TRACE_DRIVER("invalid header checksum in driver"); } while (0)
+
 #define OUT_FILE stderr
 
-__attribute__((noreturn)) void cancel_all_threads(int status);
+__attribute__((noreturn)) void signal_crash(void);
 
-#define CRASH() do { cancel_all_threads(EXIT_FAILURE); } while (0)
+#define CRASH() do { signal_crash(); } while (0)
 
 #define WARN(msg, ...)                                                                                                             \
   do {                                                                                                                             \

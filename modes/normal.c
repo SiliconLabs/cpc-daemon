@@ -29,10 +29,11 @@
 extern pthread_t driver_thread;
 extern pthread_t server_core_thread;
 
+void main_wait_crash_or_gracefull_exit(void);
+
 void run_normal_mode(void)
 {
   int fd_socket_driver_core;
-  void* join_value;
 
   // Init the driver
   {
@@ -57,6 +58,5 @@ void run_normal_mode(void)
     security_post_command(SECURITY_COMMAND_INITIALIZE_SESSION);
   }
 
-  pthread_join(driver_thread, &join_value);
-  pthread_join(server_core_thread, &join_value);
+  main_wait_crash_or_gracefull_exit();
 }

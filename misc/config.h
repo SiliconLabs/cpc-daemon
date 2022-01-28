@@ -50,6 +50,7 @@ extern bus_t         config_bus;
 extern int           config_stdout_tracing;
 extern int           config_file_tracing;
 extern int           config_lttng_tracing;
+extern bool          config_enable_frame_trace;
 
 extern bool          config_use_noop_keep_alive;
 extern bool          config_use_encryption;
@@ -77,6 +78,8 @@ extern operation_mode_t config_operation_mode;
 
 extern const char*   config_binding_key_file;
 extern const char*   config_fu_file;
+
+extern long          config_stats_interval;
 
 void config_init(int argc, char *argv[]);
 

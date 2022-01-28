@@ -26,11 +26,14 @@
  ******************************************************************************/
 void security_init(void);
 
+void security_kill_signal(void);
+
 typedef enum {
   SECURITY_COMMAND_NONE,
   SECURITY_COMMAND_RECONNECT,
   SECURITY_COMMAND_PLAIN_TEXT_BINDING,
-  SECURITY_COMMAND_INITIALIZE_SESSION
+  SECURITY_COMMAND_INITIALIZE_SESSION,
+  SECURITY_COMMAND_KILL_THREAD
 }sl_cpc_security_command_t;
 
 /***************************************************************************//**

@@ -1,6 +1,6 @@
 /***************************************************************************//**
  * @file
- * @brief Co-Processor Communication Protocol(CPC) - Security Endpoint
+ * @brief Co-Processor Communication Protocol (CPC) - Driver kill
  * @version 3.2.0
  *******************************************************************************
  * # License
@@ -16,38 +16,11 @@
  *
  ******************************************************************************/
 
-#define _GNU_SOURCE
-#include <pthread.h>
+#ifndef DRIVER_KILL_H
+#define DRIVER_KILL_H
 
-#include "security.h"
-#include "misc/config.h"
-#include "misc/logging.h"
-#include "server_core/server/server_ready_sync.h"
-#include "security/private/thread/security_thread.h"
+int driver_kill_init(void);
 
-extern pthread_t security_thread;
+void driver_kill_signal(void);
 
-bool security_session_initialized = false;
-
-void security_init(void)
-{
-  int ret;
-
-  if (config_use_encryption == false) {
-    TRACE_SECURITY("Encryption is disabled");
-    return;
-  }
-
-  ret = pthread_create(&security_thread, NULL, security_thread_func, NULL);
-  FATAL_ON(ret != 0);
-
-  ret = pthread_setname_np(security_thread, "security");
-  FATAL_ON(ret != 0);
-
-  TRACE_SECURITY("Thread created");
-}
-
-void security_kill_signal(void)
-{
-  security_post_command(SECURITY_COMMAND_KILL_THREAD);
-}
+#endif //DRIVER_KILL_H
