@@ -1,6 +1,6 @@
 /***************************************************************************//**
  * @file
- * @brief Co-Processor Communication Protocol(CPC) - Security Endpoint
+ * @brief Co-Processor Communication Protocol (CPC) - Driver kill
  * @version 3.2.0
  *******************************************************************************
  * # License
@@ -15,39 +15,35 @@
  * sections of the MSLA applicable to Source Code.
  *
  ******************************************************************************/
+#define _GNU_SOURCE             /* See feature_test_macros(7) */
+#include <fcntl.h>              /* Definition of O_* constants */
+#include <sys/eventfd.h>
+#include <unistd.h>
 
-#define _GNU_SOURCE
-#include <pthread.h>
-
-#include "security.h"
-#include "misc/config.h"
+#include "driver_kill.h"
 #include "misc/logging.h"
-#include "server_core/server/server_ready_sync.h"
-#include "security/private/thread/security_thread.h"
 
-extern pthread_t security_thread;
+static int kill_eventfd = -1;
 
-bool security_session_initialized = false;
-
-void security_init(void)
+int driver_kill_init(void)
 {
-  int ret;
+  kill_eventfd = eventfd(0, //Start with 0 value
+                         EFD_CLOEXEC);
 
-  if (config_use_encryption == false) {
-    TRACE_SECURITY("Encryption is disabled");
+  FATAL_ON(kill_eventfd == -1);
+
+  return kill_eventfd;
+}
+
+void driver_kill_signal(void)
+{
+  ssize_t ret;
+  const uint64_t event_value = 1; //doesn't matter what it is
+
+  if (kill_eventfd == -1) {
     return;
   }
 
-  ret = pthread_create(&security_thread, NULL, security_thread_func, NULL);
-  FATAL_ON(ret != 0);
-
-  ret = pthread_setname_np(security_thread, "security");
-  FATAL_ON(ret != 0);
-
-  TRACE_SECURITY("Thread created");
-}
-
-void security_kill_signal(void)
-{
-  security_post_command(SECURITY_COMMAND_KILL_THREAD);
+  ret = write(kill_eventfd, &event_value, sizeof(event_value));
+  FATAL_ON(ret != sizeof(event_value));
 }

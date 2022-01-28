@@ -34,6 +34,7 @@
 #include "server_core/core/hdlc.h"
 #include "misc/logging.h"
 #include "driver/driver_spi.h"
+#include "driver/driver_kill.h"
 
 #define MAX_EPOLL_EVENTS 5
 #define IRQ_LINE_TIMEOUT  10
@@ -48,8 +49,6 @@ static struct spi_ioc_transfer spi_tranfer;
 
 static uint8_t rx_spi_buffer[4096];
 static uint8_t tx_spi_buffer[4096];
-
-static volatile bool cancel_requested = false;
 
 typedef void (*driver_epoll_callback_t)(void);
 
@@ -80,13 +79,6 @@ static void driver_spi_cleanup(void)
   TRACE_DRIVER("SPI driver thread cancelled");
 
   pthread_exit(0);
-}
-
-static void driver_spi_term_sig_handler(int sig)
-{
-  FATAL_ON(sig != SIGTERM);
-
-  cancel_requested = true;
 }
 
 pthread_t driver_spi_init(int *fd_to_core,
@@ -120,7 +112,7 @@ pthread_t driver_spi_init(int *fd_to_core,
 
     /* Create the epoll set */
     {
-      fd_epoll = epoll_create1(0);
+      fd_epoll = epoll_create1(EPOLL_CLOEXEC);
       FATAL_SYSCALL_ON(fd_epoll < 0);
     }
 
@@ -138,6 +130,17 @@ pthread_t driver_spi_init(int *fd_to_core,
       event.events = EPOLLPRI; /* Level-triggered read() availability */
       event.data.ptr = driver_spi_process_irq;
       ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, spi_dev.irq_gpio.irq_fd, &event);
+      FATAL_SYSCALL_ON(ret < 0);
+    }
+
+    /* Setup the kill file descriptor */
+    {
+      int eventfd_kill = driver_kill_init();
+
+      event.events = EPOLLIN; /* Level-triggered read() availability */
+      event.data.ptr = driver_spi_cleanup;
+
+      ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, eventfd_kill, &event);
       FATAL_SYSCALL_ON(ret < 0);
     }
   }
@@ -160,52 +163,20 @@ static void* driver_thread_func(void* param)
 {
   (void) param;
   struct epoll_event events[MAX_EPOLL_EVENTS] = {};
-  sigset_t emptyset;
-
-  pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+  int event_count;
 
   TRACE_DRIVER("Thread start");
 
-  /* Setup signaling for this thread */
-  {
-    struct sigaction sa = { 0 };
-    int ret;
-    sigset_t blockset;
-
-    sigemptyset(&blockset);         /* Clears the signal set*/
-    sigaddset(&blockset, SIGTERM);   /* Block only SIGTERM */
-    sigprocmask(SIG_BLOCK, &blockset, NULL); /* Apply the signal mask to this thread*/
-
-    sa.sa_handler = driver_spi_term_sig_handler;
-    sa.sa_flags = 0;
-    sigemptyset(&sa.sa_mask);
-
-    ret = sigaction(SIGTERM, &sa, NULL);
-    FATAL_SYSCALL_ON(ret != 0);
-  }
-
   while (1) {
-    int event_count;
-
     /* Wait for action */
     {
       do {
-        sigemptyset(&emptyset);
-        event_count = epoll_pwait(fd_epoll, events, MAX_EPOLL_EVENTS, -1, &emptyset);
-        if (event_count == -1) {
-          if (errno == EINTR) {
-            if (cancel_requested) {
-              driver_spi_cleanup();
-            } else {
-              /* Some other signal was received, go back to waiting */
-              continue;
-            }
-          } else {
-            FATAL_SYSCALL_ON(1);
-          }
-        } else {
-          break;
+        event_count = epoll_wait(fd_epoll, events, MAX_EPOLL_EVENTS, -1);
+        if (event_count == -1 && errno == EINTR) {
+          continue;
         }
+        FATAL_SYSCALL_ON(event_count == -1);
+        break;
       } while (1);
 
       /* Timeouts should not occur */
@@ -247,6 +218,7 @@ static int get_data_size(uint8_t *header)
     if (hcs == hdlc_get_hcs(header)) {
       return (int)hdlc_get_length(header);
     } else {
+      TRACE_DRIVER_INVALID_HEADER_CHECKSUM();
       return -1;
     }
   } else {
@@ -318,6 +290,7 @@ static void driver_spi_open(const char *device,
   // Setup CS gpio
   FATAL_ON(gpio_init(&spi_dev.cs_gpio, cs_gpio_number) < 0);
   FATAL_ON(gpio_direction(spi_dev.cs_gpio, OUT) < 0);
+  FATAL_ON(gpio_write(spi_dev.cs_gpio, 1u) < 0);
 
   // Setup IRQ gpio
   FATAL_ON(gpio_init(&spi_dev.irq_gpio, irq_gpio_number) < 0);
@@ -333,6 +306,7 @@ static void driver_spi_process_irq(void)
   uint8_t rx_buffer[4096];
   ssize_t write_retval;
   int timeout = IRQ_LINE_TIMEOUT;
+  int error_timeout = 4096;
 
   // Consume interrupt
   clear_rx_interrupt();
@@ -355,7 +329,22 @@ static void driver_spi_process_irq(void)
 
     payload_size = get_data_size((uint8_t *)(long)spi_tranfer.rx_buf);
     if (payload_size == -1) {
+      spi_tranfer.len = 1u;
+
+      while ((gpio_read(spi_dev.irq_gpio) == 0u)
+             && (error_timeout > 0)) {
+        ret = ioctl(spi_dev.spi_dev_descriptor, SPI_IOC_MESSAGE(1), &spi_tranfer);
+        FATAL_ON(ret != 1);
+        timeout--;
+      }
+
       cs_deassert();
+
+      usleep(1000);
+
+      TRACE_FRAME("Driver : Invalid header contain: ", rx_buffer, (size_t)SLI_CPC_HDLC_HEADER_RAW_SIZE);
+      TRACE_DRIVER("Invalid header");
+
       return;
     }
 

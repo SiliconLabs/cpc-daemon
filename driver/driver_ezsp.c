@@ -92,7 +92,6 @@ int send_firmware(const char* image_file,
   uint8_t* mmaped_image_file_data;
   size_t mmaped_image_file_len;
   unsigned int retransmit_count = 0;
-  int timeout = BOOTLOADER_TIMEOUT;
 
   driver_ezsp_spi_open(device,
                        mode,
@@ -101,46 +100,6 @@ int send_firmware(const char* image_file,
                        cs_gpio,
                        irq_gpio,
                        wake_gpio);
-
-  if (gpio_read(spi_dev.irq_gpio) != 0) {
-    // Wake secondary side
-    gpio_write(spi_dev.wake_gpio, 0);
-
-    //AN711 Section 6
-    usleep(300000);
-
-    if (gpio_read(spi_dev.irq_gpio) != 0) {
-      trace_no_timestamp("Bootloader fail to wakeup\n");
-      return -1;
-    }
-
-    // NCP deassert int pin
-    gpio_write(spi_dev.wake_gpio, 1);
-
-    //AN711 Section 6
-    usleep(25);
-
-    // Wait for NCP to response
-    while ((gpio_read(spi_dev.irq_gpio) != 1)
-           && timeout > 0) {
-      usleep(100);
-      timeout--;
-    }
-
-    if (timeout == 0) {
-      FATAL("Unable to reboot in bootloader mode");
-    }
-  } else {
-    cs_assert();
-    ret = read_until_end_of_frame();
-    cs_deassert();
-
-    if (ret < 0) {
-      FATAL("Unable to reboot in bootloader mode");
-    }
-  }
-
-  sleep(1);
 
   // AN1084 Section 2.2
   get_spi_status();

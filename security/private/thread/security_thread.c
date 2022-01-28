@@ -45,8 +45,6 @@ void* security_thread_func(void* param)
   (void)param;
   int ret;
 
-  pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
-
   /* The server can take time to be up; try to to load the key first
    * to crash early if its bad. */
   security_load_binding_key_from_file();
@@ -90,6 +88,10 @@ void* security_thread_func(void* param)
       case SECURITY_COMMAND_INITIALIZE_SESSION:
         TRACE_SECURITY("Proceeding to session initialization");
         security_initialize_session();
+        break;
+
+      case SECURITY_COMMAND_KILL_THREAD:
+        pthread_exit(0);
         break;
 
       default:

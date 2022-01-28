@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(cpcd VERSION "4.0.0.0")
+project(cpcd VERSION "4.0.1.0")
 configure_file(misc/version.h.in autogen/version.h)
 
 set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR})
@@ -81,6 +81,7 @@ if((TARGET_GROUP STREQUAL release) OR
                       driver/driver_uart.c
                       driver/driver_xmodem.c
 					  driver/driver_ezsp.c
+                      driver/driver_kill.c
                       misc/logging.c
                       misc/config.c
                       misc/gpio.c
@@ -166,6 +167,7 @@ elseif((TARGET_GROUP STREQUAL unit_test) OR (TARGET_GROUP STREQUAL unit_test_wit
                             security/private/thread/command_synchronizer.c
                             security/private/thread/security_thread.c
                             driver/driver_emul.c
+                            driver/driver_kill.c
                             lib/sl_cpc.c
                             misc/logging.c
                             misc/config.c
@@ -223,6 +225,7 @@ elseif(TARGET_GROUP STREQUAL target_test)
                     driver/driver_spi.c
                     driver/driver_xmodem.c
 					driver/driver_ezsp.c
+                    driver/driver_kill.c
                     misc/logging.c
                     misc/config.c
                     misc/sl_slist.c

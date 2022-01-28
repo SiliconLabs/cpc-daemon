@@ -274,7 +274,10 @@ int cpc_init(cpc_handle_t *handle, const char* instance_name, bool enable_tracin
     }
   }
 
-  signal(SIGUSR1, SIGUSR1_handler);
+  // Check if reset callback is define
+  if (reset_callback != NULL) {
+    signal(SIGUSR1, SIGUSR1_handler);
+  }
 
   if (handle == NULL) {
     errno = EINVAL;

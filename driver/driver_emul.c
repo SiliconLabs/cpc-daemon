@@ -157,7 +157,8 @@ static void* driver_thread_func(void* param)
   fd_set rfds;
   int retval;
   ssize_t ret;
-  frame_t temp_buffer;
+  uint8_t temp_buffer[2048];
+  frame_t *frame;
   int max_fd = 0;
   uint8_t control;
   uint8_t seq;
@@ -180,15 +181,17 @@ static void* driver_thread_func(void* param)
       continue;
     }
     if (FD_ISSET(fd_socket_drv, &rfds)) {
-      ret =  recv(fd_socket_drv, &temp_buffer, 2048, 0);
+      memset(temp_buffer, 0, 2048);
+      ret =  recv(fd_socket_drv, temp_buffer, 2048, 0);
       FATAL_ON(ret < 2);
-      TRACE_DRIVER_RXD_FRAME((const void*)&temp_buffer, (size_t)ret);
-      control = hdlc_get_control(temp_buffer.header);
-      address = hdlc_get_address(temp_buffer.header);
+      TRACE_DRIVER_RXD_FRAME((const void*)temp_buffer, (size_t)ret);
+      frame = (frame_t *)temp_buffer;
+      control = hdlc_get_control(frame->header);
+      address = hdlc_get_address(frame->header);
       type    = hdlc_get_frame_type(control);
       seq = hdlc_get_seq(control);
       ack = hdlc_get_ack(control);
-      sl_cpc_system_cmd_t *rx_command = (sl_cpc_system_cmd_t *)temp_buffer.payload;
+      sl_cpc_system_cmd_t *rx_command = (sl_cpc_system_cmd_t *)frame->payload;
       sl_cpc_system_property_cmd_t *rx_property_cmd = (sl_cpc_system_property_cmd_t*)(rx_command->payload);
 
       if (address == 0) {
@@ -250,10 +253,10 @@ static void* driver_thread_func(void* param)
         }
       } else {
         if (ret == SLI_CPC_HDLC_HEADER_RAW_SIZE) {
-          sli_cpc_drv_emul_pkt_txed_notif(temp_buffer.header, temp_buffer.payload, 0, 0);
+          sli_cpc_drv_emul_pkt_txed_notif(frame->header, frame->payload, 0, 0);
         } else {
-          uint16_t fcs = hdlc_get_fcs(temp_buffer.payload, (uint16_t)(((size_t)ret - SLI_CPC_HDLC_HEADER_RAW_SIZE) - 2));
-          sli_cpc_drv_emul_pkt_txed_notif(temp_buffer.header, temp_buffer.payload, (uint16_t)(((size_t)ret - SLI_CPC_HDLC_HEADER_RAW_SIZE) - 2), fcs);
+          uint16_t fcs = hdlc_get_fcs(frame->payload, (uint16_t)(((size_t)ret - SLI_CPC_HDLC_HEADER_RAW_SIZE) - 2));
+          sli_cpc_drv_emul_pkt_txed_notif(frame->header, frame->payload, (uint16_t)(((size_t)ret - SLI_CPC_HDLC_HEADER_RAW_SIZE) - 2), fcs);
         }
       }
     }

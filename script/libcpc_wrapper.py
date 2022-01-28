@@ -1,5 +1,6 @@
 from ctypes import *
 from enum import Enum
+import signal
 
 class cpc_handle_t(Structure):
     _fields_ = [("ptr", c_void_p)]
@@ -48,11 +49,17 @@ class Option(Enum):
     
 class CPC:
 
+    reset_callback = None
+
     def __init__(self, shared_lib_path):
         try:
             self.lib_cpc = CDLL(shared_lib_path)
         except Exception as e:
             print(e)
+    #end def
+    
+    def reset_cb(self, signum, frame):
+        self.reset_callback()
     #end def
     
     # int cpc_init(cpc_handle_t *handle, const char* instance_name, bool enable_tracing, cpc_reset_callback_t reset_callback)
@@ -63,9 +70,11 @@ class CPC:
             name = create_string_buffer(bytes(instance_name, 'utf8'))
         #end if
         trace = c_bool(enable_tracing)
-        CALLBACK_FUNC = CFUNCTYPE(None)
-        callback = CALLBACK_FUNC(reset_callback)
-        ret = self.lib_cpc.cpc_init(byref(handle), name, trace, callback)
+        if reset_callback != None:
+            self.reset_callback = reset_callback
+            signal.signal(signal.SIGUSR1, self.reset_cb)
+        #end if
+        ret = self.lib_cpc.cpc_init(byref(handle), name, trace, None)
         return ret
     #end def
     

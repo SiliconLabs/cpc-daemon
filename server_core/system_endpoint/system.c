@@ -355,7 +355,7 @@ void sl_cpc_system_cmd_property_get(sl_cpc_system_property_get_set_cmd_callback_
   /* Fill the system endpoint command buffer */
   {
     sl_cpc_system_cmd_t *tx_command = command_handle->command;
-    sl_cpc_system_property_cmd_t *tx_property_command = (sl_cpc_system_property_cmd_t *) tx_command->payload;;
+    sl_cpc_system_property_cmd_t *tx_property_command = (sl_cpc_system_property_cmd_t *) tx_command->payload;
 
     tx_command->command_id = CMD_SYSTEM_PROP_VALUE_GET;
     tx_command->command_seq = command_handle->command_seq;
@@ -624,6 +624,7 @@ static void on_unsolicited(uint8_t endpoint_id, const void* data, size_t data_le
 
       // Close the endpoint on the secondary
       cpc_endpoint_state_t state = SL_CPC_STATE_CLOSED;
+      TRACE_CORE_CLOSE_ENDPOINT(closed_endpoint_id);
       sl_cpc_system_cmd_property_set(reply_to_closing_endpoint_on_secondary_callback,
                                      5,      /* 5 retries */
                                      100000, /* 100ms between retries*/

@@ -20,6 +20,7 @@
 
 #include <stdio.h>
 #include <sys/stat.h>
+#include <sys/eventfd.h>
 #include <dirent.h>
 #include <unistd.h>
 #include <string.h>
@@ -35,6 +36,7 @@
 #include "misc/logging.h"
 #include "misc/config.h"
 #include "version.h"
+#include "driver/driver_kill.h"
 
 #define MAX_EPOLL_EVENTS 1
 
@@ -46,6 +48,8 @@ static bool capabilites_received = false;
 static bool protocol_version_received_and_match = false;
 
 static sl_cpc_system_reboot_mode_t pending_mode;
+
+static int kill_eventfd = -1;
 
 static enum {
   SET_NORMAL_REBOOT_MODE,
@@ -81,7 +85,7 @@ static void* server_core_thread_func(void* param);
 static void process_reset_sequence(void);
 #endif
 
-static void server_core_cleanup(void);
+static void server_core_cleanup(epoll_private_data_t *private_data);
 
 static void property_set_reset_mode_callback(sl_cpc_system_command_handle_t *handle,
                                              sl_cpc_property_id_t property_id,
@@ -186,14 +190,25 @@ uint32_t server_core_get_secondary_rx_capability(void)
   return rx_capability;
 }
 
+void server_core_kill_signal(void)
+{
+  ssize_t ret;
+  const uint64_t event_value = 1; //doesn't matter what it is
+
+  if (kill_eventfd == -1) {
+    return;
+  }
+
+  ret = write(kill_eventfd, &event_value, sizeof(event_value));
+  FATAL_ON(ret != sizeof(event_value));
+}
+
 pthread_t server_core_init(int fd_socket_driver_core, bool firmware_update)
 {
   char* socket_folder = NULL;
   struct stat sb = { 0 };
   pthread_t server_core_thread = { 0 };
   int ret = 0;
-
-  epoll_init();
 
   core_init(fd_socket_driver_core);
 
@@ -238,6 +253,21 @@ pthread_t server_core_init(int fd_socket_driver_core, bool firmware_update)
 #if defined(UNIT_TESTING)
   server_init();
 #endif
+
+  /* Setup the kill eventfd */
+  {
+    kill_eventfd = eventfd(0, //Start with 0 value
+                           EFD_CLOEXEC);
+    FATAL_ON(kill_eventfd == -1);
+
+    static epoll_private_data_t private_data;
+
+    private_data.callback = server_core_cleanup;
+    private_data.file_descriptor = kill_eventfd; /* Irrelevant here */
+    private_data.endpoint_number = 0; /* Irrelevant here */
+
+    epoll_register(&private_data);
+  }
 
   /* create server_core thread */
   ret = pthread_create(&server_core_thread, NULL, server_core_thread_func, (void*)firmware_update);
@@ -597,15 +627,14 @@ static void process_reboot_into_bootloader_mode(void)
 
         TRACE_RESET("Reset request acknowledged");
 
-        extern pthread_t driver_thread;
-        ret = pthread_kill(driver_thread, SIGTERM);
-        FATAL_ON(ret != 0);
+        driver_kill_signal();
 
+        extern pthread_t driver_thread;
         ret = pthread_join(driver_thread, &join_value);
         FATAL_ON(ret != 0);
         FATAL_ON(join_value != 0);
 
-        server_core_cleanup();
+        server_core_cleanup(NULL);
       }
       break;
 
@@ -615,8 +644,10 @@ static void process_reboot_into_bootloader_mode(void)
   }
 }
 
-static void server_core_cleanup(void)
+static void server_core_cleanup(epoll_private_data_t *private_data)
 {
+  (void) private_data;
+
   TRACE_RESET("Server core cleanup");
 
   pthread_exit(0);
