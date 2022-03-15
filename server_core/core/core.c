@@ -128,7 +128,7 @@ static void on_disconnect_notification(sl_cpc_system_command_handle_t *handle,
       break;
 
     case SL_STATUS_TIMEOUT:
-    case SL_STATUS_FAIL:
+    case SL_STATUS_ABORT:
     default:
       WARN("Secondary failed to receive disconnection notification response");
       break;
@@ -283,7 +283,17 @@ static void core_update_secondary_debug_counter(sl_cpc_system_command_handle_t *
 {
   (void)handle;
 
-  FATAL_ON(status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS);
+  if (status == SL_STATUS_TIMEOUT) {
+    WARN("Secondary counters query timed out");
+    return;
+  } else if (status == SL_STATUS_ABORT) {
+    WARN("Secondary counters query aborted");
+    return;
+  }
+
+  if (status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS) {
+    BUG();
+  }
 
   if (property_id == PROP_LAST_STATUS) {
     FATAL("Secondary does not handle the DEBUG_COUNTERS property, please update secondary or disable print-stats");
@@ -518,7 +528,8 @@ static void core_process_rx_s_frame(frame_t *rx_frame)
           if (endpoint->re_transmit_queue != NULL) {
             re_transmit_frame(endpoint);
           }
-          TRACE_ENDPOINT_RXD_REJECT_CHECSUM_MISMATCH(endpoint);
+          TRACE_ENDPOINT_RXD_REJECT_CHECKSUM_MISMATCH(endpoint);
+          WARN("Remote received a packet with an invalid checksum");
           break;
 
         case HDLC_REJECT_OUT_OF_MEMORY:
@@ -621,8 +632,13 @@ static void core_process_rx_u_frame(frame_t *rx_frame)
       BUG("We received an unnumbered final frame, this shouldn't happen");
       break;
 
+    case SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_ACKNOWLEDGE:
+      BUG_ON(endpoint->id != SL_CPC_ENDPOINT_SYSTEM);
+      sl_cpc_system_on_unnumbered_acknowledgement();
+      break;
+
     default:
-      TRACE_ENDPOINT_RXD_UNNUMBERED_DROPPED(endpoint, "Information U-Frame not enabled on endpoint");
+      TRACE_ENDPOINT_RXD_UNNUMBERED_DROPPED(endpoint, "U-Frame not enabled on endpoint");
       return;
   }
 
@@ -785,13 +801,16 @@ void core_open_endpoint(uint8_t endpoint_number, uint8_t flags, uint8_t tx_windo
  ******************************************************************************/
 void core_set_endpoint_in_error(uint8_t endpoint_number, cpc_endpoint_state_t new_state)
 {
-  FATAL_ON(endpoint_number == 0); // Can't handle an error on the system endpoint
+  if (endpoint_number == 0) {
+    WARN("System endpoint in error, new state: %d. Restarting it.", new_state);
+    sl_cpc_system_reset_system_endpoint();
+  } else {
+    WARN("Setting endpoint #%d in error, new state: %d", endpoint_number, new_state);
 
-  WARN("Setting endpoint #%d in error, new state: %d", endpoint_number, new_state);
-
-  server_close_endpoint(endpoint_number, true);
-  core_close_endpoint(endpoint_number, false, false);
-  core_endpoints[endpoint_number].state = new_state;
+    server_close_endpoint(endpoint_number, true);
+    core_close_endpoint(endpoint_number, false, false);
+    core_endpoints[endpoint_number].state = new_state;
+  }
 }
 
 /***************************************************************************//**
@@ -1031,6 +1050,7 @@ static void process_ack(sl_cpc_endpoint_t *endpoint, uint8_t ack)
 
     item = SL_SLIST_ENTRY(item_node, sl_cpc_transmit_queue_item_t, node);
     frame = item->handle;
+    control_byte = hdlc_get_control(frame->hdlc_header);
 
 #ifdef USE_ON_WRITE_COMPLETE
     on_write_completed(endpoint->id, SL_STATUS_OK);
@@ -1172,6 +1192,7 @@ static void transmit_reject(sl_cpc_endpoint_t *endpoint,
     switch (reason) {
       case HDLC_REJECT_CHECKSUM_MISMATCH:
         TRACE_ENDPOINT_TXD_REJECT_CHECKSUM_MISMATCH(endpoint);
+        WARN("Host received a packet with an invalid checksum");
         break;
       case HDLC_REJECT_SEQUENCE_MISMATCH:
         TRACE_ENDPOINT_TXD_REJECT_SEQ_MISMATCH(endpoint);
@@ -1321,7 +1342,7 @@ static void re_transmit_timeout(sl_cpc_endpoint_t* endpoint)
   epoll_private_data_t* fd_timer_private_data;
 
   if (endpoint->packet_re_transmit_count >= SLI_CPC_RE_TRANSMIT) {
-    WARN("Retransmit limit reached, closing endoint #%d", endpoint->id);
+    WARN("Retransmit limit reached on endpoint #%d", endpoint->id);
     core_set_endpoint_in_error(endpoint->id, SL_CPC_STATE_ERROR_DESTINATION_UNREACHABLE);
   } else {
     endpoint->re_transmit_timeout_ms *= 2; // RTO(new) = RTO(before retransmission) *2 )
@@ -1468,7 +1489,6 @@ static void core_process_ep_timeout(epoll_private_data_t *event_private_data)
     FATAL_ON(ret < 0);
 
     /* we missed a timeout*/
-    TRACE_CORE("Retransmit expiration = %lld", expiration);
     WARN_ON(expiration != 1);
   }
 

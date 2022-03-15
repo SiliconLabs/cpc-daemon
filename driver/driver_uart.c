@@ -29,6 +29,7 @@
 #include <sys/ioctl.h>
 #include <signal.h>
 #include <linux/serial.h>
+#include <dirent.h>
 
 #include "misc/logging.h"
 #include "misc/utils.h"
@@ -45,6 +46,7 @@ static int fd_core;
 static int fd_epoll;
 static pthread_t drv_thread;
 static unsigned int uart_bitrate;
+static bool vcom_present = false;
 
 typedef void (*driver_epoll_callback_t)(void);
 
@@ -53,6 +55,8 @@ static void* driver_thread_func(void* param);
 static void driver_uart_process_uart(void);
 
 static void driver_uart_process_core(void);
+
+static void driver_uart_check_for_vcom(const char* provided_device);
 
 /*
  * @return The number of bytes appended to the buffer
@@ -142,6 +146,11 @@ pthread_t driver_uart_init(int *fd_to_core, const char *device, unsigned int bit
   FATAL_ON(ret != 0);
 
   TRACE_DRIVER("Opening uart file %s", device);
+
+  if (strstr(device, "ttyACM") != 0) {
+    TRACE_DRIVER("CDC ACM driver used");
+    driver_uart_check_for_vcom(device);
+  }
 
   TRACE_DRIVER("Init done");
 
@@ -486,6 +495,38 @@ static bool delimit_and_push_frames_to_core(uint8_t *buffer, size_t *buffer_head
   return true;
 }
 
+static void driver_uart_check_for_vcom(const char* provided_device)
+{
+  char device_path[255];
+  char device_name[128];
+  char *ret;
+  DIR *d;
+  struct dirent *dir;
+
+  d = opendir("/dev/serial/by-id");
+
+  if (d) {
+    while ((dir = readdir(d)) != NULL) {
+      if (dir->d_type == DT_LNK) {
+        if (strstr(dir->d_name, "J-Link") != 0) {
+          strcpy(device_path, "/dev/serial/by-id/");
+          strcat(device_path, dir->d_name);
+
+          ret = realpath(device_path, device_name);
+
+          if (ret != NULL && strstr(provided_device, device_name) != 0) {
+            vcom_present = true;
+            TRACE_DRIVER("VCOM port detected, applying workaround");
+          }
+        }
+      }
+    }
+    closedir(d);
+  } else {
+    WARN("Failed to traverse /dev/serial/by-id to detect VCOM presence");
+  }
+}
+
 static void driver_uart_process_core(void)
 {
   uint8_t buffer[UART_BUFFER_SIZE];
@@ -523,4 +564,9 @@ static void driver_uart_process_core(void)
   }
 
   TRACE_FRAME("Driver : flushed frame to uart : ", buffer, (size_t)read_retval);
+
+  // Apply workaround if VCOM is present
+  if (vcom_present) {
+    usleep(1000);
+  }
 }

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(cpcd VERSION "4.0.1.0")
+project(cpcd VERSION "4.0.2.0")
 configure_file(misc/version.h.in autogen/version.h)
 
 set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR})

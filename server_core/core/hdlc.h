@@ -48,13 +48,14 @@
 #define SLI_CPC_HDLC_CONTROL_SUPERVISORY_FNCT_ID_SHIFT 4
 #define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_SHIFT     0
 
-#define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_MASK  0x37
+#define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_MASK  0x3F
 
 #define SLI_CPC_HDLC_ACK_SUPERVISORY_FUNCTION   0
 
 #define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_INFORMATION  0x00
 #define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_POLL_FINAL   0x04
 #define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_RESET_SEQ    0x31
+#define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_ACKNOWLEDGE  0x0E
 #define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_UNKNOWN      0xFF
 
 #define SLI_CPC_HDLC_REJECT_SUPERVISORY_FUNCTION   1
@@ -266,6 +267,7 @@ void hdlc_create_header(uint8_t *header_buf,
  *
  * @param seq Sequence number.
  * @param ack ACK value.
+ * @param poll_final activate P/F bit (Poll/Final)
  *
  * @return HDLC header control value.
  ******************************************************************************/

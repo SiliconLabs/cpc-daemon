@@ -52,7 +52,7 @@ void reply_to_closing_endpoint_on_secondary_callback(sl_cpc_system_command_handl
       break;
 
     case SL_STATUS_TIMEOUT:
-    case SL_STATUS_FAIL:
+    case SL_STATUS_ABORT:
     default:
       WARN("Secondary closed the endpoint #%d, could not acknowledge it", ep_id);
       break;
@@ -88,8 +88,8 @@ void property_get_single_endpoint_state_and_reply_to_pending_open_callback(sl_cp
     case SL_STATUS_TIMEOUT:
       WARN("Property-get::PROP_ENDPOINT_STATE timed out");
       break;
-    case SL_STATUS_FAIL:
-      FATAL("Property-get::PROP_ENDPOINT_STATE fail ");
+    case SL_STATUS_ABORT:
+      WARN("Property-get::PROP_ENDPOINT_STATE aborted");
       break;
     default:
       FATAL();
@@ -159,8 +159,8 @@ void system_noop_cmd_callback_t(sl_cpc_system_command_handle_t *handle,
       WARN("The noop keep alive timed out, link dead");
       TRACE_SERVER("NOOP timed out!");
       break;
-    case SL_STATUS_FAIL:
-      WARN("The noop keep alive failed, link dead");
+    case SL_STATUS_ABORT:
+      WARN("The noop keep alive was aborted");
       TRACE_SERVER("NOOP failed!");
       break;
     default:

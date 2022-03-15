@@ -24,14 +24,14 @@
 
 #include <stdbool.h>
 #include "misc/gpio.h"
+#include "misc/sl_status.h"
 
-int send_firmware(const char* image_file,
-                  const char *device,
-                  unsigned int mode,
-                  unsigned int bit_per_word,
-                  unsigned int speed,
-                  unsigned int cs_gpio,
-                  unsigned int irq_gpio,
-                  unsigned int wake_gpio);
+sl_status_t send_firmware(const char   *image_file,
+                          const char   *device,
+                          unsigned int mode,
+                          unsigned int bit_per_word,
+                          unsigned int speed,
+                          unsigned int cs_gpio,
+                          unsigned int irq_gpio);
 
 #endif//DRIVER_EZSP_H

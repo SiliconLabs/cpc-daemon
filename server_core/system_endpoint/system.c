@@ -31,6 +31,11 @@
 #include "misc/utils.h"
 
 /***************************************************************************//**
+ * How long to wait before attempting another command that requires an unnumbered ack
+ ******************************************************************************/
+#define UNNUMBERED_ACK_TIMEOUT_SECONDS 2
+
+/***************************************************************************//**
  * Used to return the size of a system command buffer, primarily to pass to
  * sl_cpc_write.
  ******************************************************************************/
@@ -42,9 +47,16 @@
  ******************************************************************************/
 static uint8_t next_command_seq = 0;
 
+static sl_slist_node_t *pending_commands;
 static sl_slist_node_t *commands;
 static sl_slist_node_t *retries;
 static sl_slist_node_t *commands_in_error;
+
+#if !defined(UNIT_TESTING)
+static bool received_remote_sequence_numbers_reset_ack = false;
+#else
+static bool received_remote_sequence_numbers_reset_ack = true;
+#endif
 
 extern bool ignore_reset_reason;
 
@@ -59,6 +71,8 @@ static void on_unsolicited(uint8_t endpoint_id, const void* data, size_t data_le
 static void on_reply(uint8_t endpoint_id, void *arg, void *answer, uint32_t answer_lenght);
 static void on_timer_expired(epoll_private_data_t *private_data);
 static void write_command(sl_cpc_system_command_handle_t *command_handle);
+
+static void sl_cpc_system_cmd_abort(sl_cpc_system_command_handle_t *command_handle, sl_status_t error);
 
 static void sl_cpc_system_open_endpoint(void)
 {
@@ -77,6 +91,7 @@ void sl_cpc_system_init(void)
 {
   sl_slist_init(&commands);
   sl_slist_init(&retries);
+  sl_slist_init(&pending_commands);
   sl_slist_init(&commands_in_error);
   sl_slist_init(&prop_last_status_callbacks);
 
@@ -91,6 +106,42 @@ void sl_cpc_system_register_unsolicited_prop_last_status_callback(sl_cpc_system_
   item->callback = callback;
 
   sl_slist_push_back(&prop_last_status_callbacks, &item->node);
+}
+
+/***************************************************************************//**
+* Abort a pending system command by providing the error cause
+*******************************************************************************/
+static void sl_cpc_system_cmd_abort(sl_cpc_system_command_handle_t *command_handle, sl_status_t error)
+{
+  command_handle->error_status = error; //This will be propagated when calling the callbacks
+
+  switch (command_handle->command->command_id) {
+    case CMD_SYSTEM_NOOP:
+      ((sl_cpc_system_noop_cmd_callback_t)command_handle->on_final)(command_handle, command_handle->error_status);
+      break;
+
+    case CMD_SYSTEM_RESET:
+      ((sl_cpc_system_reset_cmd_callback_t)command_handle->on_final)(command_handle, command_handle->error_status, STATUS_FAILURE);
+      break;
+
+    case CMD_SYSTEM_PROP_VALUE_GET:
+    case CMD_SYSTEM_PROP_VALUE_SET:
+    {
+      sl_cpc_system_property_cmd_t *tx_property_command = (sl_cpc_system_property_cmd_t *)command_handle->command->payload;
+
+      ((sl_cpc_system_property_get_set_cmd_callback_t) command_handle->on_final)(command_handle,
+                                                                                 tx_property_command->property_id,
+                                                                                 NULL,
+                                                                                 0,
+                                                                                 command_handle->error_status);
+    }
+    break;
+
+    case CMD_SYSTEM_PROP_VALUE_IS: //fall through
+    default:
+      BUG("Invalid command_id");
+      break;
+  }
 }
 
 /***************************************************************************//**
@@ -121,35 +172,7 @@ static void sl_cpc_system_cmd_timed_out(const void *frame_data)
 
   TRACE_SYSTEM("Command ID %u SEQ %u timeout", command_handle->command->command_id, command_handle->command->command_seq);
 
-  command_handle->error_status = SL_STATUS_TIMEOUT; //This will be propagated when calling the callbacks
-
-  switch (command_handle->command->command_id) {
-    case CMD_SYSTEM_NOOP:
-      ((sl_cpc_system_noop_cmd_callback_t)command_handle->on_final)(command_handle, command_handle->error_status);
-      break;
-
-    case CMD_SYSTEM_RESET:
-      ((sl_cpc_system_reset_cmd_callback_t)command_handle->on_final)(command_handle, command_handle->error_status, STATUS_FAILURE);
-      break;
-
-    case CMD_SYSTEM_PROP_VALUE_GET:
-    case CMD_SYSTEM_PROP_VALUE_SET:
-    {
-      sl_cpc_system_property_cmd_t *tx_property_command = (sl_cpc_system_property_cmd_t *)command_handle->command->payload;
-
-      ((sl_cpc_system_property_get_set_cmd_callback_t) command_handle->on_final)(command_handle,
-                                                                                 tx_property_command->property_id,
-                                                                                 NULL,
-                                                                                 0,
-                                                                                 command_handle->error_status);
-    }
-    break;
-
-    case CMD_SYSTEM_PROP_VALUE_IS: //fall through
-    default:
-      BUG("Illegal switch");
-      break;
-  }
+  sl_cpc_system_cmd_abort(command_handle, SL_STATUS_TIMEOUT);
 
   /* Free the command handle and its buffer */
   {
@@ -287,6 +310,123 @@ void sl_cpc_system_cmd_reboot(sl_cpc_system_reset_cmd_callback_t on_reset_reply,
 }
 
 /***************************************************************************//**
+ * Check if the system endpoint received a previously requested unnumered acknowledgement
+ ******************************************************************************/
+bool sl_cpc_system_received_unnumbered_acknowledgement(void)
+{
+  return received_remote_sequence_numbers_reset_ack;
+}
+
+/***************************************************************************//**
+ * Acknowledge the reset sequence numbers on the secondary
+ ******************************************************************************/
+void sl_cpc_system_on_unnumbered_acknowledgement(void)
+{
+  sl_slist_node_t *item;
+  sl_cpc_system_command_handle_t *command_handle;
+
+  TRACE_SYSTEM("Received sequence numbers reset acknowledgement");
+  received_remote_sequence_numbers_reset_ack = true;
+
+  // Send any pending commands
+  item = sl_slist_pop(&pending_commands);
+  while (item != NULL) {
+    command_handle = SL_SLIST_ENTRY(item, sl_cpc_system_command_handle_t, node_commands);
+    write_command(command_handle);
+    item = sl_slist_pop(&pending_commands);
+  }
+}
+
+/***************************************************************************//**
+ * Callback for the unnumered acknowledge timeout
+ ******************************************************************************/
+static void on_unnumbered_acknowledgement_timeout(epoll_private_data_t *private_data)
+{
+  sl_slist_node_t *item;
+  int timer_fd = private_data->file_descriptor;
+  sl_cpc_system_command_handle_t *command_handle = container_of(private_data,
+                                                                sl_cpc_system_command_handle_t,
+                                                                re_transmit_timer_private_data);
+
+  if (sl_cpc_system_received_unnumbered_acknowledgement()) {
+    // Unnumbered ack was processed, stop the timeout timer
+    epoll_unregister(&command_handle->re_transmit_timer_private_data);
+    close(command_handle->re_transmit_timer_private_data.file_descriptor);
+    return;
+  }
+
+  TRACE_SYSTEM("Remote is unresponsive, retrying...");
+
+  /* Ack the timer */
+  {
+    uint64_t expiration;
+    ssize_t retval;
+
+    retval = read(timer_fd, &expiration, sizeof(expiration));
+
+    FATAL_SYSCALL_ON(retval < 0);
+
+    FATAL_ON(retval != sizeof(expiration));
+
+    WARN_ON(expiration != 1); /* we missed a timeout*/
+  }
+
+  /* Drop any pending commands to prevent accumulation*/
+  item = sl_slist_pop(&pending_commands);
+  while (item != NULL) {
+    command_handle = SL_SLIST_ENTRY(item, sl_cpc_system_command_handle_t, node_commands);
+    sl_cpc_system_cmd_abort(command_handle, SL_STATUS_ABORT);
+    free(command_handle->command);
+    free(command_handle);
+    item = sl_slist_pop(&pending_commands);
+  }
+
+  core_write(SL_CPC_ENDPOINT_SYSTEM, NULL, 0, SL_CPC_FLAG_UNNUMBERED_RESET_COMMAND);
+}
+
+/***************************************************************************//**
+ * Request that the secondary resets it's sequence numbers
+ ******************************************************************************/
+void sl_cpc_system_request_sequence_reset(void)
+{
+  int timer_fd, ret;
+  sl_cpc_system_command_handle_t *command_handle;
+
+  sl_cpc_system_reset_system_endpoint();
+
+  TRACE_SYSTEM("Requesting reset of sequence numbers on the remote");
+  core_write(SL_CPC_ENDPOINT_SYSTEM, NULL, 0, SL_CPC_FLAG_UNNUMBERED_RESET_COMMAND);
+
+  // Push the command right away
+  core_process_transmit_queue();
+
+  // Register a timeout timer in case we don't receive an unnumbered acknowledgement
+  const struct itimerspec timeout = { .it_interval = { .tv_sec = UNNUMBERED_ACK_TIMEOUT_SECONDS, .tv_nsec = 0 },
+                                      .it_value    = { .tv_sec = UNNUMBERED_ACK_TIMEOUT_SECONDS, .tv_nsec = 0 } };
+
+  timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
+
+  FATAL_SYSCALL_ON(timer_fd < 0);
+
+  ret = timerfd_settime(timer_fd, 0, &timeout, NULL);
+  FATAL_SYSCALL_ON(ret < 0);
+
+  command_handle = malloc(sizeof(sl_cpc_system_command_handle_t));
+  FATAL_ON(command_handle == NULL);
+
+  /* Setup the timer in the server_core epoll set */
+  command_handle->re_transmit_timer_private_data.file_descriptor = timer_fd;
+  command_handle->re_transmit_timer_private_data.callback = on_unnumbered_acknowledgement_timeout;
+
+  epoll_register(&command_handle->re_transmit_timer_private_data);
+
+  ret = timerfd_settime(command_handle->re_transmit_timer_private_data.file_descriptor, 0, &timeout, NULL);
+  FATAL_SYSCALL_ON(ret < 0);
+
+  received_remote_sequence_numbers_reset_ack = false;
+}
+
+/***************************************************************************//**
  * Reset the system endpoint
  ******************************************************************************/
 void sl_cpc_system_reset_system_endpoint(void)
@@ -294,20 +434,13 @@ void sl_cpc_system_reset_system_endpoint(void)
   sl_slist_node_t *item;
   sl_cpc_system_command_handle_t *command_handle;
 
-  TRACE_SYSTEM("Requesting reset of sequence number on the remote");
-  core_write(SL_CPC_ENDPOINT_SYSTEM,
-             NULL,
-             0,
-             SL_CPC_FLAG_UNNUMBERED_RESET_COMMAND);
-
-  // Push the command right away
-  core_process_transmit_queue();
-
-  // Free any pending commands
+  // Abort any pending commands
   item = sl_slist_pop(&commands);
   while (item != NULL) {
     command_handle = SL_SLIST_ENTRY(item, sl_cpc_system_command_handle_t, node_commands);
-    WARN("Dropped system command id #%d seq#%d", command_handle->command->command_id, command_handle->command_seq);
+    WARN("Dropping system command id #%d seq#%d", command_handle->command->command_id, command_handle->command_seq);
+    sl_cpc_system_cmd_abort(command_handle, SL_STATUS_ABORT);
+
     // Command handle will be dropped once we close the endpoint
     free(command_handle);
     item = sl_slist_pop(&commands);
@@ -535,12 +668,12 @@ static void on_reply(uint8_t endpoint_id,
   sl_cpc_system_command_handle_t *command_handle;
   sl_cpc_system_cmd_t *reply = (sl_cpc_system_cmd_t *)answer;
 
-  (void)endpoint_id;
   (void)arg;
   (void)answer_lenght;
 
   TRACE_SYSTEM("on_reply()");
 
+  BUG_ON(endpoint_id != 0);
   FATAL_ON(reply->length != answer_lenght - sizeof(sl_cpc_system_cmd_t));
 
   /* Go through the list of pending requests to find the one for which this reply applies */
@@ -593,9 +726,10 @@ static void on_reply(uint8_t endpoint_id,
 
 static void on_unsolicited(uint8_t endpoint_id, const void* data, size_t data_len)
 {
-  (void) endpoint_id;
   (void) data;
   (void) data_len;
+
+  FATAL_ON(endpoint_id != SL_CPC_ENDPOINT_SYSTEM);
 
   TRACE_SYSTEM("Unsolicited received");
 
@@ -660,12 +794,15 @@ static void on_timer_expired(epoll_private_data_t *private_data)
     WARN_ON(expiration != 1); /* we missed a timeout*/
   }
 
-  if (command_handle->retry_count > 0) {
+  if (command_handle->retry_count > 0 || command_handle->retry_forever) {
     sl_slist_remove(&commands, &command_handle->node_commands);
 
-    TRACE_SYSTEM("Command ID #%u SEQ #%u. %u retry left", command_handle->command->command_id, command_handle->command->command_seq, command_handle->retry_count);
-
-    command_handle->retry_count--;
+    if (command_handle->retry_forever) {
+      TRACE_SYSTEM("Command ID #%u SEQ #%u retried", command_handle->command->command_id, command_handle->command->command_seq);
+    } else {
+      TRACE_SYSTEM("Command ID #%u SEQ #%u. %u retry left", command_handle->command->command_id, command_handle->command->command_seq, command_handle->retry_count);
+      command_handle->retry_count--;
+    }
 
     command_handle->error_status = SL_STATUS_IN_PROGRESS; //at least one timer retry occurred
 
@@ -683,6 +820,19 @@ static void on_timer_expired(epoll_private_data_t *private_data)
  ******************************************************************************/
 static void write_command(sl_cpc_system_command_handle_t *command_handle)
 {
+  if (command_handle->retry_count == 0) {
+    command_handle->retry_forever = true;
+  } else {
+    command_handle->retry_forever = false;
+  }
+
+#if !defined(UNIT_TESTING)
+  if (!sl_cpc_system_received_unnumbered_acknowledgement()) {
+    sl_slist_push_back(&pending_commands, &command_handle->node_commands);
+    return;
+  }
+#endif
+
   sl_slist_push_back(&commands, &command_handle->node_commands);
 
   core_write(SL_CPC_ENDPOINT_SYSTEM,
