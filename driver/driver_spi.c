@@ -335,7 +335,7 @@ static void driver_spi_process_irq(void)
              && (error_timeout > 0)) {
         ret = ioctl(spi_dev.spi_dev_descriptor, SPI_IOC_MESSAGE(1), &spi_tranfer);
         FATAL_ON(ret != 1);
-        timeout--;
+        error_timeout--;
       }
 
       cs_deassert();

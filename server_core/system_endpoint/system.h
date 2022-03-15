@@ -446,6 +446,7 @@ typedef struct  {
   sl_cpc_system_cmd_t *command; // has to be malloc'ed
   void *on_final;
   uint8_t retry_count;
+  bool retry_forever;
   uint32_t retry_timeout_us;
   sl_status_t error_status;
   uint8_t command_seq;
@@ -557,7 +558,22 @@ void sl_cpc_system_register_unsolicited_prop_last_status_callback(sl_cpc_system_
 void sl_cpc_system_reset_system_endpoint(void);
 
 /***************************************************************************//**
+ * Request that the secondary reset it's sequence numbers
+ ******************************************************************************/
+void sl_cpc_system_request_sequence_reset(void);
+
+/***************************************************************************//**
  * Acknowledge the system command
  ******************************************************************************/
 void sl_cpc_system_cmd_poll_acknowledged(const void *data);
+
+/***************************************************************************//**
+ * Return true if a previously requested sequence numbers reset was acknowledged
+ ******************************************************************************/
+bool sl_cpc_system_received_unnumbered_acknowledgement(void);
+
+/***************************************************************************//**
+ * Called upon recevining an unnumbered acknowledge
+ ******************************************************************************/
+void sl_cpc_system_on_unnumbered_acknowledgement(void);
 #endif

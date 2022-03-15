@@ -101,6 +101,8 @@ extern core_debug_counters_t secondary_core_debug_counters;
 
 #define TRACE_ASSERT(string, ...)     TRACE_FORCE_STDOUT("*** ASSERT *** : " string, ##__VA_ARGS__)
 
+#define TRACE_WARN(string, ...)       TRACE_FORCE_STDOUT("WARNING : " string, ##__VA_ARGS__)
+
 #define TRACE_FRAME(string, buffer, length) trace_frame(string, buffer, length)
 
 #define TRACE_SERVER_RXD_FRAME(buffer, len)                 TRACE_FRAME("Server : rxd frame : ", buffer, len)
@@ -163,7 +165,7 @@ extern core_debug_counters_t secondary_core_debug_counters;
 
 #define TRACE_ENDPOINT_RXD_REJECT_SEQ_MISMATCH(ep)        TRACE_CORE(" Endpoint #%u: rxd reject seq mismatch", ep->id)
 
-#define TRACE_ENDPOINT_RXD_REJECT_CHECSUM_MISMATCH(ep)    TRACE_CORE("Endpoint #%u: rxd reject checksum mismatch", ep->id)
+#define TRACE_ENDPOINT_RXD_REJECT_CHECKSUM_MISMATCH(ep)    TRACE_CORE("Endpoint #%u: rxd reject checksum mismatch", ep->id)
 
 #define TRACE_ENDPOINT_RXD_REJECT_SECURITY_ISSUE(ep)      TRACE_CORE("Endpoint #%u: rxd reject security issue", ep->id)
 
@@ -209,17 +211,17 @@ __attribute__((noreturn)) void signal_crash(void);
 
 #define WARN(msg, ...)                                                                                                             \
   do {                                                                                                                             \
-    TRACE_ASSERT("WARNING in function '%s' in file %s at line #%d : " msg "\n", __func__, __FILE__, __LINE__, ##__VA_ARGS__);      \
+    TRACE_WARN("In function '%s' in file %s at line #%d : " msg "\n", __func__, __FILE__, __LINE__, ##__VA_ARGS__);                \
     fprintf(OUT_FILE, "WARNING in function '%s' in file %s at line #%d : " msg "\n", __func__, __FILE__, __LINE__, ##__VA_ARGS__); \
   } while (0)
 
-#define WARN_ON(cond) ({                                                                                                     \
-    int __ret = !!(cond);                                                                                                    \
-    if (__ret) {                                                                                                             \
-      TRACE_ASSERT("WARNING on '%s' in function '%s' in file %s at line #%d\n", #cond, __func__, __FILE__, __LINE__);        \
-      fprintf(OUT_FILE, "WARNING on '%s' in function '%s' in file %s at line #%d\n", #cond, __func__, __FILE__, __LINE__); } \
-    __ret;                                                                                                                   \
-  })
+#define WARN_ON(cond)                                                                                                      \
+  do {                                                                                                                     \
+    if (cond) {                                                                                                            \
+      TRACE_WARN("On '%s' in function '%s' in file %s at line #%d\n", #cond, __func__, __FILE__, __LINE__);                \
+      fprintf(OUT_FILE, "WARNING on '%s' in function '%s' in file %s at line #%d\n", #cond, __func__, __FILE__, __LINE__); \
+    }                                                                                                                      \
+  } while (0)
 
 #define FATAL(msg, ...)                                                                                                          \
   do {                                                                                                                           \

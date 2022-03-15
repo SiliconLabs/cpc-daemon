@@ -61,30 +61,26 @@ static uint8_t tx_spi_buffer[SPI_BUFFER_SIZE];
 
 static int read_until_end_of_frame(void);
 static bool wait_irq_line(void);
-static int get_spi_version(void);
-static int get_spi_status(void);;
 static int send_query(void);
 static bool send_end_of_file(void);
 static bool ezsp_send_bootloader_raw_bytes(const uint8_t *message, uint8_t length);
 static void cs_assert(void);
 static void cs_deassert(void);
 
-static void driver_ezsp_spi_open(const char *device,
+static void driver_ezsp_spi_open(const char   *device,
                                  unsigned int mode,
                                  unsigned int bit_per_word,
                                  unsigned int speed,
                                  unsigned int cs_gpio_number,
-                                 unsigned int irq_gpio_number,
-                                 unsigned int wake_gpio_number);
+                                 unsigned int irq_gpio_number);
 
-int send_firmware(const char* image_file,
-                  const char *device,
-                  unsigned int mode,
-                  unsigned int bit_per_word,
-                  unsigned int speed,
-                  unsigned int cs_gpio,
-                  unsigned int irq_gpio,
-                  unsigned int wake_gpio)
+sl_status_t send_firmware(const char   * image_file,
+                          const char   *device,
+                          unsigned int mode,
+                          unsigned int bit_per_word,
+                          unsigned int speed,
+                          unsigned int cs_gpio,
+                          unsigned int irq_gpio)
 {
   struct stat stat;
   int ret = 0;
@@ -92,24 +88,31 @@ int send_firmware(const char* image_file,
   uint8_t* mmaped_image_file_data;
   size_t mmaped_image_file_len;
   unsigned int retransmit_count = 0;
+  bool error = false;
+  size_t z = 0;
+  bool proceed_to_next_frame = false;
+  char status;
+  int retries = 0;
+  XmodemFrame_t frame;
+  uint8_t* image_file_data;
+  size_t image_file_len;
+  enum {
+    GET_INFO,
+    SEND_FRAMES,
+    SEND_EOT,
+    CONFIRM_EOT,
+    CLEAN_UP
+  } state = GET_INFO;
 
+  // open connection to secondary
   driver_ezsp_spi_open(device,
                        mode,
                        bit_per_word,
                        speed,
                        cs_gpio,
-                       irq_gpio,
-                       wake_gpio);
+                       irq_gpio);
 
-  // AN1084 Section 2.2
-  get_spi_status();
-  get_spi_status();
-  get_spi_version();
-
-  if (send_query() == QUERYFOUND) {
-    send_query();
-  }
-
+  // load file from fs and prepare first frame
   image_file_fd = open(image_file, O_RDONLY | O_CLOEXEC);
   FATAL_SYSCALL_ON(image_file_fd < 0);
 
@@ -120,79 +123,111 @@ int send_firmware(const char* image_file,
   mmaped_image_file_data = mmap(NULL, mmaped_image_file_len, PROT_READ, MAP_PRIVATE, image_file_fd, 0);
   FATAL_SYSCALL_ON(mmaped_image_file_data == NULL);
 
-  XmodemFrame_t frame;
-  uint8_t* image_file_data = mmaped_image_file_data;
-  size_t image_file_len = mmaped_image_file_len;
+  image_file_data = mmaped_image_file_data;
+  image_file_len = mmaped_image_file_len;
 
   frame.header = XMODEM_CMD_SOH;
-  frame.seq = 1; //Sequence number starts at one initially, wraps around to 0 afterward
+  frame.seq = 1;   //Sequence number starts at one initially, wraps around to 0 afterward
 
-  TRACE_EZSP_SPI("Starting SPI bootloading...");
-
-  while (image_file_len) {
-    size_t z = 0;
-    bool proceed_to_next_frame = false;
-    char status;
-
-    z = min(image_file_len, sizeof(frame.data));
-
-    memcpy(frame.data, image_file_data, z);
-    memset(frame.data + z, 0xff, sizeof(frame.data) - z);
-
-    frame.crc = __builtin_bswap16(sli_cpc_get_crc_sw(frame.data, sizeof(frame.data)));
-
-    frame.seq_neg = (uint8_t)(0xff - frame.seq);
-
-    proceed_to_next_frame = ezsp_send_bootloader_raw_bytes((const uint8_t *)&frame, sizeof(frame));
-
-    if (proceed_to_next_frame) {
-      frame.seq++;
-      image_file_len -= z;
-      image_file_data += z;
-      status = '.';
-    } else {
-      status = 'N';
-      retransmit_count++;
+  while (1) {
+    if (retries > 5) {
+      TRACE_EZSP_SPI("Max retries, exiting");
+      error = true;
+      state = CLEAN_UP;
     }
+    switch (state) {
+      case GET_INFO:
+        retries++;
+        // bootloader will return QUERYFOUND when ready
+        ret = send_query();
+        if (ret == QUERYFOUND) {
+          // bootloader returns device info
+          send_query();
+          retries = 0;
+          state = SEND_FRAMES;
+        }
+        break;
+      case SEND_FRAMES:
+        z = min(image_file_len, sizeof(frame.data));
 
-    trace_no_timestamp("%c", status);
+        memcpy(frame.data, image_file_data, z);
+        // 0x1A padding
+        memset(frame.data + z, 0x1A, sizeof(frame.data) - z);
+
+        frame.crc = __builtin_bswap16(sli_cpc_get_crc_sw(frame.data, sizeof(frame.data)));
+
+        frame.seq_neg = (uint8_t)(0xff - frame.seq);
+
+        proceed_to_next_frame = ezsp_send_bootloader_raw_bytes((const uint8_t *)&frame, sizeof(frame));
+
+        if (proceed_to_next_frame) {
+          frame.seq++;
+          image_file_len -= z;
+          image_file_data += z;
+          status = '.';
+          retries = 0;
+        } else {
+          status = 'N';
+          retransmit_count++;
+          retries++;
+        }
+        trace_no_timestamp("%c", status);
+
+        if (image_file_len == 0) {
+          trace_no_timestamp("\n");
+          retries = 0;
+          state = SEND_EOT;
+        }
+        break;
+      case SEND_EOT:
+        if (send_end_of_file()) {
+          TRACE_EZSP_SPI("Transfer of file \"%s\" completed with %u retransmits.", image_file, retransmit_count);
+          retries = 0;
+          state = CONFIRM_EOT;
+        } else {
+          retries++;
+        }
+        break;
+      case CONFIRM_EOT:
+        ret = send_query();
+        // bootloader should respond with an ACK and the last frame number + 1
+        if ((ret == XMODEM_CMD_ACK) && (rx_spi_buffer[3] == frame.seq)) {
+          retries = 0;
+          state = CLEAN_UP;
+        } else {
+          retries++;
+          // the confirmation can take ~3 seconds
+          sleep(1);
+        }
+        break;
+      case CLEAN_UP:
+      default:
+        ret = munmap(mmaped_image_file_data, mmaped_image_file_len);
+        FATAL_SYSCALL_ON(ret != 0);
+
+        ret = close(image_file_fd);
+        FATAL_SYSCALL_ON(ret != 0);
+
+        ret = close(spi_dev.spi_dev_descriptor);
+        FATAL_SYSCALL_ON(ret != 0);
+
+        if (error) {
+          return SL_STATUS_FAIL;
+        } else {
+          return SL_STATUS_OK;
+        }
+        break;
+    }
+    usleep(1000);
   }
-
-  trace_no_timestamp("\n");
-
-  if (send_end_of_file()) {
-    TRACE_EZSP_SPI("Transfer of file \"%s\" completed with %u retransmits.", image_file, retransmit_count);
-  } else {
-    TRACE_EZSP_SPI("Transfer of file failed");
-  }
-
-  send_query();
-
-  sleep(1);
-
-  ret = munmap(mmaped_image_file_data, mmaped_image_file_len);
-  FATAL_SYSCALL_ON(ret != 0);
-
-  ret = close(image_file_fd);
-  FATAL_SYSCALL_ON(ret != 0);
-
-  ret = close(spi_dev.spi_dev_descriptor);
-  FATAL_SYSCALL_ON(ret != 0);
-
-  PRINT_INFO("Firmware upgrade successfull. Exiting, restart CPCd without -f option.\n");
-
-  exit(EXIT_SUCCESS);
-
-  return 0;
 }
 
-static void driver_ezsp_spi_open(const char *device,
+static void driver_ezsp_spi_open(const char   *device,
                                  unsigned int mode,
                                  unsigned int bit_per_word,
                                  unsigned int speed,
                                  unsigned int cs_gpio_number,
-                                 unsigned int irq_gpio_number,
-                                 unsigned int wake_gpio_number)
+                                 unsigned int irq_gpio_number)
 {
   int ret = 0;
   int fd;
@@ -228,20 +263,17 @@ static void driver_ezsp_spi_open(const char *device,
   FATAL_ON(gpio_direction(spi_dev.cs_gpio, OUT) < 0);
   FATAL_ON(gpio_write(spi_dev.cs_gpio, 1) < 0);
 
-  // Setup WAKE gpio
-  FATAL_ON(gpio_init(&spi_dev.wake_gpio, wake_gpio_number) < 0);
-  FATAL_ON(gpio_direction(spi_dev.wake_gpio, OUT) < 0);
-  FATAL_ON(gpio_write(spi_dev.wake_gpio, 1) < 0);
-
   // Setup IRQ gpio
   FATAL_ON(gpio_init(&spi_dev.irq_gpio, irq_gpio_number) < 0);
   FATAL_ON(gpio_direction(spi_dev.irq_gpio, IN) < 0);
+  FATAL_ON(gpio_setedge(spi_dev.irq_gpio, FALLING) < 0);
 }
 
 static int read_until_end_of_frame(void)
 {
   uint8_t temp_array[SPI_BUFFER_SIZE];
   uint16_t cpt = 0;
+  bool valid_data = false;
   int ret = 0;
   int timeout = BOOTLOADER_TIMEOUT;
 
@@ -250,18 +282,18 @@ static int read_until_end_of_frame(void)
 
   spi_tranfer.len = 1u;
 
-  ret = ioctl(spi_dev.spi_dev_descriptor, SPI_IOC_MESSAGE(1), &spi_tranfer);
-  FATAL_ON(ret != 1);
-
-  temp_array[cpt++] = rx_spi_buffer[0];
-
-  while (rx_spi_buffer[0] != END_BTL_FRAME
-         && timeout > 0) {
+  do {
     ret = ioctl(spi_dev.spi_dev_descriptor, SPI_IOC_MESSAGE(1), &spi_tranfer);
     FATAL_ON(ret != 1);
-    temp_array[cpt++] = rx_spi_buffer[0];
-    timeout--;
-  }
+    if (rx_spi_buffer[0] != 0xFF) {
+      valid_data = true;
+    }
+    if (valid_data) {
+      temp_array[cpt++] = rx_spi_buffer[0];
+    } else {
+      timeout--;
+    }
+  } while ((rx_spi_buffer[0] != END_BTL_FRAME) && (timeout > 0));
 
   if (timeout == 0) {
     return -1;
@@ -274,80 +306,19 @@ static int read_until_end_of_frame(void)
 
 static bool wait_irq_line(void)
 {
-  int timeout = 3;
+  int timeout = 10;
 
   while ((gpio_read(spi_dev.irq_gpio) != 0)
-         || timeout-- < 0) {
-    usleep(10);
+         && timeout-- > 0) {
+    usleep(10000);
   }
 
-  if (timeout == 0) {
+  if (timeout <= 0) {
     return false;
   }
 
+  usleep(1000);
   return true;
-}
-
-static int get_spi_status(void)
-{
-  int ret = 0;
-
-  memset(tx_spi_buffer, 0xFF, SPI_BUFFER_SIZE);
-  memset(rx_spi_buffer, 0, SPI_BUFFER_SIZE);
-
-  // [0B A7]
-  spi_tranfer.len = 2u;
-
-  tx_spi_buffer[0] = SPI_STATUS;
-  tx_spi_buffer[1] = END_BTL_FRAME;
-
-  cs_assert();
-  ret = ioctl(spi_dev.spi_dev_descriptor, SPI_IOC_MESSAGE(1), &spi_tranfer);
-  FATAL_ON(ret != 2);
-
-  if (!wait_irq_line()) {
-    cs_deassert();
-    return -1;
-  }
-
-  ret = read_until_end_of_frame();
-
-  cs_deassert();
-
-  usleep(1000);
-
-  return rx_spi_buffer[2];
-}
-
-static int get_spi_version(void)
-{
-  int ret = 0;
-
-  memset(tx_spi_buffer, 0xFF, SPI_BUFFER_SIZE);
-  memset(rx_spi_buffer, 0, SPI_BUFFER_SIZE);
-
-  // [0A A7]
-  spi_tranfer.len = 2u;
-
-  tx_spi_buffer[0] = SPI_VERSION;
-  tx_spi_buffer[1] = END_BTL_FRAME;
-
-  cs_assert();
-  ret = ioctl(spi_dev.spi_dev_descriptor, SPI_IOC_MESSAGE(1), &spi_tranfer);
-  FATAL_ON(ret != 2);
-
-  if (!wait_irq_line()) {
-    cs_deassert();
-    return -1;
-  }
-
-  ret = read_until_end_of_frame();
-
-  cs_deassert();
-
-  usleep(1000);
-
-  return rx_spi_buffer[2];
 }
 
 static int send_query(void)
@@ -360,8 +331,8 @@ static int send_query(void)
   // [FD 01 51 A7]
   spi_tranfer.len = 4u;
 
-  tx_spi_buffer[0] = 0xFD;
-  tx_spi_buffer[1] = 0x01;
+  tx_spi_buffer[0] = START_BTL_FRAME;
+  tx_spi_buffer[1] = 0x01; // length
   tx_spi_buffer[2] = QUERY;
   tx_spi_buffer[3] = END_BTL_FRAME;
 
@@ -378,8 +349,6 @@ static int send_query(void)
 
   cs_deassert();
 
-  usleep(1000);
-
   return rx_spi_buffer[2];
 }
 
@@ -394,7 +363,7 @@ static bool send_end_of_file(void)
 
   // [FD 01 04 A7]
   tx_spi_buffer[0] = START_BTL_FRAME;
-  tx_spi_buffer[1] = 0x01;
+  tx_spi_buffer[1] = 0x01; // length
   tx_spi_buffer[2] = XMODEM_CMD_EOT;
   tx_spi_buffer[3] = END_BTL_FRAME;
 
@@ -405,15 +374,10 @@ static bool send_end_of_file(void)
 
   if (!wait_irq_line()) {
     cs_deassert();
-    return -1;
+    return false;
   }
 
-  ret = ioctl(spi_dev.spi_dev_descriptor, SPI_IOC_MESSAGE(1), &spi_tranfer);
-  FATAL_ON(ret != 4);
-
-  cs_deassert();
-
-  usleep(1000);
+  ret = read_until_end_of_frame();
 
   if (rx_spi_buffer[2] == FILEDONE) {
     return true;
@@ -425,6 +389,8 @@ static bool send_end_of_file(void)
 static bool ezsp_send_bootloader_raw_bytes(const uint8_t *message, uint8_t length)
 {
   int ret = 0;
+  int timeout = 5;
+  uint8_t seq_no = ((XmodemFrame_t *)message)->seq;
 
   memset(tx_spi_buffer, 0xFF, SPI_BUFFER_SIZE);
   memset(rx_spi_buffer, 0, SPI_BUFFER_SIZE);
@@ -447,20 +413,25 @@ static bool ezsp_send_bootloader_raw_bytes(const uint8_t *message, uint8_t lengt
     return false;
   }
 
-  // [FD 01 19 A7]
-  spi_tranfer.len = 4u;
-  ret = ioctl(spi_dev.spi_dev_descriptor, SPI_IOC_MESSAGE(1), &spi_tranfer);
-  FATAL_ON(ret != 4u);
+  // the bootloader should respond to the transmission
+  // with BLOCKOK
+  ret = read_until_end_of_frame();
 
-  cs_deassert();
-
-  usleep(1000);
-
-  if (rx_spi_buffer[2] == BLOCKOK) {
-    return true;
+  if (rx_spi_buffer[2] != BLOCKOK) {
+    return false;
   }
 
-  return false;
+  // a subsequent send_query should return an XMODEM ACK with
+  // the seq number
+  while ((send_query() != XMODEM_CMD_ACK) && (timeout-- > 0)) {
+    usleep(1000);
+  }
+
+  if (rx_spi_buffer[3] != seq_no) {
+    return false;
+  }
+
+  return true;
 }
 
 static void cs_assert(void)
@@ -477,4 +448,6 @@ static void cs_deassert(void)
 
   ret = gpio_write(spi_dev.cs_gpio, 1);
   FATAL_SYSCALL_ON(ret < 0);
+
+  usleep(1000);
 }

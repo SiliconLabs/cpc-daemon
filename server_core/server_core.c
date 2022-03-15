@@ -52,17 +52,20 @@ static sl_cpc_system_reboot_mode_t pending_mode;
 static int kill_eventfd = -1;
 
 static enum {
+  INITIAL_NORMAL_RESET_STATE,
   SET_NORMAL_REBOOT_MODE,
+  WAIT_NORMAL_UNNUMBERED_ACK,
   WAIT_NORMAL_REBOOT_MODE_ACK,
   WAIT_NORMAL_RESET_ACK,
   WAIT_RESET_REASON,
   WAIT_FOR_RX_CAPABILITY,
   WAIT_FOR_PROTOCOL_VERSION,
   RESET_SEQUENCE_DONE
-} reset_sequence_state = SET_NORMAL_REBOOT_MODE;
+} reset_sequence_state = INITIAL_NORMAL_RESET_STATE;
 
 static enum {
   SET_BOOTLOADER_REBOOT_MODE,
+  WAIT_FOR_BOOTLOADER_UNNUMBERED_ACK,
   WAIT_BOOTLOADER_REBOOT_MODE_ACK,
   WAIT_BOOTLOADER_RESET_ACK
 } reboot_into_bootloader_state = SET_BOOTLOADER_REBOOT_MODE;
@@ -327,8 +330,7 @@ static void property_set_reset_mode_callback(sl_cpc_system_command_handle_t *han
     case SL_STATUS_OK:
 
       if (property_length != sizeof(sl_cpc_system_status_t)) {
-        TRACE_RESET("Set reset mode reply length doesn't match");
-        FATAL();
+        FATAL("Set reset mode reply length doesn't match");
       }
 
       BUG_ON(property_length != sizeof(sl_cpc_system_reboot_mode_t));
@@ -341,17 +343,11 @@ static void property_set_reset_mode_callback(sl_cpc_system_command_handle_t *han
       break;
 
     case SL_STATUS_TIMEOUT:
-      TRACE_RESET("Set reset mode timed out!");
-      WARN("Failed to reset secondary (SL_STATUS_TIMEOUT)");
+    case SL_STATUS_ABORT:
+      TRACE_RESET("Secondary did not reply to the set reboot mode request. Attempting again..");
       ignore_reset_reason = false; // Don't ignore a secondary that resets
+      reset_sequence_state = SET_NORMAL_REBOOT_MODE;
       break;
-
-    case SL_STATUS_FAIL:
-      TRACE_RESET("Set reset mode failed!");
-      WARN("Failed to reset secondary (SL_STATUS_FAIL)");
-      ignore_reset_reason = false; // Don't ignore a secondary that resets
-      break;
-
     default:
       BUG("Unhandled property_set_reset_mode_callback status");
       break;
@@ -376,13 +372,10 @@ void reset_callback(sl_cpc_system_command_handle_t *handle,
       break;
 
     case SL_STATUS_TIMEOUT:
-      WARN("Failed to reset secondary (SL_STATUS_TIMEOUT)");
+    case SL_STATUS_ABORT:
+      WARN("Failed to reset secondary");
       ignore_reset_reason = false; // Don't ignore a secondary that resets
-      break;
-
-    case SL_STATUS_FAIL:
-      WARN("Failed to reset secondary (SL_STATUS_FAIL)");
-      ignore_reset_reason = false; // Don't ignore a secondary that resets
+      reset_sequence_state = SET_NORMAL_REBOOT_MODE;
       break;
     default:
       BUG("Unhandled reset_callback status");
@@ -416,6 +409,14 @@ static void on_unsolicited_status(sl_cpc_system_status_t status)
 
       /* Notify lib connected */
       server_notify_connected_libs_of_secondary_reset();
+
+      /* Close every single endpoint data connections */
+      for (uint8_t i = 1; i < 255; ++i) {
+        server_close_endpoint(i, false);
+      }
+
+      /* Wait for logs to be flushed */
+      sleep(1);
 
       /* All file descriptors except stdout, stdin and stderr are supposed to be closed automatically with O_CLOEXEC */
 
@@ -479,11 +480,20 @@ static void process_reset_sequence(void)
     case RESET_SEQUENCE_DONE:
       return;
 
+    case INITIAL_NORMAL_RESET_STATE:
+      /* Reset the sequence number on the system endpoint */
+      sl_cpc_system_request_sequence_reset();
+      reset_sequence_state = WAIT_NORMAL_UNNUMBERED_ACK;
+      break;
+
+    case WAIT_NORMAL_UNNUMBERED_ACK:
+      if (sl_cpc_system_received_unnumbered_acknowledgement()) {
+        reset_sequence_state = SET_NORMAL_REBOOT_MODE;
+      }
+      break;
+
     case SET_NORMAL_REBOOT_MODE:
       PRINT_INFO("Connecting to secondary...");
-
-      /* Reset the sequence number on the system endpoint */
-      sl_cpc_system_reset_system_endpoint();
 
       /* Send a request to the secondary to set the reboot mode to 'application' */
       {
@@ -492,7 +502,7 @@ static void process_reset_sequence(void)
         pending_mode = reboot_mode;
 
         sl_cpc_system_cmd_property_set(property_set_reset_mode_callback,
-                                       5,      /* 5 retries */
+                                       0,      /* unlimited retries */
                                        100000, /* 100ms between retries*/
                                        PROP_BOOTLOADER_REBOOT_MODE,
                                        &reboot_mode,
@@ -585,9 +595,6 @@ static void process_reboot_into_bootloader_mode(void)
         return;
       }
 
-      /* Reset the sequence number on the system endpoint */
-      sl_cpc_system_reset_system_endpoint();
-
       /* Send a request to the secondary to set the reboot mode to 'application' */
       {
         const sl_cpc_system_reboot_mode_t reboot_mode = REBOOT_BOOTLOADER;
@@ -595,7 +602,7 @@ static void process_reboot_into_bootloader_mode(void)
         pending_mode = reboot_mode;
 
         sl_cpc_system_cmd_property_set(property_set_reset_mode_callback,
-                                       5,      /* 5 retries */
+                                       0,      /* unlimited retries */
                                        100000, /* 100ms between retries*/
                                        PROP_BOOTLOADER_REBOOT_MODE,
                                        &reboot_mode,

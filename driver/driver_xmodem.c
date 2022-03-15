@@ -29,7 +29,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 
-int xmodem_send(const char* image_file, const char *dev_name, unsigned  int bitrate, bool hardflow)
+sl_status_t xmodem_send(const char* image_file, const char *dev_name, unsigned  int bitrate, bool hardflow)
 {
   int uart_fd;
   int image_file_fd;
@@ -133,6 +133,8 @@ int xmodem_send(const char* image_file, const char *dev_name, unsigned  int bitr
     }
   }
 
+  trace_no_timestamp("\n");
+
   /* Complete the transfer by sending EOF symbol */
   {
     const uint8_t eof = XMODEM_CMD_EOT;
@@ -166,9 +168,5 @@ int xmodem_send(const char* image_file, const char *dev_name, unsigned  int bitr
     FATAL_SYSCALL_ON(ret != 0);
   }
 
-  PRINT_INFO("Firmware upgrade successfull. Exiting, restart CPCd without -f option.");
-
-  exit(EXIT_SUCCESS);
-
-  return 0;
+  return SL_STATUS_OK;
 }

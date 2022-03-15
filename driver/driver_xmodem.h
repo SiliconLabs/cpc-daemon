@@ -20,7 +20,11 @@
 #define DRIVER_XMODEM_H
 
 #include <stdbool.h>
+#include "misc/sl_status.h"
 
-int xmodem_send(const char* image_file, const char *dev_name, unsigned  int bitrate, bool hardflow);
+sl_status_t xmodem_send(const char   *image_file,
+                        const char   *dev_name,
+                        unsigned int bitrate,
+                        bool         hardflow);
 
 #endif //DRIVER_XMODEM_H

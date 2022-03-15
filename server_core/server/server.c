@@ -224,6 +224,13 @@ void server_init(void)
     /* per-endpoint data sockets are dynamically created [and added to epoll set] when instances of library are connecting to an endpoint */
   }
 
+  /* Wait for the completion of the reset sequence */
+  if (config_reset_sequence == true) {
+    while (!sl_cpc_system_received_unnumbered_acknowledgement()) {
+      sleep(1);
+    }
+  }
+
   /* The server up and running, unblock possible threads waiting for it. */
   server_ready_post();
 }
@@ -840,8 +847,6 @@ void server_close_endpoint(uint8_t endpoint_number, bool error)
   size_t data_sock_i = 0;
   int ret;
 
-  TRACE_SERVER("Closing ep#%u", endpoint_number);
-
   /* Sanity check */
   {
     /* System endpoint is not like the others, if we create a socket for it, there's a bug */
@@ -851,6 +856,8 @@ void server_close_endpoint(uint8_t endpoint_number, bool error)
       return; // Endpoint was previously closed
     }
   }
+
+  TRACE_SERVER("Closing ep#%u", endpoint_number);
 
   /* Close every open connection on that endpoint (data socket) */
   while (endpoints[endpoint_number].data_socket_epoll_private_data != NULL) {

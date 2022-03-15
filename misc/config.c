@@ -62,7 +62,10 @@ unsigned int  config_spi_mode = SPI_MODE_0;
 unsigned int  config_spi_bit_per_word = 8;
 unsigned int  config_spi_cs_pin = 24;
 unsigned int  config_spi_irq_pin = 23;
-unsigned int  config_spi_wake_pin = 25;
+
+bool          config_recovery_enabled = false;
+unsigned int  config_wake_pin = 25;
+unsigned int  config_reset_pin = 0;
 
 const char* const  config_socket_folder = DEFAULT_SOCKET_FOLDER;
 
@@ -264,8 +267,21 @@ static void config_parse_config_file(void)
       } else {
         FATAL("Bad value for SPI_DEVICE_MODE");
       }
-    } else if (0 == strcmp(name, "SPI_WAKE_GPIO")) {
-      config_spi_wake_pin = (unsigned int)strtoul(val, &endptr, 10);
+    } else if (0 == strcmp(name, "BOOTLOADER_RECOVERY_PINS_ENABLED")) {
+      if (0 == strcmp(val, "true")) {
+        config_recovery_enabled = true;
+      } else if (0 == strcmp(val, "false")) {
+        config_recovery_enabled = false;
+      } else {
+        FATAL("Config file error : bad BOOTLOADER_RECOVERY_PINS_ENABLED value");
+      }
+    } else if (0 == strcmp(name, "BOOTLOADER_WAKE_GPIO")) {
+      config_wake_pin = (unsigned int)strtoul(val, &endptr, 10);
+      if (*endptr != '\0') {
+        FATAL("Bad config line \"%s\"", line);
+      }
+    } else if (0 == strcmp(name, "BOOTLOADER_RESET_GPIO")) {
+      config_reset_pin = (unsigned int)strtoul(val, &endptr, 10);
       if (*endptr != '\0') {
         FATAL("Bad config line \"%s\"", line);
       }

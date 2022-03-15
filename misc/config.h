@@ -67,7 +67,10 @@ extern unsigned int  config_spi_mode;
 extern unsigned int  config_spi_bit_per_word;
 extern unsigned int  config_spi_cs_pin;
 extern unsigned int  config_spi_irq_pin;
-extern unsigned int  config_spi_wake_pin;
+
+extern bool          config_recovery_enabled;
+extern unsigned int  config_wake_pin;
+extern unsigned int  config_reset_pin;
 
 extern const char* const  config_socket_folder;
 extern const char*   config_instance_name;
