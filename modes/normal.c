@@ -54,9 +54,11 @@ void run_normal_mode(void)
 
   server_core_thread = server_core_init(fd_socket_driver_core, false);
 
+#if defined(ENABLE_ENCRYPTION)
   if (config_use_encryption == true) {
     security_post_command(SECURITY_COMMAND_INITIALIZE_SESSION);
   }
+#endif
 
   main_wait_crash_or_gracefull_exit();
 }

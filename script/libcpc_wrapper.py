@@ -104,8 +104,11 @@ class CPC:
         read_flag = c_ubyte(flags)
         byte_array = bytes(buffer)
         p = c_char_p(byte_array)
-        ret = self.lib_cpc.cpc_read_endpoint(endpoint, p, byte_count, read_flag)
-        buffer[0:ret] = p.value[0:ret]
+        p2 = cast(p,POINTER(c_char))
+        ret = self.lib_cpc.cpc_read_endpoint(endpoint, p2, byte_count, read_flag)
+        if ret > 0:
+            buffer[0:ret] = p2[0:ret]
+        #endif
         return ret
     #end def
     

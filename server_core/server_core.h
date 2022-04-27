@@ -31,4 +31,6 @@ pthread_t server_core_init(int fd_socket_driver_core, bool firmware_update);
 
 void server_core_kill_signal(void);
 
+bool server_core_reset_sequence_in_progress(void);
+
 #endif //SERVER_CORE_H

@@ -31,6 +31,7 @@
 #include <unistd.h>
 
 #define MAX_EPOLL_EVENTS 10
+#define RESET_TIMEOUT_MS 5000
 
 extern pthread_t driver_thread;
 extern pthread_t server_core_thread;
@@ -105,12 +106,6 @@ void run_firmware_update(void)
     BUG();
   }
 
-  gpio_deinit(&wake_gpio);
-  gpio_deinit(&reset_gpio);
-  if (config_bus == SPI) {
-    gpio_deinit(&irq_gpio);
-  }
-
   if (status == SL_STATUS_OK) {
     PRINT_INFO("Firmware upgrade successful. Exiting, restart CPCd without -f option.");
     exit(EXIT_SUCCESS);
@@ -169,17 +164,30 @@ static void reboot_secondary_with_pins(void)
 
   if (config_bus == SPI) {
     // wait for host interrupt
-    fds = epoll_wait(fd_epoll, events, MAX_EPOLL_EVENTS, -1);
-    FATAL_SYSCALL_ON(fds == -1);
-    for (n = 0; n < fds; n++) {
-      if (events[n].data.fd == irq_gpio.irq_fd) {
-        process_irq();
+    bool irq = false;
+    do {
+      fds = epoll_wait(fd_epoll, events, MAX_EPOLL_EVENTS, RESET_TIMEOUT_MS);
+      FATAL_SYSCALL_ON(fds == -1);  // epoll failed
+      FATAL_ON(fds == 0);           // reset timed out
+      for (n = 0; n < fds; n++) {
+        if (events[n].data.fd == irq_gpio.irq_fd) {
+          if (gpio_read(irq_gpio) == 0) {
+            irq = true;
+          }
+        }
       }
-    }
+    } while (!irq);
+    process_irq();
   } else {
     // uart-xmodem bootloader does not trigger host interrupt
     sleep(1);
     deassert_wake();
+  }
+
+  gpio_deinit(&wake_gpio);
+  gpio_deinit(&reset_gpio);
+  if (config_bus == SPI) {
+    gpio_deinit(&irq_gpio);
   }
 
   return;

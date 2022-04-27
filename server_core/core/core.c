@@ -31,6 +31,7 @@
 #include "misc/utils.h"
 #include "misc/endianess.h"
 #include "misc/sl_status.h"
+#include "security/security.h"
 #include "server_core/cpcd_exchange.h"
 #include "server_core/server/server.h"
 #include "server_core/epoll/epoll.h"
@@ -52,6 +53,8 @@
 #endif
 
 #define ABS(a)  ((a) < 0 ? -(a) : (a))
+
+static void * (*const volatile force_memset)(void *, int, size_t) = memset;
 
 /*******************************************************************************
  ***************************  GLOBAL VARIABLES   *******************************
@@ -102,6 +105,7 @@ static void core_pull_frame_from_driver(frame_t** frame_buf, size_t* frame_buf_l
 
 static void core_push_data_to_server(uint8_t ep_id, const void *data, size_t data_len);
 
+static sl_status_t should_encrypt_frame(sl_cpc_buffer_handle_t *frame, bool *encrypt);
 static void core_fetch_secondary_debug_counters(epoll_private_data_t *event_private_data);
 
 /*******************************************************************************
@@ -210,6 +214,7 @@ void core_init(int driver_fd)
     core_endpoints[i].current_tx_window_space = 1;
     core_endpoints[i].re_transmit_timer_private_data = NULL;
     core_endpoints[i].on_uframe_data_reception = NULL;
+    core_endpoints[i].on_iframe_data_reception = NULL;
     core_endpoints[i].last_iframe_sent_timestamp = (struct timespec){0 };
     core_endpoints[i].smoothed_rtt = 0;
     core_endpoints[i].rtt_variation = 0;
@@ -249,7 +254,7 @@ void core_init(int driver_fd)
     /* Setup epoll */
     {
       epoll_private_data_t* private_data = (epoll_private_data_t*) malloc(sizeof(epoll_private_data_t));
-      FATAL_ON(private_data == NULL);
+      FATAL_SYSCALL_ON(private_data == NULL);
 
       private_data->callback = core_fetch_secondary_debug_counters;
       private_data->file_descriptor = stats_timer_fd;
@@ -319,7 +324,7 @@ static void core_fetch_secondary_debug_counters(epoll_private_data_t *event_priv
   }
 
   sl_cpc_system_cmd_property_get(core_update_secondary_debug_counter,
-                                 PROP_CORE_DEBUG_COUNTERS, 0, 0);
+                                 PROP_CORE_DEBUG_COUNTERS, 0, 0, false);
 }
 
 static void core_process_rx_driver(epoll_private_data_t *event_private_data)
@@ -455,15 +460,54 @@ static void core_process_rx_i_frame(frame_t *rx_frame)
   uint8_t  control = hdlc_get_control(rx_frame->header);
   uint8_t  seq     = hdlc_get_seq(control);
 
+#if defined(ENABLE_ENCRYPTION)
+  sl_cpc_security_state_t security_state = security_get_state();
+  if (security_state == SECURITY_STATE_INITIALIZED
+      && rx_frame_payload_length > 0) {
+    uint16_t tag_len = (uint16_t)security_encrypt_get_extra_buffer_size();
+    uint8_t *output;
+    sl_status_t status;
+
+    /* the payload buffer must be longer than the security tag */
+    BUG_ON(rx_frame_payload_length < tag_len);
+    rx_frame_payload_length = (uint16_t)(rx_frame_payload_length - tag_len);
+
+    output = malloc(rx_frame_payload_length);
+    FATAL_ON(output == NULL);
+
+    status = security_decrypt(rx_frame->header, SLI_CPC_HDLC_HEADER_RAW_SIZE,
+                              rx_frame->payload, rx_frame_payload_length,
+                              output,
+                              &(rx_frame->payload[rx_frame_payload_length]), tag_len);
+
+    if (status != SL_STATUS_OK) {
+      free(output);
+      transmit_reject(endpoint, address, endpoint->ack, HDLC_REJECT_SECURITY_ISSUE);
+      TRACE_ENDPOINT_RXD_REJECT_SECURITY_ISSUE(endpoint);
+      return;
+    }
+
+    memcpy(&rx_frame->payload[0], output, rx_frame_payload_length);
+    free(output);
+  }
+#endif
+
   // data received, Push in Rx Queue and send Ack
   if (seq == endpoint->ack) {
     // Check if the received message is a final reply for the system endpoint
     if (hdlc_is_poll_final(control)) {
       BUG_ON(endpoint->id != 0); // Only system endpoint can receive final messages
       BUG_ON(endpoint->poll_final.on_final == NULL); // Received final, but no callback assigned
-      endpoint->poll_final.on_final(endpoint->id, endpoint->poll_final.on_fnct_arg, rx_frame->payload, rx_frame_payload_length);
+      endpoint->poll_final.on_final(endpoint->id, (void *)SLI_CPC_HDLC_FRAME_TYPE_INFORMATION, rx_frame->payload, rx_frame_payload_length);
     } else {
-      core_push_data_to_server(endpoint->id, rx_frame->payload, rx_frame_payload_length);
+      if (endpoint->id == SL_CPC_ENDPOINT_SYSTEM) {
+        // unsolicited i-frame
+        if (endpoint->on_iframe_data_reception != NULL) {
+          endpoint->on_iframe_data_reception(endpoint->id, rx_frame->payload, rx_frame_payload_length);
+        }
+      } else {
+        core_push_data_to_server(endpoint->id, rx_frame->payload, rx_frame_payload_length);
+      }
     }
 
     TRACE_ENDPOINT_RXD_DATA_FRAME_QUEUED(endpoint);
@@ -622,14 +666,19 @@ static void core_process_rx_u_frame(frame_t *rx_frame)
 
   switch (type) {
     case SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_INFORMATION:
-
       if (endpoint->on_uframe_data_reception != NULL) {
         endpoint->on_uframe_data_reception(endpoint->id, rx_frame->payload, payload_length);
       }
       break;
 
     case SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_POLL_FINAL:
-      BUG("We received an unnumbered final frame, this shouldn't happen");
+      if (endpoint->id != SL_CPC_ENDPOINT_SYSTEM) {
+        FATAL("Received an unnumbered final frame but it was not addressed to the system enpoint");
+      } else if (endpoint->poll_final.on_final != NULL) {
+        endpoint->poll_final.on_final(endpoint->id, (void *)SLI_CPC_HDLC_FRAME_TYPE_UNNUMBERED, rx_frame->payload, payload_length);
+      } else {
+        BUG();
+      }
       break;
 
     case SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_ACKNOWLEDGE:
@@ -656,6 +705,7 @@ void core_write(uint8_t endpoint_number, const void* message, size_t message_len
   bool iframe = true;
   bool poll = (flags & SL_CPC_FLAG_INFORMATION_POLL) ? true : false;
   uint8_t type = SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_UNKNOWN;
+  void* payload = NULL;
 
   FATAL_ON(message_len > UINT16_MAX);
 
@@ -669,13 +719,8 @@ void core_write(uint8_t endpoint_number, const void* message, size_t message_len
       return;
     }
 
-    /* There should not be any reason (at the moment) to use U-Frame Polls */
-    if (flags & SL_CPC_FLAG_UNNUMBERED_POLL) {
-      BUG();
-    }
-
     /* if u-frame, make sure they are enabled */
-    if ((flags & SL_CPC_FLAG_UNNUMBERED_INFORMATION) || (flags & SL_CPC_FLAG_UNNUMBERED_RESET_COMMAND)) {
+    if ((flags & SL_CPC_FLAG_UNNUMBERED_INFORMATION) || (flags & SL_CPC_FLAG_UNNUMBERED_RESET_COMMAND) || (flags & SL_CPC_FLAG_UNNUMBERED_POLL)) {
       FATAL_ON(!(endpoint->flags & SL_CPC_OPEN_ENDPOINT_FLAG_UFRAME_ENABLE));
 
       iframe = false;
@@ -684,6 +729,8 @@ void core_write(uint8_t endpoint_number, const void* message, size_t message_len
         type = SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_INFORMATION;
       } else if (flags & SL_CPC_FLAG_UNNUMBERED_RESET_COMMAND) {
         type = SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_RESET_SEQ;
+      } else if ((flags & SL_CPC_FLAG_UNNUMBERED_POLL)) {
+        type = SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_POLL_FINAL;
       }
     }
     /* if I-frame, make sure they are not disabled */
@@ -695,8 +742,13 @@ void core_write(uint8_t endpoint_number, const void* message, size_t message_len
   /* Fill the buffer handle */
   {
     buffer_handle = (sl_cpc_buffer_handle_t*) calloc(1, sizeof(sl_cpc_buffer_handle_t));
+    FATAL_SYSCALL_ON(buffer_handle == NULL);
 
-    buffer_handle->data        = message;
+    payload = malloc(message_len);
+    FATAL_SYSCALL_ON(payload == NULL);
+    memcpy(payload, message, message_len);
+
+    buffer_handle->data        = payload;
     buffer_handle->data_length = (uint16_t)message_len;
     buffer_handle->endpoint    = endpoint;
     buffer_handle->address     = endpoint_number;
@@ -723,13 +775,13 @@ void core_write(uint8_t endpoint_number, const void* message, size_t message_len
   }
 
   transmit_queue_item = (sl_cpc_transmit_queue_item_t*) malloc(sizeof(sl_cpc_transmit_queue_item_t));
-  FATAL_ON(transmit_queue_item == NULL);
+  FATAL_SYSCALL_ON(transmit_queue_item == NULL);
 
   transmit_queue_item->handle = buffer_handle;
 
   // Deal with transmit window
   {
-    // If U-Frame, skip the window and
+    // If U-Frame, skip the window and send immediately
     if (iframe == false) {
       sl_slist_push_back(&transmit_queue, &transmit_queue_item->node);
       core_process_transmit_queue();
@@ -777,7 +829,7 @@ void core_open_endpoint(uint8_t endpoint_number, uint8_t flags, uint8_t tx_windo
   /* Setup epoll */
   {
     epoll_private_data_t* private_data = (epoll_private_data_t*) malloc(sizeof(epoll_private_data_t));
-    FATAL_ON(private_data == NULL);
+    FATAL_SYSCALL_ON(private_data == NULL);
 
     ep->re_transmit_timer_private_data = private_data;
 
@@ -803,7 +855,7 @@ void core_set_endpoint_in_error(uint8_t endpoint_number, cpc_endpoint_state_t ne
 {
   if (endpoint_number == 0) {
     WARN("System endpoint in error, new state: %d. Restarting it.", new_state);
-    sl_cpc_system_reset_system_endpoint();
+    sl_cpc_system_request_sequence_reset();
   } else {
     WARN("Setting endpoint #%d in error, new state: %d", endpoint_number, new_state);
 
@@ -862,7 +914,9 @@ sl_status_t core_close_endpoint(uint8_t endpoint_number, bool notify_secondary, 
 
   while (item != NULL) {
     free(item->handle->hdlc_header);
-    free((void *)item->handle->data);
+    if (item->handle->data_length != 0) {
+      free((void *)item->handle->data);
+    }
     free(item->handle);
 
     /* Remove the item from the list*/
@@ -881,7 +935,9 @@ sl_status_t core_close_endpoint(uint8_t endpoint_number, bool notify_secondary, 
   while (item != NULL) {
     if (item->handle->address == endpoint_number) {
       free(item->handle->hdlc_header);
-      free((void *)item->handle->data);
+      if (item->handle->data_length != 0) {
+        free((void *)item->handle->data);
+      }
       free(item->handle);
 
       sl_slist_remove(&transmit_queue, &item->node);
@@ -906,7 +962,8 @@ sl_status_t core_close_endpoint(uint8_t endpoint_number, bool notify_secondary, 
                                    100000, /* 100ms between retries*/
                                    EP_ID_TO_PROPERTY_ID(ep->id),
                                    &ep->state,
-                                   4);
+                                   4,
+                                   false);
   }
 
   if (ep->re_transmit_timer_private_data != NULL) {
@@ -936,7 +993,7 @@ void core_set_endpoint_option(uint8_t endpoint_number,
 
   switch (option) {
     case SL_CPC_ENDPOINT_ON_IFRAME_RECEIVE:
-      BUG("invalid option");
+      ep->on_iframe_data_reception = (sl_cpc_on_data_reception_t)value;
       break;
     case SL_CPC_ENDPOINT_ON_IFRAME_RECEIVE_ARG:
       BUG("invalid option");
@@ -1057,11 +1114,16 @@ static void process_ack(sl_cpc_endpoint_t *endpoint, uint8_t ack)
 #endif
 
     if (endpoint->id == SL_CPC_ENDPOINT_SYSTEM && hdlc_is_poll_final(control_byte)) {
-      sl_cpc_system_cmd_poll_acknowledged(frame->data);
-    } else {
-      free((void *)frame->data);
+      sl_cpc_system_cmd_poll_acknowledged(frame->plaintext_data);
+
+      // If the frame is unencrypted, plaintext_data and data points to the same
+      // buffer. Check that pointers are different to prevent a double-free
+      if (frame->plaintext_data != frame->data) {
+        free((void*)frame->plaintext_data);
+      }
     }
 
+    free((void *)frame->data);
     free(frame->hdlc_header);
     free(frame);
     free(item);
@@ -1098,7 +1160,7 @@ static void transmit_ack(sl_cpc_endpoint_t *endpoint)
 
   // Get new frame handler
   handle = (sl_cpc_buffer_handle_t*) calloc(1, sizeof(sl_cpc_buffer_handle_t));
-  FATAL_ON(handle == NULL);
+  FATAL_SYSCALL_ON(handle == NULL);
 
   handle->endpoint = endpoint;
   handle->address = endpoint->id;
@@ -1108,7 +1170,7 @@ static void transmit_ack(sl_cpc_endpoint_t *endpoint)
 
   // Put frame in Tx Q so that it can be transmitted by CPC Core later
   item = (sl_cpc_transmit_queue_item_t*) malloc(sizeof(sl_cpc_transmit_queue_item_t));
-  FATAL_ON(item == NULL);
+  FATAL_SYSCALL_ON(item == NULL);
 
   item->handle = handle;
 
@@ -1157,8 +1219,13 @@ static void transmit_reject(sl_cpc_endpoint_t *endpoint,
                             sl_cpc_reject_reason_t reason)
 {
   uint16_t fcs;
+  bool fatal = false;
   sl_cpc_buffer_handle_t *handle;
   sl_cpc_transmit_queue_item_t *item;
+
+#ifndef ENABLE_ENCRYPTION
+  (void)fatal;
+#endif
 
   handle = (sl_cpc_buffer_handle_t*) calloc(1, sizeof(sl_cpc_buffer_handle_t));
   FATAL_ON(handle == NULL);
@@ -1169,7 +1236,7 @@ static void transmit_reject(sl_cpc_endpoint_t *endpoint,
   handle->control = hdlc_create_control_supervisory(ack, SLI_CPC_HDLC_REJECT_SUPERVISORY_FUNCTION);
 
   handle->data = malloc(sizeof(uint8_t));
-  FATAL_ON(handle->data == NULL);
+  FATAL_SYSCALL_ON(handle->data == NULL);
 
   // Set in reason
   *((uint8_t *)handle->data) = (uint8_t)reason;
@@ -1182,7 +1249,7 @@ static void transmit_reject(sl_cpc_endpoint_t *endpoint,
 
   // Put frame in Tx Q so that it can be transmitted by CPC Core later
   item = (sl_cpc_transmit_queue_item_t*) malloc(sizeof(sl_cpc_transmit_queue_item_t));
-  FATAL_ON(item == NULL);
+  FATAL_SYSCALL_ON(item == NULL);
 
   item->handle = handle;
 
@@ -1196,31 +1263,42 @@ static void transmit_reject(sl_cpc_endpoint_t *endpoint,
         break;
       case HDLC_REJECT_SEQUENCE_MISMATCH:
         TRACE_ENDPOINT_TXD_REJECT_SEQ_MISMATCH(endpoint);
+        fatal = true;
         break;
       case HDLC_REJECT_OUT_OF_MEMORY:
         TRACE_ENDPOINT_TXD_REJECT_OUT_OF_MEMORY(endpoint);
         break;
       case HDLC_REJECT_SECURITY_ISSUE:
         TRACE_ENDPOINT_TXD_REJECT_SECURITY_ISSUE(endpoint);
+        fatal = true;
         break;
       case HDLC_REJECT_UNREACHABLE_ENDPOINT:
         TRACE_ENDPOINT_TXD_REJECT_DESTINATION_UNREACHABLE(endpoint);
+        fatal = true;
         break;
       case HDLC_REJECT_ERROR:
       default:
         TRACE_ENDPOINT_TXD_REJECT_FAULT(endpoint);
+        fatal = true;
         break;
     }
   } else {
     switch (reason) {
       case HDLC_REJECT_UNREACHABLE_ENDPOINT:
         TRACE_CORE_TXD_REJECT_DESTINATION_UNREACHABLE();
+        fatal = true;
         break;
       default:
         FATAL();
         break;
     }
   }
+
+#ifdef ENABLE_ENCRYPTION
+  if (fatal) {
+    security_drop_incoming_packet();
+  }
+#endif
 }
 
 /***************************************************************************//**
@@ -1231,7 +1309,7 @@ static bool core_process_tx_queue(void)
   sl_slist_node_t *node;
   sl_cpc_transmit_queue_item_t *item;
   sl_cpc_buffer_handle_t *frame;
-  uint16_t data_length;
+  uint16_t total_length;
   uint8_t frame_type;
 
   // Return if nothing to transmit
@@ -1246,10 +1324,10 @@ static bool core_process_tx_queue(void)
   frame = item->handle;
 
   frame->hdlc_header = malloc(SLI_CPC_HDLC_HEADER_RAW_SIZE);
-  FATAL_ON(frame->hdlc_header == NULL);
+  FATAL_SYSCALL_ON(frame->hdlc_header == NULL);
 
   // Form the HDLC header
-  data_length = (frame->data_length != 0) ? (uint16_t)(frame->data_length + 2) : 0;
+  total_length = (frame->data_length != 0) ? (uint16_t)(frame->data_length + 2) : 0;
 
   frame_type = hdlc_get_frame_type(frame->control);
 
@@ -1263,25 +1341,135 @@ static bool core_process_tx_queue(void)
     }
   } else if (frame_type == SLI_CPC_HDLC_FRAME_TYPE_UNNUMBERED) {
     BUG_ON(frame->endpoint->id != SL_CPC_ENDPOINT_SYSTEM);
-    if (hdlc_get_unumbered_type(frame->control) == SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_POLL_FINAL) {
-      BUG(); // The deamon should never send an unnumbered poll frame
-    }
   }
 
-  hdlc_create_header(frame->hdlc_header, frame->address, data_length, frame->control, true);
+  sl_status_t ret;
+  bool encrypt;
+
+  ret = should_encrypt_frame(frame, &encrypt);
+  if (ret != SL_STATUS_OK) {
+    WARN("Tried to encrypt an I-Frame on endpoint #%d but that failed\n", frame->endpoint->id);
+    return false;
+  }
+
+#if defined(ENABLE_ENCRYPTION)
+  uint16_t security_buffer_size = 0;
+  if (encrypt) {
+    /* add up a few extra bytes to store security tag */
+    security_buffer_size = (uint16_t)security_encrypt_get_extra_buffer_size();
+
+    /* bug if the sum is going to overflow */
+    BUG_ON(total_length > UINT16_MAX - security_buffer_size);
+    total_length = (uint16_t)(total_length + security_buffer_size);
+  }
+#else
+  BUG_ON(encrypt);
+#endif
+
+  /* create header after checking if the frame must be encrypted or not
+   * as it has an impact on the total size of the payload, and the fcs */
+  hdlc_create_header(frame->hdlc_header, frame->address, total_length, frame->control, true);
+
+  /*
+   * For poll-final packets, the plaintext data must be kept as it's used
+   * by the acknowledge system.
+   */
+  if (hdlc_is_poll_final(frame->control)) {
+    frame->plaintext_data = frame->data;
+  }
+
+  /*
+   * When a frame is to be encrypted, we want to replace the data buffer in
+   * `frame` in order to avoid multiple re-encryption in case of transmission
+   * failure. The trade-off is that a new buffer has to be allocated here for
+   * encrypted data, and the plaintext one freed.
+   *
+   * Code below assumes that the length of the encrypted buffer is the same
+   * as the plaintext buffer. If that assumption doesn't hold true anymore, for
+   * instance because the crypto algorithm has changed, the code has to be
+   * revisited to accomodate that.
+   */
+#if defined(ENABLE_ENCRYPTION)
+  if (encrypt) {
+    uint16_t encrypted_data_length;
+    uint8_t *encrypted_payload;
+    uint8_t *security_offset;
+    uint16_t fcs;
+    sl_status_t encrypt_status;
+
+    /*
+     * encrypted_data_length is size of encrypted payload + size of security tag.
+     * This operation should be safe to cast to uint16_t as it was already checked
+     * earlier that the following sum doesn't overflow:
+     *   total_length + security_buffer_size
+     *
+     * And total_length is frame->data_length + 2 bytes for the FCS.
+     * So if the first operation doesn't overflow, this one won't as it's
+     * two-byte shorter.
+     */
+    encrypted_data_length = (uint16_t)(frame->data_length + security_buffer_size);
+
+    /* allocate buffer and make sure it succeeded */
+    encrypted_payload = (uint8_t*)malloc(encrypted_data_length);
+    FATAL_ON(encrypted_payload == NULL);
+
+    /*
+     * compute offset at which security tag must be stored. It should be right
+     * after the encrypted payload.
+     */
+    security_offset = &encrypted_payload[frame->data_length];
+
+    encrypt_status = security_encrypt(frame->hdlc_header, SLI_CPC_HDLC_HEADER_RAW_SIZE,
+                                      frame->data, frame->data_length,
+                                      encrypted_payload,
+                                      security_offset, security_buffer_size);
+
+    if (encrypt_status != SL_STATUS_OK) {
+      WARN("Encryption failed, leaving core_process_tx_queue\n");
+      free(encrypted_payload);
+      return false;
+    }
+
+    /*
+     * If the frame is a poll-final, the plaintext buffer must not be freed
+     * just yet as it's used when its ack is received to find the corresponding
+     * command. In that case, it will be freed later.
+     */
+    if (!hdlc_is_poll_final(frame->control)) {
+      force_memset((void*)frame->data, 0x00, frame->data_length);
+      free((void*)frame->data);
+    }
+
+    /*
+     * Upon successful encryption, swap plaintext buffer with the encrypted one
+     * and update fcs.
+     */
+    frame->data = encrypted_payload;
+    frame->data_length = encrypted_data_length;
+
+    fcs = sli_cpc_get_crc_sw(frame->data, (uint16_t)frame->data_length);
+    frame->fcs[0] = (uint8_t)fcs;
+    frame->fcs[1] = (uint8_t)(fcs >> 8);
+  }
+#else
+  BUG_ON(encrypt);
+#endif
 
   /* Construct and send the frame to the driver */
   {
-    const size_t frame_length = SLI_CPC_HDLC_HEADER_RAW_SIZE + data_length; //the +2 for fcs is in 'data_length'
+    // total_length takes into account FCS and security tag
+    size_t frame_length = SLI_CPC_HDLC_HEADER_RAW_SIZE + total_length;
 
     frame_t* frame_buffer = (frame_t*) malloc(frame_length);
     FATAL_ON(frame_buffer == NULL);
 
+    /* copy the header */
     memcpy(frame_buffer->header, frame->hdlc_header, SLI_CPC_HDLC_HEADER_RAW_SIZE);
 
+    /* copy the payload */
     memcpy(frame_buffer->payload, frame->data, frame->data_length);
 
-    if (data_length != 0) {
+    if (frame->data_length != 0) {
       memcpy(&frame_buffer->payload[frame->data_length], frame->fcs, sizeof(frame->fcs));
     }
 
@@ -1301,28 +1489,15 @@ static bool core_process_tx_queue(void)
       break;
 
     // In case of s-frame, free all resources, inclusind the data field because it is the core who
-    // manages s-frame resources.
-    case SLI_CPC_HDLC_FRAME_TYPE_SUPERVISORY:
-      free(item);
-      free(frame->hdlc_header);
-      if (frame->data_length != 0) {
-        free((void*)frame->data);
-      }
-      free(frame);
-      break;
-
-    // In case of unnumbered, all buffers can be freed since the core don't deal with retransmits
-    // The frame->data though, isn't freed because it's the u-frame user who manages it.
+    // manages s-frame resources.  In case of unnumbered, all buffers can be freed since the core don't deal with retransmits
     case SLI_CPC_HDLC_FRAME_TYPE_UNNUMBERED:
-      if (hdlc_is_poll_final(frame->control) == false) {
-        if (frame->data_length != 0) {
-          free((void*)frame->data); // Not expecting a reply
-        }
+    case SLI_CPC_HDLC_FRAME_TYPE_SUPERVISORY:
+      if (frame->data_length != 0) {
+        free((void*)frame->data); // Not expecting a reply
       }
       free(item);
       free(frame->hdlc_header);
       free(frame);
-
       break;
 
     default:
@@ -1372,6 +1547,99 @@ static void re_transmit_timeout(sl_cpc_endpoint_t* endpoint)
 
     re_transmit_frame(endpoint);
   }
+}
+
+/***************************************************************************//**
+ * Return true if the frame should be encrypted
+ ******************************************************************************/
+sl_status_t should_encrypt_frame(sl_cpc_buffer_handle_t *frame, bool *encrypt)
+{
+  uint8_t endpoint_id;
+  uint8_t frame_control = frame->control;
+  uint8_t frame_type = hdlc_get_frame_type(frame_control);
+  uint16_t data_length = frame->data_length;
+
+  if (frame_type != SLI_CPC_HDLC_FRAME_TYPE_INFORMATION) {
+    TRACE_CORE("Security: Skipping encryption as frame is not I-Frame");
+    *encrypt = false;
+    return SL_STATUS_OK;
+  }
+
+#if !defined(ENABLE_ENCRYPTION)
+  (void)endpoint_id;
+#else
+  /* If it's an I-Frame, the endpoint must be set */
+  BUG_ON(frame->endpoint == NULL);
+  endpoint_id = frame->endpoint->id;
+
+  sl_cpc_security_state_t security_state = security_get_state();
+#endif
+
+  if (frame->endpoint->packet_re_transmit_count != 0u) {
+    TRACE_CORE("Security: Skipping encryption as this is a retransmit");
+    *encrypt = false;
+    return SL_STATUS_OK;
+  }
+
+  if (data_length == 0) {
+    TRACE_CORE("Security: Skipping encryption as data length is zero");
+    *encrypt = false;
+    return SL_STATUS_OK;
+  }
+
+#if !defined(ENABLE_ENCRYPTION)
+  /*
+   * Security is not used, plaintext I-Frame
+   */
+  TRACE_CORE("Security: Skipping encryption as security is disabled");
+  *encrypt = false;
+  return SL_STATUS_OK;
+#else
+  if (security_state == SECURITY_STATE_NOT_READY) {
+    /*
+     * The security subsystem is not ready, communication is only allowed
+     * on the system endpoint, unencrypted for now.
+     */
+    if (endpoint_id != SL_CPC_ENDPOINT_SYSTEM) {
+      TRACE_CORE("Security: Security is not ready and endpoint is not system. Error.");
+      return SL_STATUS_NOT_READY;
+    } else {
+      TRACE_CORE("Security: Skipping encryption on system endpoint while security is being setup");
+      *encrypt = false;
+      return SL_STATUS_OK;
+    }
+  } else if (security_state == SECURITY_STATE_DISABLED) {
+    /*
+     * Security is not used, plaintext I-Frame
+     */
+    TRACE_CORE("Security: Skipping encryption as security is disabled");
+    *encrypt = false;
+    return SL_STATUS_OK;
+  } else if (security_state == SECURITY_STATE_INITIALIZING) {
+    /*
+     * If the security is being initialized, I-Frames are only allowed
+     * on the security endpoint and they are not encrypted at this point.
+     */
+    if (  endpoint_id != SL_CPC_ENDPOINT_SECURITY
+          && endpoint_id != SL_CPC_ENDPOINT_SYSTEM) {
+      TRACE_CORE("Security: Security is being initialized but endpoint is unexpected: %d", endpoint_id);
+      return SL_STATUS_PERMISSION;
+    }
+
+    *encrypt = false;
+    return SL_STATUS_OK;
+  } else if (security_state == SECURITY_STATE_INITIALIZED) {
+    /*
+     * If initialized, encrypt all I-Frames.
+     */
+    TRACE_CORE("Security: Encrypting frame");
+    *encrypt = true;
+    return SL_STATUS_OK;
+  } else {
+    BUG();
+    return SL_STATUS_FAIL;
+  }
+#endif
 }
 
 /***************************************************************************//**
@@ -1540,8 +1808,7 @@ static void core_pull_frame_from_driver(frame_t** frame_buf, size_t* frame_buf_l
   /* Allocate a buffer of the right size */
   {
     *frame_buf = (frame_t*) malloc((size_t)datagram_length);
-
-    FATAL_ON(*frame_buf == NULL);
+    FATAL_SYSCALL_ON(*frame_buf == NULL);
   }
 
   /* Fetch the datagram from the driver socket */

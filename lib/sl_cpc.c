@@ -102,7 +102,9 @@ static void lib_trace(FILE *__restrict __stream, const char* string, ...)
   #define DEFAULT_INSTANCE_NAME "cpcd_0"
 #endif
 
-#define SOCK_DIR "/dev/shm"
+#ifndef DEFAULT_SOCKET_FOLDER
+  #define DEFAULT_SOCKET_FOLDER "/dev/shm"
+#endif
 
 #define CTRL_SOCKET_TIMEOUT_SEC 1
 
@@ -145,6 +147,10 @@ static ssize_t get_max_write(sli_cpc_handle_t *lib_handle)
 
   bytes_read = recv(lib_handle->ctrl_sock_fd, max_write_query, max_write_query_len, 0);
   if (bytes_read != (ssize_t)max_write_query_len) {
+    if (bytes_read == 0) {
+      errno = ECONNRESET;
+      trace_lib_error("recv(), connection closed");
+    }
     trace_lib_error("recv()");
     return -1;
   }
@@ -175,6 +181,10 @@ static bool check_version(sli_cpc_handle_t *lib_handle)
 
   bytes_read = recv(lib_handle->ctrl_sock_fd, version_query, version_query_len, 0);
   if (bytes_read != (ssize_t)version_query_len) {
+    if (bytes_read == 0) {
+      errno = ECONNRESET;
+      trace_lib_error("recv(), connection closed");
+    }
     trace_lib_error("recv() failed when matching libcpc version with the daemon");
     return false;
   }
@@ -265,7 +275,7 @@ int cpc_init(cpc_handle_t *handle, const char* instance_name, bool enable_tracin
     int nchars;
     const size_t size = sizeof(server_addr.sun_path) - 1;
 
-    nchars = snprintf(server_addr.sun_path, size, SOCK_DIR "/cpcd/%s/ctrl.cpcd.sock", saved_instance_name);
+    nchars = snprintf(server_addr.sun_path, size, DEFAULT_SOCKET_FOLDER "/cpcd/%s/ctrl.cpcd.sock", saved_instance_name);
 
     /* Make sure the path fitted entirely in the struct's static buffer */
     if (nchars < 0 || (size_t) nchars >= size) {
@@ -410,7 +420,7 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
     int nchars;
     const size_t size = sizeof(ep_addr.sun_path) - 1;
 
-    nchars = snprintf(ep_addr.sun_path, size, SOCK_DIR "/cpcd/%s/ep%d.cpcd.sock", saved_instance_name, id);
+    nchars = snprintf(ep_addr.sun_path, size, DEFAULT_SOCKET_FOLDER "/cpcd/%s/ep%d.cpcd.sock", saved_instance_name, id);
 
     /* Make sure the path fitted entirely in the struct sockaddr_un's static buffer */
     if (nchars < 0 || (size_t) nchars >= size) {
@@ -473,6 +483,10 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
   trace_lib("open endpoint, waiting for open request reply");
   bytes_read = recv(lib_handle->ctrl_sock_fd, open_query, open_query_len, 0);
   if (bytes_read != (ssize_t)open_query_len) {
+    if (bytes_read == 0) {
+      errno = ECONNRESET;
+      trace_lib_error("recv(), connection closed");
+    }
     trace_lib_error("open endpoint failed to open request recv(), received %d bytes. Errno:", bytes_read);
     free(open_query);
     free(ep);
@@ -506,6 +520,10 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
   trace_lib("open endpoint, connected, waiting for server ack");
   bytes_read = recv(ep->sock_fd, open_query, open_query_len, 0);
   if (bytes_read != sizeof(cpcd_exchange_buffer_t) || open_query->type != EXCHANGE_OPEN_ENDPOINT_QUERY) {
+    if (bytes_read == 0) {
+      errno = ECONNRESET;
+      trace_lib_error("recv(), connection closed");
+    }
     trace_lib_error("open endpoint open request ack recv()");
     free(open_query);
     free(ep);
@@ -577,6 +595,10 @@ int cpc_close_endpoint(cpc_endpoint_t *endpoint)
   trace_lib("Waiting for request reply on EP #%d", ep->id);
   bytes_read = recv(lib_handle->ctrl_sock_fd, &close_query, close_query_len, 0);
   if (bytes_read != (ssize_t)close_query_len) {
+    if (bytes_read == 0) {
+      errno = ECONNRESET;
+      trace_lib_error("recv(), connection closed");
+    }
     trace_lib_error("Close request recv()");
     return -1;
   }
@@ -600,7 +622,6 @@ int cpc_close_endpoint(cpc_endpoint_t *endpoint)
 ssize_t cpc_read_endpoint(cpc_endpoint_t endpoint, void *buffer, size_t count, cpc_read_flags_t flags)
 {
   int sock_flags = 0;
-  ssize_t datagram_length;
   sli_cpc_endpoint_t *ep;
   ssize_t bytes_read;
 
@@ -618,23 +639,10 @@ ssize_t cpc_read_endpoint(cpc_endpoint_t endpoint, void *buffer, size_t count, c
     sock_flags |= MSG_DONTWAIT;
   }
 
-  datagram_length = recv(ep->sock_fd, buffer, ep->lib_handle->max_write_size, sock_flags | MSG_PEEK);
-  if (datagram_length == 0) {
-    trace_lib_error("recv(), datagram_length is zero bytes");
-    return -1;
-  } else if (datagram_length < 0) {
-    if (errno != EAGAIN) {
-      trace_lib_error("recv() could not peek message");
-    }
-    return -1;
-  } else if ((size_t)datagram_length > count) {
-    errno = ENOBUFS;
-    return -1;
-  }
-
   bytes_read = recv(ep->sock_fd, buffer, count, sock_flags);
   if (bytes_read == 0) {
-    trace_lib_error("recv(), got zero bytes");
+    errno = ECONNRESET;
+    trace_lib_error("recv(), connection closed");
     return -1;
   } else if (bytes_read < 0) {
     if (errno != EAGAIN) {
@@ -645,7 +653,6 @@ ssize_t cpc_read_endpoint(cpc_endpoint_t endpoint, void *buffer, size_t count, c
 
   trace_lib("Read on EP #%d", ep->id);
 
-  (void)flags;
   return bytes_read;
 }
 
@@ -679,7 +686,7 @@ ssize_t cpc_write_endpoint(cpc_endpoint_t endpoint, const void *data, size_t dat
   }
 
   ssize_t bytes_written = send(ep->sock_fd, data, data_length, sock_flags);
-  if (bytes_written <= 0) {
+  if (bytes_written == -1) {
     trace_lib_error("write()");
     return -1;
   }
@@ -709,7 +716,7 @@ int cpc_get_endpoint_state(cpc_handle_t handle, uint8_t id, cpc_endpoint_state_t
 
   struct sockaddr_un server_addr;
   server_addr.sun_family = AF_UNIX;
-  strncpy(server_addr.sun_path, SOCK_DIR "/ctrl.cpcd.sock", sizeof(server_addr.sun_path) - 1);
+  strncpy(server_addr.sun_path, DEFAULT_SOCKET_FOLDER "/ctrl.cpcd.sock", sizeof(server_addr.sun_path) - 1);
 
   if (state == NULL || handle.ptr == NULL || id == 0) {
     errno = EINVAL;
@@ -739,8 +746,12 @@ int cpc_get_endpoint_state(cpc_handle_t handle, uint8_t id, cpc_endpoint_state_t
 
   trace_lib("Get Endpoint state, reading");
   ssize_t bytes_read = recv(lib_handle->ctrl_sock_fd, request_buffer, request_buffer_len, 0);
-  if (bytes_read < 0) {
-    trace_lib_error("read()");
+  if (bytes_read <= 0) {
+    if (bytes_read == 0) {
+      errno = ECONNRESET;
+      trace_lib_error("recv(), connection closed");
+    }
+    trace_lib_error("recv()");
     free(request_buffer);
     return -1;
   }

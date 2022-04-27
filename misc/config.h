@@ -41,7 +41,10 @@ typedef enum {
 
 typedef enum {
   MODE_NORMAL,
+  MODE_BINDING_UNKNOWN,
+  MODE_BINDING_ECDH,
   MODE_BINDING_PLAIN_TEXT,
+  MODE_BINDING_UNBIND,
   MODE_FIRMWARE_UPDATE
 }operation_mode_t;
 

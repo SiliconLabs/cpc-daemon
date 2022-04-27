@@ -95,7 +95,7 @@ int main(int argc, char *argv[])
   argv_g = argv;
 
   main_thread = pthread_self();
-  pthread_setname_np(main_thread, "main_thread");
+  pthread_setname_np(main_thread, "cpcd");
 
   /* Setup signaling segfault */
   {
@@ -158,10 +158,19 @@ int main(int argc, char *argv[])
   logging_init();
 
   PRINT_INFO("CPCd v%s", PROJECT_VER);
+  PRINT_INFO("Git commit: %s / branch: %s", GIT_SHA1, GIT_REFSPEC);
 
   PRINT_INFO("Reading configuration file");
 
   config_init(argc, argv);
+
+#if !defined(ENABLE_ENCRYPTION)
+  PRINT_INFO("\033[31;1mENCRYPTION IS DISABLED \033[0m");
+#else
+  if (config_use_encryption == false) {
+    PRINT_INFO("\033[31;1mENCRYPTION IS DISABLED \033[0m");
+  }
+#endif
 
   switch (config_operation_mode) {
     case MODE_NORMAL:
@@ -170,8 +179,30 @@ int main(int argc, char *argv[])
       break;
 
     case MODE_BINDING_PLAIN_TEXT:
-      PRINT_INFO("Starting daemon in binding mode");
+#if defined(ENABLE_ENCRYPTION)
+      PRINT_INFO("Starting daemon in plain text binding mode");
       run_binding_mode();
+#else
+      FATAL("Tried to initiate binding mode with encryption disabled");
+#endif
+      break;
+
+    case MODE_BINDING_ECDH:
+#if defined(ENABLE_ENCRYPTION)
+      PRINT_INFO("Starting daemon in ECDH binding mode");
+      run_binding_mode();
+#else
+      FATAL("Tried to initiate binding mode with encryption disabled");
+#endif
+      break;
+
+    case MODE_BINDING_UNBIND:
+#if defined(ENABLE_ENCRYPTION)
+      PRINT_INFO("Starting daemon in unbind mode");
+      run_binding_mode();
+#else
+      FATAL("Tried to unbind with encryption disabled");
+#endif
       break;
 
     case MODE_FIRMWARE_UPDATE:
@@ -196,11 +227,13 @@ __attribute__((noreturn)) static void exit_daemon(void)
   server_core_kill_signal();
   pthread_join(server_core_thread, NULL);
 
-  if (config_use_encryption) {
+  if (config_use_encryption && security_thread != 0) {
     int ret = pthread_tryjoin_np(security_thread, NULL);
     if (ret == EBUSY) {
+#if defined(ENABLE_ENCRYPTION)
       security_kill_signal();
       pthread_join(security_thread, NULL);
+#endif
     }
   }
 
@@ -217,10 +250,12 @@ void main_wait_crash_or_gracefull_exit(void)
   int event_count;
   struct epoll_event events;
 
-  event_count = epoll_wait(main_wait_crash_or_gracefull_exit_epoll,
-                           &events,
-                           1, //only one event
-                           -1); //no timeout
+  do {
+    event_count = epoll_wait(main_wait_crash_or_gracefull_exit_epoll,
+                             &events,
+                             1, //only one event
+                             -1); //no timeout
+  } while (errno == EINTR && event_count < 0); // Ignore SIGSTOP
 
   FATAL_SYSCALL_ON(event_count <= 0);
 
@@ -232,6 +267,8 @@ __attribute__((noreturn)) void signal_crash(void)
   const uint64_t event_value = 1; //doesn't matter what it is
 
   exit_status = EXIT_FAILURE;
+
+  sleep(1); // Wait for logs to be flushed to the output
 
   if (pthread_self() == main_thread) {
     exit_daemon();

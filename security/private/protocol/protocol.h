@@ -76,11 +76,17 @@ sl_status_t security_send_binding_request(sl_cpc_binding_request_t binding_reque
 
 sl_status_t security_send_plain_text_key(uint8_t *key, sl_cpc_security_protocol_cmd_t *response);
 
+sl_status_t security_send_public_key(uint8_t *key, sl_cpc_security_protocol_cmd_t *response);
+
 sl_status_t security_send_unbind_request(sl_cpc_security_protocol_cmd_t *response);
 
 sl_status_t security_send_session_init_request(uint8_t *random1, sl_cpc_security_protocol_cmd_t *response);
 
 void security_exchange_plain_text_binding_key(uint8_t* const binding_key);
+
+void security_exchange_ecdh_binding_key(void);
+
+void security_request_unbind(void);
 
 void security_initialize_session(void);
 

@@ -224,13 +224,6 @@ void server_init(void)
     /* per-endpoint data sockets are dynamically created [and added to epoll set] when instances of library are connecting to an endpoint */
   }
 
-  /* Wait for the completion of the reset sequence */
-  if (config_reset_sequence == true) {
-    while (!sl_cpc_system_received_unnumbered_acknowledgement()) {
-      sleep(1);
-    }
-  }
-
   /* The server up and running, unblock possible threads waiting for it. */
   server_ready_post();
 }
@@ -472,8 +465,9 @@ void server_process_pending_connections(void)
     }
     sl_cpc_system_cmd_property_get(property_get_single_endpoint_state_and_reply_to_pending_open_callback,
                                    (sl_cpc_property_id_t)(PROP_ENDPOINT_STATE_0 + pending_connection->endpoint_id),
-                                   5, //TODO 5 retries
-                                   100000); //TODO 100 ms
+                                   5,
+                                   100000,
+                                   false);
     sl_cpc_system_set_pending_connection(pending_connection->fd_ctrl_data_socket);
     sl_slist_remove(&pending_connections, &pending_connection->node);
     free(pending_connection);
@@ -622,6 +616,7 @@ static void server_process_epoll_fd_ep_data_socket(epoll_private_data_t *private
   /* Send the data to the core */
   if (core_get_endpoint_state(endpoint_number) == SL_CPC_STATE_OPEN) {
     core_write(endpoint_number, buffer, buffer_len, 0);
+    free(buffer);
   } else {
     free(buffer);
     WARN("User tried to push on endpoint %d but it's not open, state is %d", endpoint_number, core_get_endpoint_state(endpoint_number));

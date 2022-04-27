@@ -119,7 +119,7 @@ typedef void (*cpc_reset_callback_t) (void);
  * The library will use this handle to save information that are private to libcpc.
  *
  * @param[out] handle           CPC library handle
- * @param[in]  instance_name    The name of the daemon instance. It will be the value of the INSTANCE_NAME in the config file of the daemon.
+ * @param[in]  instance_name    The name of the daemon instance. It will be the value of the instance_name in the config file of the daemon.
  *                              This value can be NULL, and so the default "cpcd_0" value will be used. If running a single instance, this can
  *                              be left to NULL, but when running simultaneous instances, it will need to be supplied.
  * @param[in]  enable_tracing   Enable tracing over stdout
