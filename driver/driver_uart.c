@@ -498,8 +498,7 @@ static bool delimit_and_push_frames_to_core(uint8_t *buffer, size_t *buffer_head
 static void driver_uart_check_for_vcom(const char* provided_device)
 {
   char device_path[255];
-  char device_name[128];
-  char *ret;
+  char *device_name = NULL;
   DIR *d;
   struct dirent *dir;
 
@@ -512,12 +511,14 @@ static void driver_uart_check_for_vcom(const char* provided_device)
           strcpy(device_path, "/dev/serial/by-id/");
           strcat(device_path, dir->d_name);
 
-          ret = realpath(device_path, device_name);
+          device_name = realpath(device_path, NULL);
 
-          if (ret != NULL && strstr(provided_device, device_name) != 0) {
+          if (device_name != NULL && strstr(provided_device, device_name) != 0) {
             vcom_present = true;
             TRACE_DRIVER("VCOM port detected, applying workaround");
           }
+          
+          free(device_name);
         }
       }
     }
