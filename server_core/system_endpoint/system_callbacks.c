@@ -137,8 +137,10 @@ void property_get_single_endpoint_state_and_reply_to_pending_open_callback(sl_cp
     ssize_t ret = send(fd_ctrl_data_of_pending_open, interface_buffer, buffer_len, 0);
     TRACE_SERVER("Replied to endpoint open query on ep#%d", endpoint_id);
 
-    if ((size_t)ret != buffer_len) {
+    if (ret == -1) {
       WARN("Failed to acknowledge the open request for endpoint #%d. %m", endpoint_id);
+    } else if ((size_t)ret != buffer_len) {
+      BUG("Failed to acknowledge the open request for endpoint #%d. Sent %d, Expected %d", endpoint_id, (int)ret, (int)buffer_len);
     }
   }
 }

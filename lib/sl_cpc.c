@@ -16,22 +16,23 @@
  *
  ******************************************************************************/
 
-#include <stdio.h>
+#include <assert.h>
 #include <errno.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <string.h>
-#include <stdint.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <signal.h>
+#include <stdarg.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <sys/un.h>
-#include <fcntl.h>
-#include <signal.h>
-#include <assert.h>
 #include <time.h>
-#include <stdarg.h>
+#include <unistd.h>
 
 #include "sl_cpc.h"
 #include "version.h"
@@ -47,6 +48,9 @@
 static void lib_trace(FILE *__restrict __stream, const char* string, ...)
 {
   char time_string[25];
+  int errno_backup;
+
+  errno_backup = errno;
 
   /* get time string */
   {
@@ -80,10 +84,13 @@ static void lib_trace(FILE *__restrict __stream, const char* string, ...)
 
   va_start(vl, string);
   {
+    errno = errno_backup;
     vfprintf(__stream, string, vl);
     fflush(__stream);
   }
   va_end(vl);
+
+  errno = errno_backup;
 }
 
 #define trace_lib(format, args ...)                     \
@@ -102,7 +109,9 @@ static void lib_trace(FILE *__restrict __stream, const char* string, ...)
   #define DEFAULT_INSTANCE_NAME "cpcd_0"
 #endif
 
-#define SOCK_DIR "/dev/shm"
+#ifndef DEFAULT_SOCKET_FOLDER
+  #define DEFAULT_SOCKET_FOLDER "/dev/shm"
+#endif
 
 #define CTRL_SOCKET_TIMEOUT_SEC 1
 
@@ -127,14 +136,14 @@ static ssize_t get_max_write(sli_cpc_handle_t *lib_handle)
 {
   size_t max_write_size;
   ssize_t bytes_read, bytes_written;
-  const size_t max_write_query_len = sizeof(cpcd_exchange_buffer_t) + sizeof(size_t);
+  const size_t max_write_query_len = sizeof(cpcd_exchange_buffer_t) + sizeof(uint32_t);
   uint8_t buf[max_write_query_len];
   cpcd_exchange_buffer_t* max_write_query = (cpcd_exchange_buffer_t*)buf;
 
   max_write_query->type = EXCHANGE_MAX_WRITE_SIZE_QUERY;
 
   max_write_query->endpoint_number = 0;
-  memset(max_write_query->payload, 0, sizeof(size_t));
+  memset(max_write_query->payload, 0, sizeof(uint32_t));
 
   bytes_written = send(lib_handle->ctrl_sock_fd, max_write_query, max_write_query_len, 0);
 
@@ -145,11 +154,15 @@ static ssize_t get_max_write(sli_cpc_handle_t *lib_handle)
 
   bytes_read = recv(lib_handle->ctrl_sock_fd, max_write_query, max_write_query_len, 0);
   if (bytes_read != (ssize_t)max_write_query_len) {
+    if (bytes_read == 0) {
+      errno = ECONNRESET;
+      trace_lib_error("recv(), connection closed");
+    }
     trace_lib_error("recv()");
     return -1;
   }
 
-  memcpy(&max_write_size, max_write_query->payload, sizeof(size_t));
+  memcpy(&max_write_size, max_write_query->payload, sizeof(uint32_t));
 
   return (ssize_t)max_write_size;
 }
@@ -157,15 +170,14 @@ static ssize_t get_max_write(sli_cpc_handle_t *lib_handle)
 static bool check_version(sli_cpc_handle_t *lib_handle)
 {
   ssize_t bytes_read, bytes_written;
-  const size_t version_query_len = sizeof(cpcd_exchange_buffer_t) + 2 * sizeof(uint32_t);
+  const size_t version_query_len = sizeof(cpcd_exchange_buffer_t) + sizeof(uint8_t);
   uint8_t buf[version_query_len];
   cpcd_exchange_buffer_t* version_query = (cpcd_exchange_buffer_t*)buf;
-  uint32_t* version = (uint32_t*) version_query->payload;
+  uint8_t* version = (uint8_t*)version_query->payload;
 
   version_query->type = EXCHANGE_VERSION_QUERY;
   version_query->endpoint_number = 0;//no effect
-  version[0] = (uint32_t)PROJECT_VER_MAJOR;
-  version[1] = (uint32_t)PROJECT_VER_MINOR;
+  *version = LIBRARY_API_VERSION;
 
   bytes_written = send(lib_handle->ctrl_sock_fd, version_query, version_query_len, 0);
   if (bytes_written < (ssize_t)version_query_len) {
@@ -175,11 +187,15 @@ static bool check_version(sli_cpc_handle_t *lib_handle)
 
   bytes_read = recv(lib_handle->ctrl_sock_fd, version_query, version_query_len, 0);
   if (bytes_read != (ssize_t)version_query_len) {
+    if (bytes_read == 0) {
+      errno = ECONNRESET;
+      trace_lib_error("recv(), connection closed");
+    }
     trace_lib_error("recv() failed when matching libcpc version with the daemon");
     return false;
   }
 
-  if (version[0] != PROJECT_VER_MAJOR || version[1] != PROJECT_VER_MINOR) {
+  if (*version != LIBRARY_API_VERSION) {
     errno = ELIBBAD;
     return false;
   }
@@ -218,10 +234,10 @@ static void SIGUSR1_handler(int signum)
     saved_reset_callback();
   }
 }
-/***************************************************************************/ /**
+
+/***************************************************************************//**
  * Initialize the CPC library.
- * Upon success the user will obtain a handle that must be passed to cpc_open calls.
- * The library will use this handle to save information that are private to libcpc.
+ * Upon success, users will get a handle that must be passed to subsequent calls.
  ******************************************************************************/
 int cpc_init(cpc_handle_t *handle, const char* instance_name, bool enable_tracing, cpc_reset_callback_t reset_callback)
 {
@@ -265,7 +281,7 @@ int cpc_init(cpc_handle_t *handle, const char* instance_name, bool enable_tracin
     int nchars;
     const size_t size = sizeof(server_addr.sun_path) - 1;
 
-    nchars = snprintf(server_addr.sun_path, size, SOCK_DIR "/cpcd/%s/ctrl.cpcd.sock", saved_instance_name);
+    nchars = snprintf(server_addr.sun_path, size, DEFAULT_SOCKET_FOLDER "/cpcd/%s/ctrl.cpcd.sock", saved_instance_name);
 
     /* Make sure the path fitted entirely in the struct's static buffer */
     if (nchars < 0 || (size_t) nchars >= size) {
@@ -348,6 +364,12 @@ int cpc_init(cpc_handle_t *handle, const char* instance_name, bool enable_tracin
   return 0;
 }
 
+/***************************************************************************//**
+ * Restart the CPC library.
+ * The user is notified via the 'reset_callback' when the secondary has restarted.
+ * The user logic then has to call this function in order to [try] to re-connect
+ * the application to the daemon.
+ ******************************************************************************/
 int cpc_restart(cpc_handle_t *handle)
 {
   int ret;
@@ -383,9 +405,10 @@ int cpc_restart(cpc_handle_t *handle)
   return ret;
 }
 
-/***************************************************************************/ /**
+/***************************************************************************//**
  * Connect to the socket corresponding to the provided endpoint ID.
- * The function will also allocate the memory for the endpoint structure and assign it to the provided pointer.
+ * The function will also allocate the memory for the endpoint structure and assign
+ * it to the provided pointer.
  * This endpoint structure must then be used for further calls to the libcpc.
  ******************************************************************************/
 int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id, uint8_t tx_window_size)
@@ -410,7 +433,7 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
     int nchars;
     const size_t size = sizeof(ep_addr.sun_path) - 1;
 
-    nchars = snprintf(ep_addr.sun_path, size, SOCK_DIR "/cpcd/%s/ep%d.cpcd.sock", saved_instance_name, id);
+    nchars = snprintf(ep_addr.sun_path, size, DEFAULT_SOCKET_FOLDER "/cpcd/%s/ep%d.cpcd.sock", saved_instance_name, id);
 
     /* Make sure the path fitted entirely in the struct sockaddr_un's static buffer */
     if (nchars < 0 || (size_t) nchars >= size) {
@@ -473,6 +496,10 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
   trace_lib("open endpoint, waiting for open request reply");
   bytes_read = recv(lib_handle->ctrl_sock_fd, open_query, open_query_len, 0);
   if (bytes_read != (ssize_t)open_query_len) {
+    if (bytes_read == 0) {
+      errno = ECONNRESET;
+      trace_lib_error("recv(), connection closed");
+    }
     trace_lib_error("open endpoint failed to open request recv(), received %d bytes. Errno:", bytes_read);
     free(open_query);
     free(ep);
@@ -485,11 +512,11 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
 
   if (can_open == false) {
     if (id == SL_CPC_ENDPOINT_SECURITY) {
-      trace_lib_error("open endpoint, cannot open security endpoint as a client");
       errno = EPERM;
+      trace_lib_error("open endpoint, cannot open security endpoint as a client");
     } else {
-      trace_lib_error("open endpoint, endpoint on secondary is not opened");
       errno = EAGAIN;
+      trace_lib_error("open endpoint, endpoint on secondary is not opened");
     }
     free(open_query);
     free(ep);
@@ -506,6 +533,10 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
   trace_lib("open endpoint, connected, waiting for server ack");
   bytes_read = recv(ep->sock_fd, open_query, open_query_len, 0);
   if (bytes_read != sizeof(cpcd_exchange_buffer_t) || open_query->type != EXCHANGE_OPEN_ENDPOINT_QUERY) {
+    if (bytes_read == 0) {
+      errno = ECONNRESET;
+      trace_lib_error("recv(), connection closed");
+    }
     trace_lib_error("open endpoint open request ack recv()");
     free(open_query);
     free(ep);
@@ -528,7 +559,7 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
   return ep->sock_fd;
 }
 
-/***************************************************************************/ /**
+/***************************************************************************//**
  * Close the socket connection to the endpoint.
  * This function will also free the memory used to allocate the endpoint structure.
  ******************************************************************************/
@@ -559,6 +590,8 @@ int cpc_close_endpoint(cpc_endpoint_t *endpoint)
 
   if (close(ep->sock_fd) < 0) {
     trace_lib_error("close()");
+    free(ep);
+    endpoint->ptr = NULL;
     return -1;
   }
 
@@ -571,13 +604,21 @@ int cpc_close_endpoint(cpc_endpoint_t *endpoint)
   bytes_written = send(lib_handle->ctrl_sock_fd, &close_query, close_query_len, 0);
   if (bytes_written < 0 || (size_t)bytes_written < close_query_len) {
     trace_lib_error("Close endpoint request fail");
+    free(ep);
+    endpoint->ptr = NULL;
     return -1;
   }
 
   trace_lib("Waiting for request reply on EP #%d", ep->id);
   bytes_read = recv(lib_handle->ctrl_sock_fd, &close_query, close_query_len, 0);
   if (bytes_read != (ssize_t)close_query_len) {
+    if (bytes_read == 0) {
+      errno = ECONNRESET;
+      trace_lib_error("recv(), connection closed");
+    }
     trace_lib_error("Close request recv()");
+    free(ep);
+    endpoint->ptr = NULL;
     return -1;
   }
 
@@ -587,20 +628,17 @@ int cpc_close_endpoint(cpc_endpoint_t *endpoint)
   return 0;
 }
 
-/***************************************************************************/ /**
- * Attempts to read up to count bytes from  from a previously opened endpoint socket.
- * Once data is received it will be copied to the user-provided buffer.
+/***************************************************************************//**
+ * Attempt to read up to count bytes from a previously-opened endpoint socket.
+ * Once data is received, it will be copied to the user-provided buffer.
  * The lifecycle of this buffer is handled by the user.
- * The buffer must be at least 4087 bytes long to ensure a complete packet reception.
- * Count must be at least 4087.
  *
  * By default the cpc_read function will block indefinitely.
- * A timeout can be configured with cpc_set_option.
+ * A timeout can be configured with cpc_set_endpoint_option.
  ******************************************************************************/
 ssize_t cpc_read_endpoint(cpc_endpoint_t endpoint, void *buffer, size_t count, cpc_read_flags_t flags)
 {
   int sock_flags = 0;
-  ssize_t datagram_length;
   sli_cpc_endpoint_t *ep;
   ssize_t bytes_read;
 
@@ -618,23 +656,10 @@ ssize_t cpc_read_endpoint(cpc_endpoint_t endpoint, void *buffer, size_t count, c
     sock_flags |= MSG_DONTWAIT;
   }
 
-  datagram_length = recv(ep->sock_fd, buffer, ep->lib_handle->max_write_size, sock_flags | MSG_PEEK);
-  if (datagram_length == 0) {
-    trace_lib_error("recv(), datagram_length is zero bytes");
-    return -1;
-  } else if (datagram_length < 0) {
-    if (errno != EAGAIN) {
-      trace_lib_error("recv() could not peek message");
-    }
-    return -1;
-  } else if ((size_t)datagram_length > count) {
-    errno = ENOBUFS;
-    return -1;
-  }
-
   bytes_read = recv(ep->sock_fd, buffer, count, sock_flags);
   if (bytes_read == 0) {
-    trace_lib_error("recv(), got zero bytes");
+    errno = ECONNRESET;
+    trace_lib_error("recv(), connection closed");
     return -1;
   } else if (bytes_read < 0) {
     if (errno != EAGAIN) {
@@ -645,13 +670,11 @@ ssize_t cpc_read_endpoint(cpc_endpoint_t endpoint, void *buffer, size_t count, c
 
   trace_lib("Read on EP #%d", ep->id);
 
-  (void)flags;
   return bytes_read;
 }
 
-/***************************************************************************/ /**
- * Write data to a previously opened endpoint socket.
- * The user provides the data and the associated data length.
+/***************************************************************************//**
+ * Write data to an open endpoint.
  ******************************************************************************/
 ssize_t cpc_write_endpoint(cpc_endpoint_t endpoint, const void *data, size_t data_length, cpc_write_flags_t flags)
 {
@@ -679,7 +702,7 @@ ssize_t cpc_write_endpoint(cpc_endpoint_t endpoint, const void *data, size_t dat
   }
 
   ssize_t bytes_written = send(ep->sock_fd, data, data_length, sock_flags);
-  if (bytes_written <= 0) {
+  if (bytes_written == -1) {
     trace_lib_error("write()");
     return -1;
   }
@@ -689,8 +712,8 @@ ssize_t cpc_write_endpoint(cpc_endpoint_t endpoint, const void *data, size_t dat
    * SOCK_SEQPACKET. Unlike stream sockets, it is technically impossible
    * for DGRAM or SEQPACKET to do partial writes. The man page is ambiguous
    * about the return value in the our case, but research showed that it should
-   * never happens. If it did happen, we would be in big problems because we would
-   * put burden on ourself to be able to deal with partially sent messages.
+   * never happens. If it did happen,it would cause problems in
+   * dealing with partially sent messages.
    */
   assert((size_t)bytes_written == data_length);
 
@@ -698,8 +721,8 @@ ssize_t cpc_write_endpoint(cpc_endpoint_t endpoint, const void *data, size_t dat
   return bytes_written;
 }
 
-/***************************************************************************/ /**
- * Obtain the state of an endpoint via the daemon control socket.
+/***************************************************************************//**
+ * Get the state of an endpoint by ID.
  ******************************************************************************/
 int cpc_get_endpoint_state(cpc_handle_t handle, uint8_t id, cpc_endpoint_state_t *state)
 {
@@ -709,7 +732,7 @@ int cpc_get_endpoint_state(cpc_handle_t handle, uint8_t id, cpc_endpoint_state_t
 
   struct sockaddr_un server_addr;
   server_addr.sun_family = AF_UNIX;
-  strncpy(server_addr.sun_path, SOCK_DIR "/ctrl.cpcd.sock", sizeof(server_addr.sun_path) - 1);
+  strncpy(server_addr.sun_path, DEFAULT_SOCKET_FOLDER "/ctrl.cpcd.sock", sizeof(server_addr.sun_path) - 1);
 
   if (state == NULL || handle.ptr == NULL || id == 0) {
     errno = EINVAL;
@@ -739,8 +762,12 @@ int cpc_get_endpoint_state(cpc_handle_t handle, uint8_t id, cpc_endpoint_state_t
 
   trace_lib("Get Endpoint state, reading");
   ssize_t bytes_read = recv(lib_handle->ctrl_sock_fd, request_buffer, request_buffer_len, 0);
-  if (bytes_read < 0) {
-    trace_lib_error("read()");
+  if (bytes_read <= 0) {
+    if (bytes_read == 0) {
+      errno = ECONNRESET;
+      trace_lib_error("recv(), connection closed");
+    }
+    trace_lib_error("recv()");
     free(request_buffer);
     return -1;
   }
@@ -751,8 +778,8 @@ int cpc_get_endpoint_state(cpc_handle_t handle, uint8_t id, cpc_endpoint_state_t
   return 0;
 }
 
-/***************************************************************************/ /**
- * Configure an endpoint with a specified option
+/***************************************************************************//**
+ * Configure an endpoint with a specified option.
  ******************************************************************************/
 int cpc_set_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, const void *optval, size_t optlen)
 {
@@ -767,21 +794,37 @@ int cpc_set_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, const 
   ep = (sli_cpc_endpoint_t *)endpoint.ptr;
 
   if (option == CPC_OPTION_RX_TIMEOUT) {
-    if (optlen != sizeof(struct timeval)) {
+    cpc_timeval_t *useropt = (cpc_timeval_t*)optval;
+    struct timeval sockopt;
+
+    if (optlen != sizeof(cpc_timeval_t)) {
       errno = EINVAL;
+      trace_lib_error("optval must be of type cpc_timeval_t");
       return -1;
     }
-    ret = setsockopt(ep->sock_fd, SOL_SOCKET, SO_RCVTIMEO, optval, (socklen_t)optlen);
+
+    sockopt.tv_sec  = useropt->seconds;
+    sockopt.tv_usec = useropt->microseconds;
+
+    ret = setsockopt(ep->sock_fd, SOL_SOCKET, SO_RCVTIMEO, &sockopt, (socklen_t)sizeof(sockopt));
     if (ret < 0) {
       trace_lib_error("setsockopt()");
       return -1;
     }
   } else if (option == CPC_OPTION_TX_TIMEOUT) {
-    if (optlen != sizeof(struct timeval)) {
+    cpc_timeval_t *useropt = (cpc_timeval_t*)optval;
+    struct timeval sockopt;
+
+    if (optlen != sizeof(cpc_timeval_t)) {
       errno = EINVAL;
+      trace_lib_error("optval must be of type cpc_timeval_t");
       return -1;
     }
-    ret = setsockopt(ep->sock_fd, SOL_SOCKET, SO_SNDTIMEO, optval, (socklen_t)optlen);
+
+    sockopt.tv_sec  = useropt->seconds;
+    sockopt.tv_usec = useropt->microseconds;
+
+    ret = setsockopt(ep->sock_fd, SOL_SOCKET, SO_SNDTIMEO, &sockopt, (socklen_t)sizeof(sockopt));
     if (ret < 0) {
       trace_lib("error cpc_set_endpoint_option setsockopt()");
       return -1;
@@ -789,6 +832,7 @@ int cpc_set_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, const 
   } else if (option == CPC_OPTION_BLOCKING) {
     if (optlen != sizeof(bool)) {
       errno = EINVAL;
+      trace_lib_error("optval must be of type bool")
       return -1;
     }
 
@@ -812,6 +856,7 @@ int cpc_set_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, const 
   } else if (option == CPC_OPTION_SOCKET_SIZE) {
     if (optlen != sizeof(int)) {
       errno = EINVAL;
+      trace_lib_error("optval must be of type int")
       return -1;
     }
 
@@ -820,20 +865,20 @@ int cpc_set_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, const 
       return -1;
     }
   } else {
+    errno = EINVAL;
     return -1;
   }
 
   return 0;
 }
 
-/***************************************************************************/ /**
- * Obtain the option configured for a specified endpoint
+/***************************************************************************//**
+ * Get the option configured for a specified endpoint.
  ******************************************************************************/
 int cpc_get_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, void *optval, size_t *optlen)
 {
   int ret;
   sli_cpc_endpoint_t *ep;
-  socklen_t socklen = (socklen_t)*optlen;
 
   if (option == CPC_OPTION_NONE || endpoint.ptr == NULL || optval == NULL || optlen == NULL) {
     errno = EINVAL;
@@ -843,27 +888,64 @@ int cpc_get_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, void *
   ep = (sli_cpc_endpoint_t *)endpoint.ptr;
 
   if (option == CPC_OPTION_RX_TIMEOUT) {
-    ret = getsockopt(ep->sock_fd, SOL_SOCKET, SO_RCVTIMEO, optval, &socklen);
-    *optlen = (size_t)socklen;
+    cpc_timeval_t *useropt = (cpc_timeval_t*)optval;
+    struct timeval sockopt;
+    socklen_t socklen = sizeof(sockopt);
+
+    if (*optlen != sizeof(cpc_timeval_t)) {
+      errno = EINVAL;
+      trace_lib_error("optval must be of type cpc_timeval_t")
+      return -1;
+    }
+
+    ret = getsockopt(ep->sock_fd, SOL_SOCKET, SO_RCVTIMEO, &sockopt, &socklen);
     if (ret < 0) {
       trace_lib_error("getsockopt()");
       return -1;
     }
-  } else if (option == CPC_OPTION_RX_TIMEOUT) {
-    ret = getsockopt(ep->sock_fd, SOL_SOCKET, SO_RCVTIMEO, optval, &socklen);
-    *optlen = (size_t)socklen;
-    if (ret < 0) {
-      trace_lib("error cpc_get_endpoint_option getsockopt()");
+
+    // these values are "usually" of type long, so make sure they
+    // fit in integers (really, they should).
+    if (sockopt.tv_sec > INT_MAX || sockopt.tv_usec > INT_MAX) {
+      errno = EINVAL;
+      trace_lib_error("getsockopt returned value out of bound")
       return -1;
     }
+
+    useropt->seconds      = (int)sockopt.tv_sec;
+    useropt->microseconds = (int)sockopt.tv_usec;
   } else if (option == CPC_OPTION_TX_TIMEOUT) {
-    ret = getsockopt(ep->sock_fd, SOL_SOCKET, SO_SNDTIMEO, optval, &socklen);
-    *optlen = (size_t)socklen;
+    cpc_timeval_t *useropt = (cpc_timeval_t*)optval;
+    struct timeval sockopt;
+    socklen_t socklen = sizeof(sockopt);
+
+    if (*optlen != sizeof(cpc_timeval_t)) {
+      errno = EINVAL;
+      trace_lib_error("optval must be of type cpc_timeval_t");
+      return -1;
+    }
+
+    ret = getsockopt(ep->sock_fd, SOL_SOCKET, SO_SNDTIMEO, &sockopt, &socklen);
     if (ret < 0) {
       trace_lib("error cpc_get_endpoint_option getsockopt()");
       return -1;
     }
+
+    if (sockopt.tv_sec > INT_MAX || sockopt.tv_usec > INT_MAX) {
+      errno = EINVAL;
+      trace_lib_error("getsockopt returned value out of bound")
+      return -1;
+    }
+
+    useropt->seconds      = (int)sockopt.tv_sec;
+    useropt->microseconds = (int)sockopt.tv_usec;
   } else if (option == CPC_OPTION_BLOCKING) {
+    if (*optlen < sizeof(bool)) {
+      errno = ENOMEM;
+      trace_lib_error("Insufficient space to store option value");
+      return -1;
+    }
+
     *optlen = sizeof(bool);
 
     int flags = fcntl(ep->sock_fd, F_GETFL);
@@ -878,18 +960,26 @@ int cpc_get_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, void *
       *(bool *)optval = true;
     }
   } else if (option == CPC_OPTION_SOCKET_SIZE) {
-    *optlen = sizeof(int);
+    socklen_t socklen = (socklen_t)*optlen;
+
+    if (*optlen < sizeof(int)) {
+      errno = ENOMEM;
+      trace_lib_error("Insufficient space to store option value");
+      return -1;
+    }
 
     ret = getsockopt(ep->sock_fd, SOL_SOCKET, SO_SNDBUF, optval, &socklen);
-    *optlen = (size_t)socklen;
     if (ret < 0) {
       trace_lib_error("getsockopt()");
       return -1;
     }
+
+    *optlen = (size_t)socklen;
   } else if (option == CPC_OPTION_MAX_WRITE_SIZE) {
     *optlen = sizeof(size_t);
     memcpy(optval, &ep->lib_handle->max_write_size, sizeof(ep->lib_handle->max_write_size));
   } else {
+    errno = EINVAL;
     return -1;
   }
 

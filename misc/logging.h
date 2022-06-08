@@ -91,6 +91,8 @@ extern core_debug_counters_t secondary_core_debug_counters;
 
 #define TRACE_SYSTEM(string, ...)     TRACE("System : "  string "\n", ##__VA_ARGS__)
 
+#define TRACE_UART_VALIDATION(string, ...)     TRACE("UART VALIDATION : "  string "\n", ##__VA_ARGS__)
+
 #define TRACE_RESET(string, ...)      TRACE("Reset Sequence : "  string "\n", ##__VA_ARGS__)
 
 #define TRACE_XMODEM(string, ...)     TRACE("XMODEM : "  string "\n", ##__VA_ARGS__)

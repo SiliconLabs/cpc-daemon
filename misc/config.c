@@ -55,6 +55,10 @@ unsigned int  config_uart_baudrate = 115200;
 bool          config_uart_hardflow = false;
 const char*   config_uart_file = NULL;
 
+// Board controller
+const char*   config_board_controller_ip_addr = NULL;
+bool          config_board_controller = false;
+
 //SPI config
 const char*   config_spi_file = NULL;
 unsigned int  config_spi_bitrate = 1000000;
@@ -66,6 +70,8 @@ unsigned int  config_spi_irq_pin = 23;
 bool          config_recovery_enabled = false;
 unsigned int  config_wake_pin = 25;
 unsigned int  config_reset_pin = 0;
+bool          config_connect_to_bootloader = false;
+bool          config_enter_bootloader = false;
 
 const char* const  config_socket_folder = DEFAULT_SOCKET_FOLDER;
 
@@ -79,6 +85,10 @@ const char*   config_fu_file = NULL;
 
 const char*   config_binding_key_file = NULL;
 
+const char*   config_binding_method = NULL;
+
+const char*   config_uart_validation_test_option = NULL;
+
 long config_stats_interval = 0;
 
 /*******************************************************************************
@@ -88,7 +98,7 @@ long config_stats_interval = 0;
 static const char* config_file_path = DEFAULT_CONFIG_FILE_PATH;
 
 /* New number of concurrent opened file descriptor */
-static rlim_t config_rlimit_nofile = 1024;
+static rlim_t config_rlimit_nofile = 2000;
 
 /*******************************************************************************
  **************************  LOCAL PROTOTYPES   ********************************
@@ -128,15 +138,21 @@ static void config_parse_cli_arg(int argc, char *argv[])
     { "print-stats", required_argument, 0, 's' },
     { "help", no_argument, 0, 'h' },
     { "version", no_argument, 0, 'v' },
-    { "bind", no_argument, 0, 'b' },
+    { "bind", required_argument, 0, 'b' },
+    { "unbind", no_argument, 0, 'u' },
+    { "key", required_argument, 0, 'k' },
     { "firmware-update", required_argument, 0, 'f' },
+    { "uart-validation", required_argument, 0, 't' },
+    { "board-controller", required_argument, 0, 'w' },
+    { "enter-bootloader", no_argument, 0, 'e' },
+    { "connect-to-bootloader", no_argument, 0, 'l' },
     { 0, 0, 0, 0  }
   };
 
   int opt;
 
   while (1) {
-    opt = getopt_long(argc, argv, "c:bhvs:f:", opt_list, NULL);
+    opt = getopt_long(argc, argv, "c:huvs:f:k:b:t:w:el", opt_list, NULL);
 
     if (opt == -1) {
       break;
@@ -160,10 +176,33 @@ static void config_parse_cli_arg(int argc, char *argv[])
         break;
       case 'b':
         if (config_operation_mode == MODE_NORMAL) {
-          config_operation_mode = MODE_BINDING_PLAIN_TEXT;
+          config_operation_mode = MODE_BINDING_UNKNOWN;
         } else {
           FATAL("Multiple non normal mode flag detected.");
         }
+
+        if (optarg == NULL) {
+          FATAL("Binding method was not provided");
+        } else {
+          if (0 == strcmp(optarg, "ecdh")) {
+            config_operation_mode = MODE_BINDING_ECDH;
+          } else if (0 == strcmp(optarg, "plain-text")) {
+            config_operation_mode = MODE_BINDING_PLAIN_TEXT;
+          } else {
+            FATAL("Invalid binding mode");
+          }
+        }
+        break;
+      case 'u':
+        if (config_operation_mode == MODE_NORMAL) {
+          config_operation_mode = MODE_BINDING_UNBIND;
+        } else {
+          FATAL("Multiple non normal mode flag detected.");
+        }
+        break;
+      case 'k':
+        config_binding_key_file = optarg;
+        FATAL_ON(config_binding_key_file == NULL);
         break;
       case 'f':
         config_fu_file = optarg;
@@ -172,6 +211,24 @@ static void config_parse_cli_arg(int argc, char *argv[])
         } else {
           FATAL("Multiple non normal mode flag detected.");
         }
+        break;
+      case 't':
+        config_uart_validation_test_option = optarg;
+        if (config_operation_mode == MODE_NORMAL) {
+          config_operation_mode = MODE_UART_VALIDATION;
+        } else {
+          FATAL("Multiple non normal mode flag detected.");
+        }
+        break;
+      case 'w':
+        config_board_controller_ip_addr = optarg;
+        config_board_controller = true;
+        break;
+      case 'l':
+        config_connect_to_bootloader = true;
+        break;
+      case 'e':
+        config_enter_bootloader = true;
         break;
       case '?':
       default:
@@ -183,18 +240,22 @@ static void config_parse_cli_arg(int argc, char *argv[])
 
 static bool is_comment_or_newline(const char* line)
 {
-  size_t line_size = strlen(line);
+  char match[256] = { 0 };
 
+  // match empty lines
   if ((line[0] == '\n')
       || (line[0] == '\r')) {
     return true;
   }
 
-  size_t i;
-  for (i = 0; i != line_size; i++) {
-    if (line[i] == '#') {
-      return true;
-    }
+  // match lines beginning with #, ignoring leading whitespace
+  if (sscanf(line, " #%256c", match) == 1) {
+    return true;
+  }
+
+  // match whitespace-only lines
+  if (sscanf(line, "%s", match) == EOF) {
+    return true;
   }
 
   return false;
@@ -215,6 +276,8 @@ static void config_parse_config_file(void)
     FATAL("Could not open the configuration file under: %s, please install the configuration file there or provide a valid path with --conf\n", config_file_path);
   }
 
+  PRINT_INFO("path: %s", config_file_path);
+
   /* Iterate through every line of the file*/
   while (fgets(line, sizeof(line), config_file) != NULL) {
     if (is_comment_or_newline(line)) {
@@ -222,40 +285,42 @@ static void config_parse_config_file(void)
     }
 
     /* Extract name=value pair */
-    if (sscanf(line, "%127[^=]=%127[^\r\n]%*c", name, val) != 2) {
-      FATAL("Config file line \"%s\" doesn't respect syntax", line);
+    if (sscanf(line, "%127[^: ]: %127[^\r\n #]%*c", name, val) != 2) {
+      FATAL("Config file line \"%s\" doesn't respect syntax. Expecting YAML format (key: value). Please refer to the provided cpcd.conf", line);
     }
 
-    if (0 == strcmp(name, "INSTANCE_NAME")) {
+    PRINT_INFO("%s: %s", name, val);
+
+    if (0 == strcmp(name, "instance_name")) {
       config_instance_name = strdup(val);
       FATAL_ON(config_instance_name == NULL);
-    } else if (0 == strcmp(name, "BUS_TYPE")) {
+    } else if (0 == strcmp(name, "bus_type")) {
       if (0 == strcmp(val, "UART")) {
         config_bus = UART;
       } else if (0 == strcmp(val, "SPI")) {
         config_bus = SPI;
       } else {
-        FATAL("Config file error : bad BUS_TYPE value\n");
+        FATAL("Config file error : bad bus_type value\n");
       }
-    } else if (0 == strcmp(name, "SPI_DEVICE_FILE")) {
+    } else if (0 == strcmp(name, "spi_device_file")) {
       config_spi_file = strdup(val);
       FATAL_ON(config_spi_file == NULL);
-    } else if (0 == strcmp(name, "SPI_CS_GPIO")) {
+    } else if (0 == strcmp(name, "spi_cs_gpio")) {
       config_spi_cs_pin = (unsigned int)strtoul(val, &endptr, 10);
       if (*endptr != '\0') {
         FATAL("Bad config line \"%s\"", line);
       }
-    } else if (0 == strcmp(name, "SPI_RX_IRQ_GPIO")) {
+    } else if (0 == strcmp(name, "spi_rx_irq_gpio")) {
       config_spi_irq_pin = (unsigned int)strtoul(val, &endptr, 10);
       if (*endptr != '\0') {
         FATAL("Bad config line \"%s\"", line);
       }
-    } else if (0 == strcmp(name, "SPI_DEVICE_BITRATE")) {
+    } else if (0 == strcmp(name, "spi_device_bitrate")) {
       config_spi_bitrate = (unsigned int)strtoul(val, &endptr, 10);
       if (*endptr != '\0') {
         FATAL("Bad config line \"%s\"", line);
       }
-    } else if (0 == strcmp(name, "SPI_DEVICE_MODE")) {
+    } else if (0 == strcmp(name, "spi_device_mode")) {
       if (0 == strcmp(val, "SPI_MODE_0")) {
         config_spi_mode = SPI_MODE_0;
       } else if (0 == strcmp(val, "SPI_MODE_1")) {
@@ -265,35 +330,35 @@ static void config_parse_config_file(void)
       } else if (0 == strcmp(val, "SPI_MODE_3")) {
         config_spi_mode = SPI_MODE_3;
       } else {
-        FATAL("Bad value for SPI_DEVICE_MODE");
+        FATAL("Bad value for spi_device_mode");
       }
-    } else if (0 == strcmp(name, "BOOTLOADER_RECOVERY_PINS_ENABLED")) {
+    } else if (0 == strcmp(name, "bootloader_recovery_pins_enabled")) {
       if (0 == strcmp(val, "true")) {
         config_recovery_enabled = true;
       } else if (0 == strcmp(val, "false")) {
         config_recovery_enabled = false;
       } else {
-        FATAL("Config file error : bad BOOTLOADER_RECOVERY_PINS_ENABLED value");
+        FATAL("Config file error : bad bootloader_recovery_pins_enabled value");
       }
-    } else if (0 == strcmp(name, "BOOTLOADER_WAKE_GPIO")) {
+    } else if (0 == strcmp(name, "bootloader_wake_gpio")) {
       config_wake_pin = (unsigned int)strtoul(val, &endptr, 10);
       if (*endptr != '\0') {
         FATAL("Bad config line \"%s\"", line);
       }
-    } else if (0 == strcmp(name, "BOOTLOADER_RESET_GPIO")) {
+    } else if (0 == strcmp(name, "bootloader_reset_gpio")) {
       config_reset_pin = (unsigned int)strtoul(val, &endptr, 10);
       if (*endptr != '\0') {
         FATAL("Bad config line \"%s\"", line);
       }
-    } else if (0 == strcmp(name, "UART_DEVICE_FILE")) {
+    } else if (0 == strcmp(name, "uart_device_file")) {
       config_uart_file = strdup(val);
       FATAL_ON(config_uart_file == NULL);
-    } else if (0 == strcmp(name, "UART_DEVICE_BAUD")) {
+    } else if (0 == strcmp(name, "uart_device_baud")) {
       config_uart_baudrate = (unsigned int)strtoul(val, &endptr, 10);
       if (*endptr != '\0') {
         FATAL("Bad config line \"%s\"", line);
       }
-    } else if (0 == strcmp(name, "UART_HARDFLOW")) {
+    } else if (0 == strcmp(name, "uart_hardflow")) {
       if (0 == strcmp(val, "true")) {
         config_uart_hardflow = true;
       } else if (0 == strcmp(val, "false")) {
@@ -301,70 +366,70 @@ static void config_parse_config_file(void)
       } else {
         FATAL("Config file error : bad UART_HARDFLOW value");
       }
-    } else if (0 == strcmp(name, "NOOP_KEEP_ALIVE")) {
+    } else if (0 == strcmp(name, "noop_keep_alive")) {
       if (0 == strcmp(val, "true")) {
         config_use_noop_keep_alive = true;
       } else if (0 == strcmp(val, "false")) {
         config_use_noop_keep_alive = false;
       } else {
-        FATAL("Config file error : bad NOOP_KEEP_ALIVE value");
+        FATAL("Config file error : bad noop_keep_alive value");
       }
-    } else if (0 == strcmp(name, "STDOUT_TRACE")) {
+    } else if (0 == strcmp(name, "stdout_trace")) {
       if (0 == strcmp(val, "true")) {
         config_stdout_tracing = true;
       } else if (0 == strcmp(val, "false")) {
         config_stdout_tracing = false;
       } else {
-        FATAL("Config file error : bad STDOUT_TRACE value");
+        FATAL("Config file error : bad stdout_trace value");
       }
-    } else if (0 == strcmp(name, "TRACE_TO_FILE")) {
+    } else if (0 == strcmp(name, "trace_to_file")) {
       if (0 == strcmp(val, "true")) {
         tmp_config_file_tracing = true;
       } else if (0 == strcmp(val, "false")) {
         tmp_config_file_tracing = false;
       } else {
-        FATAL("Config file error : bad TRACE_TO_FILE value");
+        FATAL("Config file error : bad trace_to_file value");
       }
-    } else if (0 == strcmp(name, "ENABLE_FRAME_TRACE")) {
+    } else if (0 == strcmp(name, "enable_frame_trace")) {
       if (0 == strcmp(val, "true")) {
         config_enable_frame_trace = true;
       } else if (0 == strcmp(val, "false")) {
         config_enable_frame_trace = false;
       } else {
-        FATAL("Config file error : bad ENABLE_FRAME_TRACE value");
+        FATAL("Config file error : bad enable_frame_trace value");
       }
-    } else if (0 == strcmp(name, "DISABLE_ENCRYPTION")) {
+    } else if (0 == strcmp(name, "disable_encryption")) {
       if (0 == strcmp(val, "true")) {
         config_use_encryption = false;
       } else if (0 == strcmp(val, "false")) {
         config_use_encryption = true;
       } else {
-        FATAL("Config file error : bad DISABLE_ENCRYPTION value");
+        FATAL("Config file error : bad disable_encryption value");
       }
-    } else if (0 == strcmp(name, "RESET_SEQUENCE")) {
+    } else if (0 == strcmp(name, "reset_sequence")) {
       if (0 == strcmp(val, "true")) {
         config_reset_sequence = true;
       } else if (0 == strcmp(val, "false")) {
         config_reset_sequence = false;
       } else {
-        FATAL("Config file error : bad RESET_SEQUENCE value");
+        FATAL("Config file error : bad reset_sequence value");
       }
-    } else if (0 == strcmp(name, "TRACES_FOLDER")) {
+    } else if (0 == strcmp(name, "traces_folder")) {
       config_traces_folder = strdup(val);
       FATAL_ON(config_traces_folder == NULL);
-    } else if (0 == strcmp(name, "RLIMIT_NOFILE")) {
+    } else if (0 == strcmp(name, "rlimit_nofile")) {
       config_rlimit_nofile = strtoul(val, &endptr, 10);
       if (*endptr != '\0') {
-        FATAL("Config file error : bad RLIMIT_NOFILE value");
+        FATAL("Config file error : bad rlimit_nofile value");
       }
-    } else if (0 == strcmp(name, "ENABLE_LTTNG_TRACING")) {
+    } else if (0 == strcmp(name, "enable_lttng_tracing")) {
 #ifdef COMPILE_LTTNG
       if (0 == strcmp(val, "true")) {
         config_lttng_tracing = true;
       } else if (0 == strcmp(val, "false")) {
         config_reset_sequence = false;
       } else {
-        fprintf(stderr, "Config file error : bad ENABLE_LTTNG_TRACING value\n");
+        fprintf(stderr, "Config file error : bad enable_lttng_tracing value\n");
       }
 #else
       if (0 == strcmp(val, "true")) {
@@ -372,12 +437,14 @@ static void config_parse_config_file(void)
       } else if (0 == strcmp(val, "false")) {
         config_reset_sequence = false;
       } else {
-        fprintf(stderr, "Config file error : bad ENABLE_LTTNG_TRACING value\n");
+        fprintf(stderr, "Config file error : bad enable_lttng_tracing value\n");
       }
 #endif
-    } else if (0 == strcmp(name, "BINDING_KEY_FILE")) {
-      config_binding_key_file = strdup(val);
-      FATAL_ON(config_binding_key_file == NULL);
+    } else if (0 == strcmp(name, "binding_key_file")) {
+      if (config_binding_key_file == NULL) {
+        config_binding_key_file = strdup(val);
+        FATAL_ON(config_binding_key_file == NULL);
+      }
     } else {
       FATAL("Config file error : key \"%s\" not recognized", name);
     }
@@ -456,6 +523,8 @@ static void prevent_instance_collision(const char* const instance_name)
 
 static void config_validate_configuration(void)
 {
+  int ret;
+
   /* Validate bus configuration */
   {
     if (config_bus == SPI) {
@@ -484,13 +553,44 @@ static void config_validate_configuration(void)
     /* TODO : Test for proper file extension and/or whether it is a valid image file for the bootloader */
   }
 
-  if ((config_operation_mode == MODE_NORMAL && config_use_encryption)
-      || config_operation_mode == MODE_BINDING_PLAIN_TEXT ) {
+  if (config_use_encryption && config_operation_mode != MODE_BINDING_UNBIND) {
     if (config_binding_key_file == NULL) {
-      FATAL("No binding key file provided needed for security. Provide BINDING_KEY_FILE in the configuration file. ");
-    } else if ( access(config_binding_key_file, F_OK | R_OK) != 0) {
-      FATAL("Cannot access binding key file \'%s\'.", config_binding_key_file);
+      FATAL("No binding key file provided needed for security. Provide BINDING_KEY_FILE in the configuration file or use the --key argument. ");
     }
+
+    // ECDH Mode binding writes the key
+    if (config_operation_mode != MODE_BINDING_ECDH) {
+      if (access(config_binding_key_file, F_OK | R_OK) != 0) {
+        FATAL("Cannot access binding key file with read permissions \'%s\'.", config_binding_key_file);
+      }
+    }
+  }
+
+  if (config_operation_mode == MODE_BINDING_ECDH) {
+    if (access(config_binding_key_file, F_OK) == 0 ) {
+      FATAL("Binding key file already exist at provided location. Cannot overwrite it.\'%s\'.", config_binding_key_file);
+    }
+
+    // Create empty file to validate write permissions at provided path
+    FILE *binding_key_file = fopen(config_binding_key_file, "w");
+    if (binding_key_file == NULL) {
+      FATAL("Failed to write keyfile at provided location (%s) errno: %m", config_binding_key_file);
+    }
+    FATAL_SYSCALL_ON(binding_key_file == NULL);
+    ret = fclose(binding_key_file);
+    FATAL_SYSCALL_ON(ret != 0);
+  }
+
+  if (config_connect_to_bootloader && config_operation_mode != MODE_FIRMWARE_UPDATE) {
+    FATAL("Bootloader connect only supported for firmware updates.");
+  }
+
+  if (config_connect_to_bootloader && config_enter_bootloader) {
+    FATAL("Cannot select both --enter-bootloader and --connect-to-bootloader");
+  }
+
+  if (config_enter_bootloader) {
+    config_operation_mode = MODE_FIRMWARE_UPDATE;
   }
 
   if (config_file_tracing) {
@@ -547,10 +647,16 @@ static void config_print_help(FILE *stream, int exit_code)
   fprintf(stream, "\n");
   fprintf(stream, "Usage:\n");
   fprintf(stream, "  cpcd -h/--help : prints this message\n");
-  fprintf(stream, "  cpcd -c/--conf file : manually specify the config file\n");
+  fprintf(stream, "  cpcd -c/--conf <file> : manually specify the config file\n");
   fprintf(stream, "  cpcd -v/--version : get the version of the daemon\n");
-  fprintf(stream, "  cpcd -f/--firmware-update : Specify the .gbl file to update the secondary's firmware with\n");
-  fprintf(stream, "  cpcd -b/--bind: bind to the secondary using the provided key in the config file\n");
-  fprintf(stream, "  cpcd -s/--print-stats: print debug statistics to traces. Must provide a given interval in seconds\n");
+  fprintf(stream, "  cpcd -f/--firmware-update <file> : Specify the .gbl file to update the secondary's firmware with\n");
+  fprintf(stream, "  cpcd -b/--bind <method> : bind to the secondary using the provided key in the config file or the --key argument. Currently supported methods: ecdh or plain-text\n");
+  fprintf(stream, "  cpcd -u/--unbind : attempt to unbind from the secondary.\n");
+  fprintf(stream, "  cpcd -k/--key <file> : provide the binding keyfile to read from or write to, this argument will override the BINDING_KEY_FILE config\n");
+  fprintf(stream, "  cpcd -s/--print-stats <interval> : print debug statistics to traces. Must provide a given interval in seconds\n");
+  fprintf(stream, "  cpcd -w/--wireless-kit-ip <ipaddress> : validates board controller vcom configuration.\n");
+  fprintf(stream, "  cpcd -t/--uart-validation <test> : provide test option to run: 1 -> RX/TX, 2 -> RTS/CTS\n");
+  fprintf(stream, "  cpcd -e/--enter-bootloader : restart the secondary device in bootloader and exit.\n");
+  fprintf(stream, "  cpcd -l/--connect-to-bootloader : connect directly to bootloader. Only supported with firmware update.\n");
   exit(exit_code);
 }

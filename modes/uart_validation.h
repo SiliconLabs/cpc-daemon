@@ -1,6 +1,6 @@
 /***************************************************************************//**
  * @file
- * @brief Co-Processor Communication Protocol(CPC) - Server core
+ * @brief Co-Processor Communication Protocol(CPC) - UART Validation Mode
  * @version 3.2.0
  *******************************************************************************
  * # License
@@ -16,21 +16,14 @@
  *
  ******************************************************************************/
 
-#ifndef SERVER_CORE_H
-#define SERVER_CORE_H
-
-#define _GNU_SOURCE
-#include <pthread.h>
+#ifndef UART_VALIDATION_H
+#define UART_VALIDATION_H
 
 #include <stdint.h>
-#include <stdbool.h>
 
-uint32_t server_core_get_secondary_rx_capability(void);
+#include "server_core/system_endpoint/system.h"
 
-pthread_t server_core_init(int fd_socket_driver_core, bool firmware_update);
+void run_uart_validation(void);
+bool uart_validation_reset_requested(sl_cpc_system_status_t status);
 
-void server_core_kill_signal(void);
-
-bool server_core_reset_sequence_in_progress(void);
-
-#endif //SERVER_CORE_H
+#endif //UART_VALIDATION_H

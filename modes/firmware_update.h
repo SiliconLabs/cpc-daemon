@@ -16,4 +16,9 @@
  *
  ******************************************************************************/
 
+#ifndef FIRMWARE_UPDATE_H
+#define FIRMWARE_UPDATE_H
+
 void run_firmware_update(void);
+
+#endif //FIRMWARE_UPDATE_H

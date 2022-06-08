@@ -35,7 +35,7 @@ cpc_endpoint_t security_ep;
 bool need_reconnect = false;
 bool security_initialized = false;
 
-#define SECURITY_READ_TIMEOUT_SEC 1
+#define SECURITY_READ_TIMEOUT_SEC 10
 
 static void security_open_security_endpoint(void);
 static void security_reconnect(void);
@@ -45,9 +45,13 @@ void* security_thread_func(void* param)
   (void)param;
   int ret;
 
+  FATAL_ON(config_operation_mode == MODE_BINDING_UNKNOWN);
+
   /* The server can take time to be up; try to to load the key first
    * to crash early if its bad. */
-  security_load_binding_key_from_file();
+  if (config_operation_mode != MODE_BINDING_ECDH && config_operation_mode != MODE_BINDING_UNBIND) {
+    security_load_binding_key_from_file();
+  }
 
   security_keys_init();
 
@@ -59,6 +63,7 @@ void* security_thread_func(void* param)
 
   security_open_security_endpoint();
 
+  security_set_state(SECURITY_STATE_INITIALIZING);
   security_initialized = true;
 
   TRACE_SECURITY("Initialized the security endpoint");
@@ -85,8 +90,29 @@ void* security_thread_func(void* param)
         }
         break;
 
+      case SECURITY_COMMAND_ECDH_BINDING:
+        TRACE_SECURITY("Processing ECDH binding event");
+        security_exchange_ecdh_binding_key();
+        if (need_reconnect) {
+          security_reconnect();
+        }
+        break;
+
+      case SECURITY_COMMAND_UNBIND:
+        TRACE_SECURITY("Processing unbind event");
+        security_request_unbind();
+        if (need_reconnect) {
+          security_reconnect();
+        }
+        break;
+
       case SECURITY_COMMAND_INITIALIZE_SESSION:
         TRACE_SECURITY("Proceeding to session initialization");
+        security_initialize_session();
+        break;
+
+      case SECURITY_COMMAND_RESET_SESSION:
+        TRACE_SECURITY("Proceeding to reset session");
         security_initialize_session();
         break;
 
@@ -106,15 +132,15 @@ void* security_thread_func(void* param)
 
 static void security_open_security_endpoint(void)
 {
-  struct timeval timeout;
+  cpc_timeval_t timeout;
   int ret;
 
-  timeout.tv_sec = SECURITY_READ_TIMEOUT_SEC;
-  timeout.tv_usec = 0;
+  timeout.seconds      = SECURITY_READ_TIMEOUT_SEC;
+  timeout.microseconds = 0;
 
   ret = cpc_open_endpoint(lib_handle, &security_ep, SL_CPC_ENDPOINT_SECURITY, 1);
   if (ret < 0) {
-    FATAL("Failed to open the security endpoint");
+    FATAL("Failed to open the security endpoint. Make sure encryption is enabled on the remote.");
   }
 
   ret = cpc_set_endpoint_option(security_ep, CPC_OPTION_RX_TIMEOUT, &timeout, sizeof(timeout));

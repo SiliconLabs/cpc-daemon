@@ -23,11 +23,12 @@
 #include "misc/config.h"
 #include "misc/logging.h"
 #include "server_core/server/server_ready_sync.h"
+#include "security/private/keys/keys.h"
 #include "security/private/thread/security_thread.h"
 
 extern pthread_t security_thread;
 
-bool security_session_initialized = false;
+volatile bool security_session_initialized = false;
 
 void security_init(void)
 {
@@ -35,6 +36,7 @@ void security_init(void)
 
   if (config_use_encryption == false) {
     TRACE_SECURITY("Encryption is disabled");
+    security_set_state_disabled();
     return;
   }
 
@@ -50,4 +52,71 @@ void security_init(void)
 void security_kill_signal(void)
 {
   security_post_command(SECURITY_COMMAND_KILL_THREAD);
+}
+
+sl_status_t security_encrypt(const uint8_t *header, const size_t header_len,
+                             const uint8_t *payload, const size_t payload_len,
+                             uint8_t *output,
+                             uint8_t *tag, const size_t tag_len)
+{
+  if (security_session_initialized != true) {
+    return SL_STATUS_NOT_INITIALIZED;
+  }
+
+  return __security_encrypt(header, header_len,
+                            payload, payload_len,
+                            output,
+                            tag, tag_len);
+}
+
+sl_status_t security_decrypt(const uint8_t *header, const size_t header_len,
+                             const uint8_t *payload, const size_t payload_len,
+                             uint8_t *output,
+                             const uint8_t *tag, const size_t tag_len)
+{
+  if (security_session_initialized != true) {
+    return SL_STATUS_NOT_INITIALIZED;
+  }
+
+  return __security_decrypt(header, header_len,
+                            payload, payload_len,
+                            output,
+                            tag, tag_len);
+}
+
+#if defined(UNIT_TESTING)
+sl_status_t security_encrypt_secondary(const uint8_t *header, const size_t header_len,
+                                       const uint8_t *payload, const size_t payload_len,
+                                       uint8_t *output,
+                                       uint8_t *tag, const size_t tag_len)
+{
+  if (security_session_initialized != true) {
+    return SL_STATUS_NOT_INITIALIZED;
+  }
+
+  return __security_encrypt_secondary(header, header_len,
+                                      payload, payload_len,
+                                      output,
+                                      tag, tag_len);
+}
+
+sl_status_t security_decrypt_secondary(const uint8_t *header, const size_t header_len,
+                                       const uint8_t *payload, const size_t payload_len,
+                                       uint8_t *output,
+                                       const uint8_t *tag, const size_t tag_len)
+{
+  if (security_session_initialized != true) {
+    return SL_STATUS_NOT_INITIALIZED;
+  }
+
+  return __security_decrypt_secondary(header, header_len,
+                                      payload, payload_len,
+                                      output,
+                                      tag, tag_len);
+}
+#endif
+
+size_t security_encrypt_get_extra_buffer_size(void)
+{
+  return __security_encrypt_get_extra_buffer_size();
 }

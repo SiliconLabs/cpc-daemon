@@ -16,14 +16,16 @@
  *
  ******************************************************************************/
 
+#include <unistd.h>
 #include <string.h>
 
+#include "misc/logging.h"
 #include "misc/sl_status.h"
+#include "misc/sleep.h"
 #include "security/private/thread/security_thread.h"
 #include "security/private/protocol/protocol.h"
 #include "security/private/keys/keys.h"
 #include "security/security.h"
-#include "misc/logging.h"
 
 const sl_cpc_security_protocol_cmd_info_t sli_cpc_security_command[] = {
   [BINDING_REQUEST_ID] =  {
@@ -112,6 +114,14 @@ sl_status_t security_send_plain_text_key(uint8_t *key, sl_cpc_security_protocol_
                       response);
 }
 
+sl_status_t security_send_public_key(uint8_t *key, sl_cpc_security_protocol_cmd_t *response)
+{
+  return send_request(sli_cpc_security_command[PUBLIC_KEY_SHARE_ID],
+                      key,
+                      PUBLIC_KEY_LENGTH_BYTES,
+                      response);
+}
+
 sl_status_t security_send_unbind_request(sl_cpc_security_protocol_cmd_t *response)
 {
   return send_request(sli_cpc_security_command[UNBIND_REQUEST_ID],
@@ -128,7 +138,7 @@ sl_status_t security_send_session_init_request(uint8_t *random1, sl_cpc_security
                       response);
 }
 
-void security_exchange_plain_text_binding_key(uint8_t* const binding_key)
+void security_request_unbind(void)
 {
   sl_status_t status;
   sl_cpc_security_protocol_cmd_t response;
@@ -144,9 +154,75 @@ void security_exchange_plain_text_binding_key(uint8_t* const binding_key)
     if (status == SL_STATUS_NOT_INITIALIZED) {
       WARN("The secondary was already not bound");
     } else {
-      FATAL("Failed to unbind with the secondary. Status = 0x%x", status);
+      if (status == SL_STATUS_PERMISSION) {
+        FATAL("Failed to unbind. Remote denied the request");
+      }
+      FATAL("Failed to unbind with the remote. Status = 0x%x", status);
     }
   }
+
+  TRACE_SECURITY("Successfully completed unbind with the remote");
+
+  // We're done
+  sleep_s(1); // Wait for logs to be flushed
+  exit(0);
+}
+
+void security_exchange_ecdh_binding_key(void)
+{
+  sl_status_t status;
+  sl_cpc_security_protocol_cmd_t response;
+
+  TRACE_SECURITY("Sending ECDH binding request");
+  status = security_send_binding_request(ECDH_BINDING_REQUEST, &response);
+  if (status != SL_STATUS_OK) {
+    FATAL("Failed to request ECDH binding with the secondary. Status = 0x%x", status);
+  }
+
+  memcpy(&status, &response.payload, sizeof(status));
+  if (status != SL_STATUS_OK) {
+    if (status == SL_STATUS_ALREADY_INITIALIZED) {
+      FATAL("Secondary is already bound. If you want to re-bind, you need to unbind first");
+    } else {
+      FATAL("Secondary does not support ECDH key binding. Status = 0x%x", status);
+    }
+  }
+
+  TRACE_SECURITY("Sending public key");
+  status = security_send_public_key(security_keys_get_ecdh_public_key(), &response);
+  if (status != SL_STATUS_OK) {
+    FATAL("Failed to send public key. Status = 0x%x", status);
+  }
+  TRACE_SECURITY("Successfully sent public key and received public key from remote");
+
+  FATAL_ON(response.len != (sizeof(status) + PUBLIC_KEY_LENGTH_BYTES));
+  memcpy(&status, response.payload, sizeof(status));
+
+  if (status == SL_STATUS_ALREADY_INITIALIZED) {
+    FATAL("Failed to bind, secondary is already binded. Unbind first");
+  }
+
+  if (status == SL_STATUS_INVALID_MODE) {
+    FATAL("Failed to bind, secondary is not configured for ECDH binding");
+  }
+
+  if (status != SL_STATUS_OK) {
+    FATAL("ECDH exchange failed. Status = 0x%x", status);
+  }
+
+  security_keys_generate_shared_key(response.payload + sizeof(sl_status_t));
+
+  TRACE_SECURITY("Successfully completed ECDH exchange");
+
+  // We're done
+  sleep_s(1); // Wait for logs to be flushed
+  exit(0);
+}
+
+void security_exchange_plain_text_binding_key(uint8_t* const binding_key)
+{
+  sl_status_t status;
+  sl_cpc_security_protocol_cmd_t response;
 
   TRACE_SECURITY("Sending plain text binding request");
   status = security_send_binding_request(PLAIN_TEXT_KEY_SHARE_BINDING_REQUEST, &response);
@@ -183,6 +259,7 @@ void security_exchange_plain_text_binding_key(uint8_t* const binding_key)
   TRACE_SECURITY("Successfully sent plain text key");
 
   // We're done, the secondary is binded with our key
+  sleep_s(1); // Wait for logs to be flushed
   exit(0);
 }
 
@@ -196,7 +273,7 @@ void security_initialize_session(void)
 
   session_init_response_t *session_init_response;
 
-  ret = mbedtls_ctr_drbg_random(&rng_context,
+  ret = mbedtls_ctr_drbg_random(security_keys_get_rng_context(),
                                 random1,
                                 sizeof(random1));
   FATAL_ON(ret != 0);

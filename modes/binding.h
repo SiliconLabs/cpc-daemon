@@ -16,4 +16,9 @@
  *
  ******************************************************************************/
 
+#ifndef BINDING_H
+#define BINDING_H
+
 void run_binding_mode(void);
+
+#endif //BINDING_H

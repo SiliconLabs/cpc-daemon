@@ -1,6 +1,6 @@
-/***************************************************************************//**
+/*******************************************************************************
  * @file
- * @brief Co-Processor Communication Protocol(CPC) - Server core
+ * @brief Co-Processor Communication Protocol(CPC) - Sleep functions
  * @version 3.2.0
  *******************************************************************************
  * # License
@@ -16,21 +16,20 @@
  *
  ******************************************************************************/
 
-#ifndef SERVER_CORE_H
-#define SERVER_CORE_H
-
-#define _GNU_SOURCE
-#include <pthread.h>
+#ifndef SLEEP_H
+#define SLEEP_H
 
 #include <stdint.h>
-#include <stdbool.h>
 
-uint32_t server_core_get_secondary_rx_capability(void);
+/** Helpers around the nanosleep POSIX system call */
 
-pthread_t server_core_init(int fd_socket_driver_core, bool firmware_update);
+int sleep_us(uint32_t us);
 
-void server_core_kill_signal(void);
+static inline int sleep_ms(uint32_t ms)
+{
+  return sleep_us(ms * 1000);
+}
 
-bool server_core_reset_sequence_in_progress(void);
+int sleep_s(uint32_t s);
 
-#endif //SERVER_CORE_H
+#endif /* SLEEP_H */

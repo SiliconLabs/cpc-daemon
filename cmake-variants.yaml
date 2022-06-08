@@ -13,6 +13,14 @@ TARGET_GROUP:
       short: Blackbox Test
       settings:
         TARGET_GROUP: blackbox_test
+    blackbox_test_spurious_reset:
+      short: Blackbox Test Spurious Reset
+      settings:
+        TARGET_GROUP: blackbox_test_spurious_reset
+    blackbox_test_large_buf:
+      short: Blackbox Test Large Buf
+      settings:
+        TARGET_GROUP: blackbox_test_large_buf
     unit_test:
       short: Unit Test
       settings:

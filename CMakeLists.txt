@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(cpcd VERSION "4.0.2.0")
+project(cpcd VERSION "4.1.0.0")
+set(CPC_LIBRARY_API_VERSION "2")
+set(CPC_PROTOCOL_VERSION "2")
 configure_file(misc/version.h.in autogen/version.h)
 
 set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR})
@@ -26,28 +28,35 @@ if(COMPILE_LTTNG STREQUAL TRUE)
   target_link_libraries(cpc dl lttng-ust)
 endif()
 
-target_include_directories(cpc PRIVATE "${CMAKE_SOURCE_DIR}")
+target_include_directories(cpc PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_include_directories(cpc PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/autogen")
 set_target_properties(cpc PROPERTIES VERSION ${PROJECT_VERSION})
-set_target_properties(cpc PROPERTIES PUBLIC_HEADER lib/sl_cpc.h)
+set_target_properties(cpc PROPERTIES SOVERSION ${CPC_LIBRARY_API_VERSION})
+set_target_properties(cpc PROPERTIES PUBLIC_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/lib/sl_cpc.h")
 
 include(GNUInstallDirs)
 add_definitions(-DDEFAULT_CONFIG_FILE_PATH="${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_SYSCONFDIR}/cpcd.conf")
 
 set(TARGET_GROUP release CACHE STRING "Group to build")
-set(WARN_AS_ERROR "FALSE" CACHE STRING "Treat warnings as errors")
-
+set(WARN_AS_ERROR FALSE CACHE BOOL "Treat warnings as errors")
+set(ENABLE_ENCRYPTION TRUE CACHE BOOL "Enable the encryption of the CPC link using MbedTLS")
 
 # Enable encryption support if the user requested it
-find_package(MbedTLS REQUIRED)
-if(MBEDTLS_INCLUDE_DIR  AND  MBEDTLS_LIBRARIES)
-  include_directories(${MBEDTLS_INCLUDE_DIR})
+if(ENABLE_ENCRYPTION)
+  add_definitions("-DENABLE_ENCRYPTION")
+  message(STATUS "Building CPCd with encryption enabled")
+  find_package(MbedTLS REQUIRED)
+  if(MBEDTLS_INCLUDE_DIR  AND  MBEDTLS_LIBRARIES)
+    include_directories(${MBEDTLS_INCLUDE_DIR})
+  else()
+    message(FATAL_ERROR "Failed to find MbedTLS library")
+  endif()
 else()
-  message(FATAL_ERROR "Failed to find MbedTLS library")
+  message(WARNING "Building CPCd with encryption disabled, removing MbedTLS dependency")
 endif()
 
-if(WARN_AS_ERROR STREQUAL "TRUE")
-target_compile_options(cpc PRIVATE -Werror)
+if(WARN_AS_ERROR)
+  target_compile_options(cpc PRIVATE -Werror)
 endif()
 
 # Build CPC Daemon if building for release or debug
@@ -55,14 +64,32 @@ if((TARGET_GROUP STREQUAL release) OR
    (TARGET_GROUP STREQUAL debug) OR
    (TARGET_GROUP STREQUAL blackbox_test) OR
    (TARGET_GROUP STREQUAL blackbox_test_spurious_reset) OR
-   (TARGET_GROUP STREQUAL blackbox_test_large_buf))
+   (TARGET_GROUP STREQUAL blackbox_test_large_buf) OR
+   (TARGET_GROUP STREQUAL blackbox_test_nonce_overflow))
   message(STATUS "Building CPC Daemon")
 
   if((TARGET_GROUP STREQUAL debug) OR
      (TARGET_GROUP STREQUAL blackbox_test) OR
      (TARGET_GROUP STREQUAL blackbox_test_spurious_reset) OR
-     (TARGET_GROUP STREQUAL blackbox_test_large_buf))
+     (TARGET_GROUP STREQUAL blackbox_test_large_buf) OR
+     (TARGET_GROUP STREQUAL blackbox_test_nonce_overflow))
     add_compile_options(-funwind-tables -rdynamic)
+  endif()
+
+  if(ENABLE_ENCRYPTION)
+    SET(security_sources security/security.c
+                         modes/binding.c
+                         security/private/keys/keys.c
+                         security/private/protocol/protocol.c
+                         security/private/thread/command_synchronizer.c
+                         security/private/thread/security_thread.c)
+  endif()
+
+  if(TARGET_GROUP STREQUAL blackbox_test_nonce_overflow)
+    # 2^29 - 4
+    add_definitions("-DSLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE=536870908")
+    set(ENABLE_ENCRYPTION TRUE CACHE BOOL "" FORCE)
+    set(RUN_TESTS_ENCRYPTED "TRUE" CACHE STRING "Run tests with encryption")
   endif()
 
 
@@ -80,20 +107,18 @@ if((TARGET_GROUP STREQUAL release) OR
                       driver/driver_spi.c
                       driver/driver_uart.c
                       driver/driver_xmodem.c
-					  driver/driver_ezsp.c
+                      driver/driver_ezsp.c
                       driver/driver_kill.c
                       misc/logging.c
                       misc/config.c
                       misc/gpio.c
                       misc/sl_slist.c
+                      misc/board_controller.c
+                      misc/sleep.c
                       modes/firmware_update.c
-                      modes/binding.c
                       modes/normal.c
-                      security/security.c
-                      security/private/keys/keys.c
-                      security/private/protocol/protocol.c
-                      security/private/thread/command_synchronizer.c
-                      security/private/thread/security_thread.c
+                      modes/uart_validation.c
+                      ${security_sources}
                       lib/sl_cpc.c
                       main.c)
 
@@ -103,16 +128,19 @@ if((TARGET_GROUP STREQUAL release) OR
     target_link_libraries(cpcd dl lttng-ust)
   endif()
 
-  if(WARN_AS_ERROR STREQUAL "TRUE")
-  target_compile_options(cpcd PRIVATE -Werror)
+  if(WARN_AS_ERROR)
+    target_compile_options(cpcd PRIVATE -Werror)
   endif()
 
   target_include_directories(cpcd PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/autogen")
-  target_include_directories(cpcd PRIVATE "${CMAKE_SOURCE_DIR}")
-  target_include_directories(cpcd PRIVATE "${CMAKE_SOURCE_DIR}/lib")
+  target_include_directories(cpcd PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_include_directories(cpcd PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/lib")
   target_link_libraries(cpcd util)
   target_link_libraries(cpcd pthread)
-  target_link_libraries(cpcd ${MBEDTLS_LIBRARIES})
+
+  if(ENABLE_ENCRYPTION)
+    target_link_libraries(cpcd ${MBEDTLS_LIBRARIES})
+  endif()
 
   install(TARGETS cpc cpcd
           LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -168,10 +196,14 @@ elseif((TARGET_GROUP STREQUAL unit_test) OR (TARGET_GROUP STREQUAL unit_test_wit
                             security/private/thread/security_thread.c
                             driver/driver_emul.c
                             driver/driver_kill.c
+                            driver/driver_uart.c
                             lib/sl_cpc.c
+                            modes/uart_validation.c
                             misc/logging.c
                             misc/config.c
                             misc/sl_slist.c
+                            misc/board_controller.c
+                            misc/sleep.c
                             test/unity/endpoints.c
                             test/unity/ack.c
                             test/unity/crc.c
@@ -186,8 +218,8 @@ elseif((TARGET_GROUP STREQUAL unit_test) OR (TARGET_GROUP STREQUAL unit_test_wit
 
     target_include_directories(cpc_unity PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/autogen")
     target_include_directories(cpc_unity PRIVATE ${UNITY_SOURCES}/src/)
-    target_include_directories(cpc_unity PRIVATE "${CMAKE_SOURCE_DIR}")
-    target_include_directories(cpc_unity PRIVATE "${CMAKE_SOURCE_DIR}/lib")
+    target_include_directories(cpc_unity PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_include_directories(cpc_unity PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/lib")
     target_link_libraries(cpc_unity pthread)
     target_link_libraries(cpc_unity unity)
     target_link_libraries(cpc_unity cpc)
@@ -224,14 +256,17 @@ elseif(TARGET_GROUP STREQUAL target_test)
                     driver/driver_uart.c
                     driver/driver_spi.c
                     driver/driver_xmodem.c
-					driver/driver_ezsp.c
+                    driver/driver_ezsp.c
                     driver/driver_kill.c
+                    modes/uart_validation.c
                     misc/logging.c
                     misc/config.c
                     misc/sl_slist.c
                     misc/sl_string.c
+                    misc/board_controller.c
+                    misc/sleep.c
                     misc/gpio.c
-                    ../../test/linux/emlib/src/em_assert.c
+                    ../../test/linux/common/src/sl_assert.c
                     ../../iostream/src/sl_iostream_stdio.c
                     ../../iostream/src/sl_iostream.c
                     ../../cli/src/sl_cli_arguments.c
@@ -249,8 +284,8 @@ elseif(TARGET_GROUP STREQUAL target_test)
                     test/target/main.c)
 
     target_include_directories(cpc_target PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/autogen")
-    target_include_directories(cpc_target PRIVATE "${CMAKE_SOURCE_DIR}")
-    target_include_directories(cpc_target PRIVATE "${CMAKE_SOURCE_DIR}/lib")
+    target_include_directories(cpc_target PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_include_directories(cpc_target PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/lib")
     target_include_directories(cpc_target PRIVATE ../../test/linux/common/inc
                                                   ../../test/linux/emlib/inc
                                                   ../../iostream/inc/
@@ -332,7 +367,7 @@ elseif(TARGET_GROUP STREQUAL blackbox_test_spurious_reset)
     add_subdirectory(test/blackbox)
 
 elseif(TARGET_GROUP STREQUAL blackbox_test_large_buf)
-    message(STATUS "Building blackbox_test")
+    message(STATUS "Building blackbox_test_large_buf")
 
     set(CMAKE_BUILD_TYPE Debug)
     include_directories(test/blackbox/)
@@ -366,6 +401,40 @@ elseif(TARGET_GROUP STREQUAL blackbox_test_large_buf)
 
     # Run the tests
     add_subdirectory(test/blackbox)
+elseif(TARGET_GROUP STREQUAL blackbox_test_nonce_overflow)
+    message(STATUS "Building blackbox_test")
+
+    set(CMAKE_BUILD_TYPE Debug)
+    include_directories(test/blackbox/)
+
+    add_executable(lib_client
+                   test/blackbox/cpc_lib_client_overflow.c)
+
+    target_include_directories(lib_client PRIVATE lib/)
+    target_include_directories(lib_client PRIVATE misc/)
+    target_link_libraries(lib_client pthread)
+    target_link_libraries(lib_client cpc)
+
+    enable_testing()
+    include(CTest)
+
+    if(NOT DEFINED UNITY_PATH)
+      set(UNITY_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../../../../util/third_party/unity")
+    else()
+      set(UNITY_SOURCES ${UNITY_PATH})
+    endif()
+
+    add_definitions(-DHOST_BUILD)
+    add_library(unity STATIC ${UNITY_SOURCES}/src/unity.c)
+    set_target_properties(unity PROPERTIES PUBLIC_HEADER ${UNITY_SOURCES}/src/unity.h)
+    target_include_directories(unity PUBLIC ${UNITY_SOURCES}/src/)
+
+    target_link_libraries(lib_client cpc)
+    target_link_libraries(lib_client unity)
+
+    # Run the tests
+    add_subdirectory(test/blackbox)
+
 elseif(TARGET_GROUP STREQUAL libcpc_wrapper_test)
 	add_library(cpc_wrapper SHARED test/libcpc_wrapper/sl_cpc_mock.c)
 else()

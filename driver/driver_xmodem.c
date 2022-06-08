@@ -20,6 +20,7 @@
 #include "driver/driver_xmodem.h"
 #include "driver/driver_uart.h"
 #include "misc/logging.h"
+#include "misc/sleep.h"
 #include "misc/xmodem.h"
 
 #include <unistd.h>
@@ -29,12 +30,52 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 
+#define BTL_MENU_PROMPT "BL >"
+#define BTL_UPLOAD_CONFIRMATION "Serial upload complete"
+
+#define MAX_RETRANSMIT_ATTEMPTS (5)
+
+// data from the bootloader comes in chunks
+static bool wait_for_bootloader_string(int fd, char *string)
+{
+  char btl_buffer[128] = { 0 };
+  char *btl_chunk = btl_buffer;
+  const uint8_t carriage_return = '\r';
+  ssize_t ret;
+  unsigned int retries = 10;
+
+  // receive data until the string is found
+  do {
+    sleep_s(1);
+
+    int remaining = (int)sizeof(btl_buffer) - (int)(btl_chunk - btl_buffer);
+    if (remaining <= 0) {
+      return false;
+    }
+
+    ret = write(fd, (const void *)&carriage_return, sizeof(carriage_return));
+    FATAL_SYSCALL_ON(ret != sizeof(carriage_return));
+
+    ret = read(fd, btl_chunk, (size_t)remaining);
+    FATAL_SYSCALL_ON(ret == -1);
+
+    btl_chunk += ret;
+
+    retries--;
+    if (retries == 0) {
+      return false;
+    }
+  } while (NULL == strstr(btl_buffer, string));
+
+  return true;
+}
+
 sl_status_t xmodem_send(const char* image_file, const char *dev_name, unsigned  int bitrate, bool hardflow)
 {
   int uart_fd;
   int image_file_fd;
-  uint8_t* mmaped_image_file_data;
-  size_t mmaped_image_file_len;
+  uint8_t* mmapped_image_file_data;
+  size_t mmapped_image_file_len;
   ssize_t ret;
   uint8_t answer;
   unsigned int retransmit_count = 0;
@@ -50,21 +91,26 @@ sl_status_t xmodem_send(const char* image_file, const char *dev_name, unsigned  
 
     fstat(image_file_fd, &stat);
 
-    mmaped_image_file_len = (size_t) stat.st_size;
+    mmapped_image_file_len = (size_t) stat.st_size;
 
-    mmaped_image_file_data = mmap(NULL, mmaped_image_file_len, PROT_READ, MAP_PRIVATE, image_file_fd, 0);
-    FATAL_SYSCALL_ON(mmaped_image_file_data == NULL);
+    mmapped_image_file_data = mmap(NULL, mmapped_image_file_len, PROT_READ, MAP_PRIVATE, image_file_fd, 0);
+    FATAL_SYSCALL_ON(mmapped_image_file_data == NULL);
   }
 
   /* Wait for the "C" character meaning the secondary is ready for XMODEM-CRC transfer */
   {
-    sleep(1);
+    {
+      if (!wait_for_bootloader_string(uart_fd, BTL_MENU_PROMPT)) {
+        TRACE_XMODEM("Failed to connect to bootloader");
+        return SL_STATUS_FAIL;
+      }
+    }
 
     /* The bootloader sends a menu with options. We have to send '1' in order to start a gbl file transfer */
     {
-      const uint8_t upload_gbl[2] = "1\n";
+      const uint8_t upload_gbl = '1';
 
-      ret = write(uart_fd, &upload_gbl, sizeof(upload_gbl));
+      ret = write(uart_fd, (const void *)&upload_gbl, sizeof(upload_gbl));
       FATAL_SYSCALL_ON(ret != sizeof(upload_gbl));
     }
 
@@ -81,8 +127,8 @@ sl_status_t xmodem_send(const char* image_file, const char *dev_name, unsigned  
   /* Actual file transfer */
   {
     XmodemFrame_t frame;
-    uint8_t* image_file_data = mmaped_image_file_data;
-    size_t image_file_len = mmaped_image_file_len;
+    uint8_t* image_file_data = mmapped_image_file_data;
+    size_t image_file_len = mmapped_image_file_len;
 
     frame.header = XMODEM_CMD_SOH;
     frame.seq = 1; //Sequence number starts at one initially, wraps around to 0 afterward
@@ -116,6 +162,7 @@ sl_status_t xmodem_send(const char* image_file, const char *dev_name, unsigned  
         case XMODEM_CMD_ACK:
           status = '.';
           proceed_to_next_frame = true;
+          retransmit_count = 0;
           break;
 
         default:
@@ -130,6 +177,11 @@ sl_status_t xmodem_send(const char* image_file, const char *dev_name, unsigned  
         image_file_len -= z;
         image_file_data += z;
       }
+
+      if (retransmit_count > MAX_RETRANSMIT_ATTEMPTS) {
+        TRACE_XMODEM("Max retries, exiting");
+        return SL_STATUS_FAIL;
+      }
     }
   }
 
@@ -143,22 +195,31 @@ sl_status_t xmodem_send(const char* image_file, const char *dev_name, unsigned  
     FATAL_SYSCALL_ON(ret != sizeof(eof));
   }
 
-  TRACE_XMODEM("Transfer of file \"%s\" completed with %u retransmits.", image_file, retransmit_count);
+  {
+    if (!wait_for_bootloader_string(uart_fd, BTL_UPLOAD_CONFIRMATION)) {
+      TRACE_XMODEM("Failed to receive upload confirmation from bootloader.");
+      return SL_STATUS_FAIL;
+    }
+  }
 
-  /* Give some room for the bootloader to send us the menu */
-  sleep(1);
+  {
+    if (!wait_for_bootloader_string(uart_fd, BTL_MENU_PROMPT)) {
+      TRACE_XMODEM("Failed to restart device after upgrade.");
+      return SL_STATUS_FAIL;
+    }
+  }
 
   /* Send '2' in order to run the new image */
   {
-    const uint8_t run_gbl[2] = "2\n";
+    const uint8_t run_gbl = '2';
 
-    ret = write(uart_fd, &run_gbl, sizeof(run_gbl));
+    ret = write(uart_fd, (const void *)&run_gbl, sizeof(run_gbl));
     FATAL_SYSCALL_ON(ret != sizeof(run_gbl));
   }
 
   /* Cleanup */
   {
-    ret = munmap(mmaped_image_file_data, mmaped_image_file_len);
+    ret = munmap(mmapped_image_file_data, mmapped_image_file_len);
     FATAL_SYSCALL_ON(ret != 0);
 
     ret = close(image_file_fd);
