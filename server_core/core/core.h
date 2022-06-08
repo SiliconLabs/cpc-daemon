@@ -123,6 +123,7 @@ typedef struct endpoint {
   sl_slist_node_t *re_transmit_queue;
   sl_slist_node_t *holding_list;
   sl_cpc_on_data_reception_t on_uframe_data_reception;
+  sl_cpc_on_data_reception_t on_iframe_data_reception;
   sl_cpc_poll_final_t poll_final;
   struct timespec last_iframe_sent_timestamp;
   long smoothed_rtt;
@@ -132,6 +133,7 @@ typedef struct endpoint {
 typedef struct {
   void *hdlc_header;
   const void *data;
+  const void *plaintext_data;
   uint16_t data_length;
   uint8_t fcs[2];
   uint8_t control;

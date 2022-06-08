@@ -39,6 +39,7 @@
 #include "misc/sl_status.h"
 #include "test/unity/cpc_unity_common.h"
 #include "server_core/system_endpoint/system.h"
+#include "security/security.h"
 
 static int fd_socket_drv;
 static pthread_t drv_thread;
@@ -92,18 +93,66 @@ void sli_cpc_drv_emul_set_ep_state(uint8_t id, cpc_endpoint_state_t state)
 void sli_cpc_drv_emul_submit_pkt_for_rx(void *header_buf, void *payload_buf, uint16_t payload_buf_len)
 {
   uint8_t *buffer;
+  uint16_t tag_len = 0;
+#if defined(ENABLE_ENCRYPTION)
+  sl_cpc_security_state_t security_state = security_get_state();
+  uint8_t control = hdlc_get_control(header_buf);
+  uint8_t type = hdlc_get_frame_type(control);
 
-  buffer = (uint8_t*)malloc(sizeof(uint8_t) * (payload_buf_len + SLI_CPC_HDLC_HEADER_RAW_SIZE));
+  // set tag_len to non-zero value if frame should be encrypted
+  if (security_state == SECURITY_STATE_INITIALIZED
+      && type == SLI_CPC_HDLC_FRAME_TYPE_INFORMATION
+      && payload_buf_len > 2) {
+    tag_len = (uint16_t)__security_encrypt_get_extra_buffer_size();
+  }
+#endif
+
+  buffer = (uint8_t*)malloc(sizeof(uint8_t) * (payload_buf_len + tag_len + SLI_CPC_HDLC_HEADER_RAW_SIZE));
   FATAL_ON(buffer == NULL);
 
   if (buffer == NULL) {
     return;
   }
 
-  memcpy(buffer, header_buf, SLI_CPC_HDLC_HEADER_RAW_SIZE);
-  memcpy(&buffer[SLI_CPC_HDLC_HEADER_RAW_SIZE], payload_buf, payload_buf_len);
+  if (tag_len) {
+#if defined(ENABLE_ENCRYPTION)
+    sl_status_t status;
+    uint16_t fcs;
 
-  (void)send(fd_socket_drv, buffer, payload_buf_len + SLI_CPC_HDLC_HEADER_RAW_SIZE, 0);
+    // recreate header with adjusted tag length
+    hdlc_create_header(buffer,
+                       hdlc_get_address(header_buf),
+                       hdlc_get_length(header_buf) + tag_len,
+                       hdlc_get_control(header_buf),
+                       true);
+
+    // FCS is part of payload_buf_len, drop it as it's useless to us now
+    payload_buf_len -= 2;
+
+    status = __security_encrypt_secondary(buffer, SLI_CPC_HDLC_HEADER_RAW_SIZE,
+                                          payload_buf, payload_buf_len,
+                                          &buffer[SLI_CPC_HDLC_HEADER_RAW_SIZE],
+                                          &buffer[SLI_CPC_HDLC_HEADER_RAW_SIZE + payload_buf_len], tag_len);
+    if (status != SL_STATUS_OK) {
+      perror("Failed to emulate frame encryption on secondary");
+      return;
+    }
+
+    // recompute FCS with encrypted payload + tag
+    fcs = sli_cpc_get_crc_sw(&buffer[SLI_CPC_HDLC_HEADER_RAW_SIZE],
+                             payload_buf_len + tag_len);
+    buffer[SLI_CPC_HDLC_HEADER_RAW_SIZE + payload_buf_len + tag_len + 0] = (uint8_t)fcs;
+    buffer[SLI_CPC_HDLC_HEADER_RAW_SIZE + payload_buf_len + tag_len + 1] = (uint8_t)(fcs >> 8);
+
+    // restore payload_buf_len to accomodate "send"
+    payload_buf_len += 2;
+#endif
+  } else {
+    memcpy(buffer, header_buf, SLI_CPC_HDLC_HEADER_RAW_SIZE);
+    memcpy(&buffer[SLI_CPC_HDLC_HEADER_RAW_SIZE], payload_buf, payload_buf_len);
+  }
+
+  (void)send(fd_socket_drv, buffer, payload_buf_len + tag_len + SLI_CPC_HDLC_HEADER_RAW_SIZE, 0);
 
   free(buffer);
 }
@@ -165,6 +214,12 @@ static void* driver_thread_func(void* param)
   uint8_t ack;
   uint8_t address;
   uint8_t  type;
+#if defined(ENABLE_ENCRYPTION)
+  uint8_t plaintext_buffer[2048];
+  sl_cpc_security_state_t security_state;
+  uint16_t length;
+  uint16_t tag_len = (uint16_t)security_encrypt_get_extra_buffer_size();
+#endif
 
   pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 
@@ -188,9 +243,42 @@ static void* driver_thread_func(void* param)
       frame = (frame_t *)temp_buffer;
       control = hdlc_get_control(frame->header);
       address = hdlc_get_address(frame->header);
+#if defined(ENABLE_ENCRYPTION)
+      length  = hdlc_get_length(frame->header);
+#endif
       type    = hdlc_get_frame_type(control);
       seq = hdlc_get_seq(control);
       ack = hdlc_get_ack(control);
+
+#if defined(ENABLE_ENCRYPTION)
+      security_state = security_get_state();
+      if (security_state == SECURITY_STATE_INITIALIZED
+          && type == SLI_CPC_HDLC_FRAME_TYPE_INFORMATION
+          && length > 0) {
+        sl_status_t status;
+
+        /* the payload buffer must be longer than the security tag */
+        BUG_ON(length < tag_len);
+        length = (uint16_t)(length - tag_len - 2);
+
+        /* decrypt like the secondary would do when receiving such frame */
+        status = security_decrypt_secondary(frame->header, SLI_CPC_HDLC_HEADER_RAW_SIZE,
+                                            frame->payload, length,
+                                            plaintext_buffer,
+                                            &(frame->payload[length]), tag_len);
+
+        if (status != SL_STATUS_OK) {
+          printf("Failed to decrypt frame: 0x%x\n", status);
+          continue;
+        } else {
+          printf("Successfully decrypted frame\n");
+        }
+
+        /* copy plaintext buffer at the payload pointer */
+        memcpy(frame->payload, plaintext_buffer, length);
+      }
+#endif
+
       sl_cpc_system_cmd_t *rx_command = (sl_cpc_system_cmd_t *)frame->payload;
       sl_cpc_system_property_cmd_t *rx_property_cmd = (sl_cpc_system_property_cmd_t*)(rx_command->payload);
 

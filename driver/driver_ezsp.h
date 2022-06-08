@@ -32,6 +32,7 @@ sl_status_t send_firmware(const char   *image_file,
                           unsigned int bit_per_word,
                           unsigned int speed,
                           unsigned int cs_gpio,
-                          unsigned int irq_gpio);
+                          unsigned int irq_gpio,
+                          unsigned int wake_gpio);
 
 #endif//DRIVER_EZSP_H

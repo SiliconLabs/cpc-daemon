@@ -16,28 +16,67 @@
  *
  ******************************************************************************/
 
-#include <stddef.h>
-
 #ifndef SECURITY_KEYS_H
 #define SECURITY_KEYS_H
 
-#include "mbedtls/ctr_drbg.h"
+#include "misc/sl_status.h"
+
+#include <mbedtls/ctr_drbg.h>
+
+#include <pthread.h>
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "security/security.h"
 
 #define BINDING_KEY_LENGTH_BYTES         16
 #define PUBLIC_KEY_LENGTH_BYTES          32
 #define SESSION_KEY_LENGTH_BYTES         32
-#define SESSION_ID_LENGTH_BYTES          8
+#define SESSION_ID_LENGTH_BYTES          7
 #define SESSION_INIT_RANDOM_LENGTH_BYTES 64
 #define SHA256_LENGTH_BYTES              32
-
-extern mbedtls_ctr_drbg_context rng_context;
+#define TAG_LENGTH_BYTES                 8
+#define NONCE_FRAME_COUNTER_MAX_VALUE    (1UL << 29)
 
 void security_keys_init(void);
 
 void security_compute_session_key_and_id(uint8_t * random1, uint8_t * random2);
+void security_keys_reset(void);
+
+uint8_t* security_keys_get_ecdh_public_key(void);
 
 void security_load_binding_key_from_file(void);
 
+void security_set_state_disabled(void);
+void security_keys_generate_shared_key(uint8_t *peer_public_key);
+
+mbedtls_ctr_drbg_context* security_keys_get_rng_context(void);
+
 uint8_t* security_get_binding_key(void);
+
+size_t __security_encrypt_get_extra_buffer_size(void);
+
+sl_status_t __security_encrypt(const uint8_t *header, const size_t header_len,
+                               const uint8_t *payload, const size_t payload_len,
+                               uint8_t *output,
+                               uint8_t *tag, const size_t tag_len);
+
+sl_status_t __security_decrypt(const uint8_t *header, const size_t header_len,
+                               const uint8_t *payload, const size_t payload_len,
+                               uint8_t *output,
+                               const uint8_t *tag, const size_t tag_len);
+
+#if defined(UNIT_TESTING)
+sl_status_t __security_encrypt_secondary(const uint8_t *header, const size_t header_len,
+                                         const uint8_t *payload, const size_t payload_len,
+                                         uint8_t *output,
+                                         uint8_t *tag, const size_t tag_len);
+
+sl_status_t __security_decrypt_secondary(const uint8_t *header, const size_t header_len,
+                                         const uint8_t *payload, const size_t payload_len,
+                                         uint8_t *output,
+                                         const uint8_t *tag, const size_t tag_len);
+#endif // UNIT_TESTING
 
 #endif //SECURITY_KEYS_H

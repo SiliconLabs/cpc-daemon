@@ -35,6 +35,16 @@ void run_binding_mode(void)
 {
   int fd_socket_driver_core;
 
+  PRINT_INFO("Note: Please make sure the unbind functionality is implemented for your product. By default, unbinding requests will be refused, refer to CPC documentation for further details.");
+
+#if !defined(ENABLE_ENCRYPTION)
+  FATAL("Tried to run binding mode with daemon compiled with encryption disabled");
+#endif
+
+  if (config_use_encryption == false) {
+    FATAL("Tried to run binding mode with encryption disabled");
+  }
+
   // Init the driver
   {
     if (config_bus == UART) {
@@ -46,7 +56,8 @@ void run_binding_mode(void)
                                       config_spi_bit_per_word,
                                       config_spi_bitrate,
                                       config_spi_cs_pin,
-                                      config_spi_irq_pin);
+                                      config_spi_irq_pin,
+                                      config_wake_pin);
     } else {
       BUG();
     }
@@ -54,7 +65,22 @@ void run_binding_mode(void)
 
   server_core_thread = server_core_init(fd_socket_driver_core, false);
 
-  security_post_command(SECURITY_COMMAND_PLAIN_TEXT_BINDING);
+  switch (config_operation_mode) {
+    case MODE_BINDING_PLAIN_TEXT:
+      security_post_command(SECURITY_COMMAND_PLAIN_TEXT_BINDING);
+      break;
+
+    case MODE_BINDING_ECDH:
+      security_post_command(SECURITY_COMMAND_ECDH_BINDING);
+      break;
+
+    case MODE_BINDING_UNBIND:
+      security_post_command(SECURITY_COMMAND_UNBIND);
+      break;
+
+    default:
+      FATAL("Unsupported operation mode");
+  }
 
   main_wait_crash_or_gracefull_exit();
 }

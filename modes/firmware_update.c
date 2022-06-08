@@ -23,14 +23,16 @@
 #include "driver/driver_xmodem.h"
 #include "driver/driver_ezsp.h"
 #include "misc/config.h"
-#include "misc/logging.h"
 #include "misc/gpio.h"
+#include "misc/logging.h"
 #include "misc/sl_status.h"
+#include "misc/sleep.h"
 
 #include <sys/epoll.h>
 #include <unistd.h>
 
 #define MAX_EPOLL_EVENTS 10
+#define RESET_TIMEOUT_MS 5000
 
 extern pthread_t driver_thread;
 extern pthread_t server_core_thread;
@@ -40,54 +42,54 @@ static gpio_t irq_gpio;
 static gpio_t reset_gpio;
 
 static void clear_rx_interrupt(gpio_t gpio);
+static void process_irq(void);
 
 static void assert_reset(void);
 static void deassert_reset(void);
 static void assert_wake(void);
 static void deassert_wake(void);
+
 static void reboot_secondary_with_pins(void);
-static void process_irq(void);
+static void reboot_secondary_by_cpc(void);
+static void reboot_secondary_into_bootloader(void);
+
+static sl_status_t transfer_firmware(void);
 
 void run_firmware_update(void)
 {
-  int fd_socket_driver_core;
-  void* join_value;
-  int ret;
   sl_status_t status;
 
-  if (config_recovery_enabled == true) {
-    // pins are available to force a reboot into bootloader
-    PRINT_INFO("Using pins to reboot into bootloader...");
-    reboot_secondary_with_pins();
-  } else {
-    // request reboot to bootloader via CPC
-    // Init the driver
-    if (config_bus == UART) {
-      driver_thread = driver_uart_init(&fd_socket_driver_core, config_uart_file, config_uart_baudrate, config_uart_hardflow);
-    } else if (config_bus == SPI) {
-      driver_thread = driver_spi_init(&fd_socket_driver_core,
-                                      config_spi_file,
-                                      config_spi_mode,
-                                      config_spi_bit_per_word,
-                                      config_spi_bitrate,
-                                      config_spi_cs_pin,
-                                      config_spi_irq_pin);
-    } else {
-      BUG();
-    }
-    server_core_thread = server_core_init(fd_socket_driver_core, true);
-
-    ret = pthread_join(server_core_thread, &join_value);
-    FATAL_ON(ret != 0);
-    FATAL_ON(join_value != 0);
-
-    PRINT_INFO("Starting firmware upgrade");
-
-    close(fd_socket_driver_core);
+  // If config_connect_to_bootloader is true,
+  // we assume the bootloader is already running.
+  if (!config_connect_to_bootloader) {
+    reboot_secondary_into_bootloader();
   }
 
-  PRINT_INFO("Secondary is in bootloader, sending firmware");
-  // Init the bootloader communication driver
+  // If config_enter_bootloader is true, exit
+  // without transferring the firmware.
+  if (config_enter_bootloader) {
+    sleep_s(2);
+    exit(EXIT_SUCCESS);
+  }
+
+  // transfer the firmware image to the bootloader
+  status = transfer_firmware();
+
+  if (status == SL_STATUS_OK) {
+    PRINT_INFO("Firmware upgrade successful. Exiting, restart CPCd without -f option.");
+    sleep_s(2);
+    exit(EXIT_SUCCESS);
+  } else {
+    PRINT_INFO("Firmware upgrade failed.");
+    sleep_s(2);
+    exit(EXIT_FAILURE);
+  }
+}
+
+static sl_status_t transfer_firmware(void)
+{
+  sl_status_t status;
+
   if (config_bus == UART) {
     status = xmodem_send(config_fu_file,
                          config_uart_file,
@@ -100,24 +102,59 @@ void run_firmware_update(void)
                            config_spi_bit_per_word,
                            config_spi_bitrate,
                            config_spi_cs_pin,
-                           config_spi_irq_pin);
+                           config_spi_irq_pin,
+                           config_wake_pin);
   } else {
     BUG();
   }
 
-  gpio_deinit(&wake_gpio);
-  gpio_deinit(&reset_gpio);
-  if (config_bus == SPI) {
-    gpio_deinit(&irq_gpio);
+  return status;
+}
+
+static void reboot_secondary_into_bootloader(void)
+{
+  if (config_recovery_enabled == true) {
+    // pins are available to force a reboot into bootloader
+    PRINT_INFO("Using pins to reboot into bootloader...");
+    reboot_secondary_with_pins();
+  } else {
+    // request reboot to bootloader via CPC
+    PRINT_INFO("Requesting reboot into bootloader via CPC...");
+    reboot_secondary_by_cpc();
   }
 
-  if (status == SL_STATUS_OK) {
-    PRINT_INFO("Firmware upgrade successful. Exiting, restart CPCd without -f option.");
-    exit(EXIT_SUCCESS);
+  PRINT_INFO("Secondary is in bootloader");
+}
+
+static void reboot_secondary_by_cpc(void)
+{
+  int fd_socket_driver_core;
+  void* join_value;
+  int ret;
+
+  // Init the driver
+  if (config_bus == UART) {
+    driver_thread = driver_uart_init(&fd_socket_driver_core, config_uart_file, config_uart_baudrate, config_uart_hardflow);
+  } else if (config_bus == SPI) {
+    driver_thread = driver_spi_init(&fd_socket_driver_core,
+                                    config_spi_file,
+                                    config_spi_mode,
+                                    config_spi_bit_per_word,
+                                    config_spi_bitrate,
+                                    config_spi_cs_pin,
+                                    config_spi_irq_pin,
+                                    config_wake_pin);
   } else {
-    PRINT_INFO("Firmware upgrade failed.");
-    exit(EXIT_FAILURE);
+    BUG();
   }
+
+  server_core_thread = server_core_init(fd_socket_driver_core, true);
+
+  ret = pthread_join(server_core_thread, &join_value);
+  FATAL_ON(ret != 0);
+  FATAL_ON(join_value != 0);
+
+  close(fd_socket_driver_core);
 }
 
 static void reboot_secondary_with_pins(void)
@@ -161,25 +198,38 @@ static void reboot_secondary_with_pins(void)
   // bootloader starts (in SPI), it will handshake by asserting
   // nHOST_INT, at which point nWAKE should be deasserted
   assert_wake();
-  usleep(100);
+  sleep_us(100);
   assert_reset();
-  usleep(100);
+  sleep_us(100);
   deassert_reset();
-  usleep(100);
+  sleep_us(100);
 
   if (config_bus == SPI) {
     // wait for host interrupt
-    fds = epoll_wait(fd_epoll, events, MAX_EPOLL_EVENTS, -1);
-    FATAL_SYSCALL_ON(fds == -1);
-    for (n = 0; n < fds; n++) {
-      if (events[n].data.fd == irq_gpio.irq_fd) {
-        process_irq();
+    bool irq = false;
+    do {
+      fds = epoll_wait(fd_epoll, events, MAX_EPOLL_EVENTS, RESET_TIMEOUT_MS);
+      FATAL_SYSCALL_ON(fds == -1);  // epoll failed
+      FATAL_ON(fds == 0);           // reset timed out
+      for (n = 0; n < fds; n++) {
+        if (events[n].data.fd == irq_gpio.irq_fd) {
+          if (gpio_read(irq_gpio) == 0) {
+            irq = true;
+          }
+        }
       }
-    }
+    } while (!irq);
+    process_irq();
   } else {
     // uart-xmodem bootloader does not trigger host interrupt
-    sleep(1);
+    sleep_s(1);
     deassert_wake();
+  }
+
+  gpio_deinit(&wake_gpio);
+  gpio_deinit(&reset_gpio);
+  if (config_bus == SPI) {
+    gpio_deinit(&irq_gpio);
   }
 
   return;

@@ -46,7 +46,8 @@ void run_normal_mode(void)
                                       config_spi_bit_per_word,
                                       config_spi_bitrate,
                                       config_spi_cs_pin,
-                                      config_spi_irq_pin);
+                                      config_spi_irq_pin,
+                                      config_wake_pin);
     } else {
       BUG();
     }
@@ -54,9 +55,11 @@ void run_normal_mode(void)
 
   server_core_thread = server_core_init(fd_socket_driver_core, false);
 
+#if defined(ENABLE_ENCRYPTION)
   if (config_use_encryption == true) {
     security_post_command(SECURITY_COMMAND_INITIALIZE_SESSION);
   }
+#endif
 
   main_wait_crash_or_gracefull_exit();
 }

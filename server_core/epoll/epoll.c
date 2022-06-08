@@ -110,31 +110,19 @@ void epoll_watch_back(uint8_t endpoint_number)
   /* More than one library connection can exist for one endpoint. When watching back for an
    * endpoint, we want to go through all the connections and watch them back */
 
-  item = SL_SLIST_ENTRY(unwatched_endpoint_list,
-                        unwatched_endpoint_list_item_t,
-                        node);
-
-  if (item == NULL) {
-    return;
-  }
-
+  sl_slist_node_t *item_node = unwatched_endpoint_list;
   while (1) {
+    item = SL_SLIST_ENTRY(item_node,
+                          unwatched_endpoint_list_item_t,
+                          node);
+    if (item == NULL) {
+      break;
+    }
+    item_node = item_node->node;
     if (endpoint_number == item->unregistered_epoll_private_data->endpoint_number) {
       epoll_register(item->unregistered_epoll_private_data);
       sl_slist_remove(&unwatched_endpoint_list, &item->node);
       free(item);
-      item = SL_SLIST_ENTRY(unwatched_endpoint_list,
-                            unwatched_endpoint_list_item_t,
-                            node);
-    } else {
-      item = SL_SLIST_ENTRY(unwatched_endpoint_list->node,
-                            unwatched_endpoint_list_item_t,
-                            node);
-    }
-
-    /* End of list ? */
-    if (item == NULL) {
-      break;
     }
   }
 }

@@ -39,6 +39,7 @@ SL_ENUM(sl_cpc_system_cmd_id_t)
   CMD_SYSTEM_PROP_VALUE_GET = 0x02,
   CMD_SYSTEM_PROP_VALUE_SET = 0x03,
   CMD_SYSTEM_PROP_VALUE_IS  = 0x06,
+  CMD_SYSTEM_INVALID        = 0xFF,
 };
 
 /***************************************************************************//**
@@ -57,11 +58,15 @@ SL_ENUM_GENERIC(sl_cpc_property_id_t, uint32_t)
   PROP_LAST_STATUS            = 0x00,
   PROP_PROTOCOL_VERSION       = 0x01,
   PROP_CAPABILITIES           = 0x02,
+  PROP_SECONDARY_VERSION      = 0x03,
   PROP_RX_CAPABILITY          = 0x20,
+  PROP_FC_VALIDATION_VALUE    = 0x30,
   PROP_BOOTLOADER_INFO        = 0x200,
   PROP_BOOTLOADER_REBOOT_MODE = 0x202,
   PROP_SECURITY_STATE         = 0x301,
   PROP_CORE_DEBUG_COUNTERS    = 0x400,
+  PROP_UFRAME_PROCESSING      = 0x500,
+  PROP_ENTER_IRQ              = 0x600,
   PROP_ENDPOINT_STATE_0       = 0x1000,
   PROP_ENDPOINT_STATE_1       = 0x1001,
   PROP_ENDPOINT_STATE_2       = 0x1002,
@@ -410,6 +415,14 @@ SL_ENUM_GENERIC(sl_cpc_system_reboot_mode_t, uint32_t)
 };
 
 /***************************************************************************//**
+ * Enter IRQ command parameters
+ ******************************************************************************/
+typedef struct {
+  uint32_t start_in_ms;
+  uint32_t end_in_ms;
+} sl_cpc_system_enter_irq_cmd_t;
+
+/***************************************************************************//**
  * Capabilities mask
  *
  * @note
@@ -419,6 +432,7 @@ SL_ENUM_GENERIC(sl_cpc_system_reboot_mode_t, uint32_t)
 #define CPC_CAPABILITIES_SECURITY_ENDPOINT_MASK (1 << 0)
 #define CPC_CAPABILITIES_PACKED_ENDPOINT_MASK   (1 << 1)
 #define CPC_CAPABILITIES_GPIO_ENDPOINT_MASK     (1 << 2)
+#define CPC_CAPABILITIES_UART_FLOW_CONTROL_MASK (1 << 3)
 
 /***************************************************************************//**
  * System endpoint command type
@@ -447,6 +461,7 @@ typedef struct  {
   void *on_final;
   uint8_t retry_count;
   bool retry_forever;
+  bool is_uframe;
   uint32_t retry_timeout_us;
   sl_status_t error_status;
   uint8_t command_seq;
@@ -535,7 +550,8 @@ void sl_cpc_system_cmd_reboot(sl_cpc_system_reset_cmd_callback_t on_reset_reply,
 void sl_cpc_system_cmd_property_get(sl_cpc_system_property_get_set_cmd_callback_t on_property_get_reply,
                                     sl_cpc_property_id_t property_id,
                                     uint8_t retry_count_max,
-                                    uint32_t retry_timeout_us);
+                                    uint32_t retry_timeout_us,
+                                    bool is_uframe);
 
 /***************************************************************************//**
  * Sends a property-set query
@@ -545,7 +561,8 @@ void sl_cpc_system_cmd_property_set(sl_cpc_system_property_get_set_cmd_callback_
                                     uint32_t retry_timeout_us,
                                     sl_cpc_property_id_t property_id,
                                     const void *value,
-                                    size_t value_length);
+                                    size_t value_length,
+                                    bool is_uframe);
 
 /***************************************************************************//**
  * Registers an unsolicited prop last status callback

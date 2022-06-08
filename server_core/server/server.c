@@ -224,13 +224,6 @@ void server_init(void)
     /* per-endpoint data sockets are dynamically created [and added to epoll set] when instances of library are connecting to an endpoint */
   }
 
-  /* Wait for the completion of the reset sequence */
-  if (config_reset_sequence == true) {
-    while (!sl_cpc_system_received_unnumbered_acknowledgement()) {
-      sleep(1);
-    }
-  }
-
   /* The server up and running, unblock possible threads waiting for it. */
   server_ready_post();
 }
@@ -266,6 +259,7 @@ static void server_process_epoll_fd_ctrl_connection_socket(epoll_private_data_t 
     {
       new_item = (ctrl_socket_private_data_list_item_t*) malloc(sizeof(ctrl_socket_private_data_list_item_t));
       FATAL_ON(new_item == NULL);
+      memset(new_item, 0, sizeof(ctrl_socket_private_data_list_item_t));
 
       new_item->pid = -1;
     }
@@ -341,9 +335,9 @@ static void server_process_epoll_fd_ctrl_data_socket(epoll_private_data_t *priva
     {
       TRACE_SERVER("Received an maximum write size query");
 
-      BUG_ON(buffer_len != sizeof(cpcd_exchange_buffer_t) + sizeof(size_t));
+      BUG_ON(buffer_len != sizeof(cpcd_exchange_buffer_t) + sizeof(uint32_t));
       size_t rx_capability = (size_t)server_core_get_secondary_rx_capability();
-      memcpy(interface_buffer->payload, &rx_capability, sizeof(size_t));
+      memcpy(interface_buffer->payload, &rx_capability, sizeof(uint32_t));
 
       ssize_t ret = send(fd_ctrl_data_socket, interface_buffer, buffer_len, 0);
 
@@ -351,7 +345,7 @@ static void server_process_epoll_fd_ctrl_data_socket(epoll_private_data_t *priva
         server_handle_client_closed_ctrl_connection(fd_ctrl_data_socket);
       } else {
         FATAL_SYSCALL_ON(ret < 0 && errno != EPIPE);
-        FATAL_ON((size_t)ret != sizeof(cpcd_exchange_buffer_t) + sizeof(size_t));
+        FATAL_ON((size_t)ret != sizeof(cpcd_exchange_buffer_t) + sizeof(uint32_t));
       }
     }
     break;
@@ -359,20 +353,27 @@ static void server_process_epoll_fd_ctrl_data_socket(epoll_private_data_t *priva
     case EXCHANGE_VERSION_QUERY:
       /* Client requested the version of the daemon*/
     {
-      uint32_t* version = (uint32_t*) interface_buffer->payload;
+      uint8_t* version = (uint8_t*) interface_buffer->payload;
       bool do_close_client = false;
+
+      FATAL_ON(interface_buffer->payload == NULL);
 
       TRACE_SERVER("Received a version query");
 
-      BUG_ON(buffer_len != sizeof(cpcd_exchange_buffer_t) + 2 * sizeof(uint32_t));
-
-      if (version[0] != PROJECT_VER_MAJOR || version[1] != PROJECT_VER_MINOR) {
-        do_close_client = true;
+      if (buffer_len != sizeof(cpcd_exchange_buffer_t) + sizeof(uint8_t)) {
+        WARN("Client used invalid library version, buffer_len = %zu", buffer_len);
+        break;
       }
 
+      if (*version != LIBRARY_API_VERSION) {
+        do_close_client = true;
+        WARN("Client used invalid library version, (v%d) expected (v%d)", *version, LIBRARY_API_VERSION);
+      }
+
+      PRINT_INFO("Client is using library v%d", *version);
+
       //Reuse the receive buffer to send back the response
-      version[0] = PROJECT_VER_MAJOR;
-      version[1] = PROJECT_VER_MINOR;
+      *version = LIBRARY_API_VERSION;
 
       ssize_t ret = send(fd_ctrl_data_socket, interface_buffer, buffer_len, 0);
 
@@ -380,7 +381,7 @@ static void server_process_epoll_fd_ctrl_data_socket(epoll_private_data_t *priva
         server_handle_client_closed_ctrl_connection(fd_ctrl_data_socket);
       } else {
         FATAL_SYSCALL_ON(ret < 0 && errno != EPIPE);
-        FATAL_ON((size_t)ret != sizeof(cpcd_exchange_buffer_t) + sizeof(PROJECT_VER));
+        FATAL_ON((size_t)ret != sizeof(cpcd_exchange_buffer_t) + sizeof(uint8_t));
       }
     }
     break;
@@ -472,8 +473,9 @@ void server_process_pending_connections(void)
     }
     sl_cpc_system_cmd_property_get(property_get_single_endpoint_state_and_reply_to_pending_open_callback,
                                    (sl_cpc_property_id_t)(PROP_ENDPOINT_STATE_0 + pending_connection->endpoint_id),
-                                   5, //TODO 5 retries
-                                   100000); //TODO 100 ms
+                                   5,
+                                   100000,
+                                   false);
     sl_cpc_system_set_pending_connection(pending_connection->fd_ctrl_data_socket);
     sl_slist_remove(&pending_connections, &pending_connection->node);
     free(pending_connection);
@@ -622,6 +624,7 @@ static void server_process_epoll_fd_ep_data_socket(epoll_private_data_t *private
   /* Send the data to the core */
   if (core_get_endpoint_state(endpoint_number) == SL_CPC_STATE_OPEN) {
     core_write(endpoint_number, buffer, buffer_len, 0);
+    free(buffer);
   } else {
     free(buffer);
     WARN("User tried to push on endpoint %d but it's not open, state is %d", endpoint_number, core_get_endpoint_state(endpoint_number));
@@ -650,6 +653,7 @@ static void server_handle_client_disconnected(uint8_t endpoint_number)
 static void server_handle_client_closed_ep_connection(int fd_data_socket, uint8_t endpoint_number)
 {
   data_socket_private_data_list_item_t* item;
+  data_socket_private_data_list_item_t* next_item;
 
   /* The while loop that follows is the macro SL_SLIST_FOR_EACH_ENTRY exploded to allow
    * for free()ing items during iteration */
@@ -663,6 +667,11 @@ static void server_handle_client_closed_ep_connection(int fd_data_socket, uint8_
   }
 
   while (1) {
+    /* Get next item */
+    next_item = SL_SLIST_ENTRY((item)->node.node,
+                               data_socket_private_data_list_item_t,
+                               node);
+
     /* We are iterating through the linked list of opened connections,
      * check if this iteration is the good one*/
     if (item->data_socket_epoll_private_data.file_descriptor == fd_data_socket) {
@@ -681,19 +690,10 @@ static void server_handle_client_closed_ep_connection(int fd_data_socket, uint8_
 
       /* data connections items are malloced */
       free(item);
-
-      /* Get new item */
-      item = SL_SLIST_ENTRY(endpoints[endpoint_number].data_socket_epoll_private_data,
-                            data_socket_private_data_list_item_t,
-                            node);
-    } else {
-      /* Get next item */
-      item = SL_SLIST_ENTRY(endpoints[endpoint_number].data_socket_epoll_private_data->node,
-                            data_socket_private_data_list_item_t,
-                            node);
     }
 
     /* End of list ? */
+    item = next_item;
     if (item == NULL) {
       break;
     }
@@ -703,6 +703,7 @@ static void server_handle_client_closed_ep_connection(int fd_data_socket, uint8_
 static void server_handle_client_closed_ctrl_connection(int fd_data_socket)
 {
   ctrl_socket_private_data_list_item_t* item;
+  ctrl_socket_private_data_list_item_t* next_item;
 
   /* The while loop that follows is the macro SL_SLIST_FOR_EACH_ENTRY exploded to allow
    * for free()ing items during iteration */
@@ -716,6 +717,11 @@ static void server_handle_client_closed_ctrl_connection(int fd_data_socket)
   }
 
   while (1) {
+    /* Get the next item */
+    next_item = SL_SLIST_ENTRY((item)->node.node,
+                               ctrl_socket_private_data_list_item_t,
+                               node);
+
     /* We are iterating through the linked list of opened connections,
      * check if this iteration is the good one*/
     if (item->data_socket_epoll_private_data.file_descriptor == fd_data_socket) {
@@ -731,19 +737,10 @@ static void server_handle_client_closed_ctrl_connection(int fd_data_socket)
 
       /* data connections items are malloced */
       free(item);
-
-      /* Get new item */
-      item = SL_SLIST_ENTRY(ctrl_connections,
-                            ctrl_socket_private_data_list_item_t,
-                            node);
-    } else {
-      /* Get next item */
-      item = SL_SLIST_ENTRY(ctrl_connections->node,
-                            ctrl_socket_private_data_list_item_t,
-                            node);
     }
 
     /* End of list ? */
+    item = next_item;
     if (item == NULL) {
       break;
     }
@@ -1080,10 +1077,12 @@ void server_notify_connected_libs_of_secondary_reset(void)
                           item,
                           ctrl_socket_private_data_list_item_t,
                           node){
-    if (item->pid > 1) {
-      kill(item->pid, SIGUSR1);
-    } else {
-      BUG("Connected library's pid it not set");
+    if (item->pid != getpid()) {
+      if (item->pid > 1) {
+        kill(item->pid, SIGUSR1);
+      } else {
+        BUG("Connected library's pid it not set");
+      }
     }
   }
 }

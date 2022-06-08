@@ -41,8 +41,12 @@ typedef enum {
 
 typedef enum {
   MODE_NORMAL,
+  MODE_BINDING_UNKNOWN,
+  MODE_BINDING_ECDH,
   MODE_BINDING_PLAIN_TEXT,
-  MODE_FIRMWARE_UPDATE
+  MODE_BINDING_UNBIND,
+  MODE_FIRMWARE_UPDATE,
+  MODE_UART_VALIDATION
 }operation_mode_t;
 
 extern bus_t         config_bus;
@@ -61,6 +65,9 @@ extern unsigned int  config_uart_baudrate;
 extern bool          config_uart_hardflow;
 extern const char*   config_uart_file;
 
+extern const char*   config_board_controller_ip_addr;
+extern bool          config_board_controller;
+
 extern const char*   config_spi_file;
 extern unsigned int  config_spi_bitrate;
 extern unsigned int  config_spi_mode;
@@ -71,6 +78,8 @@ extern unsigned int  config_spi_irq_pin;
 extern bool          config_recovery_enabled;
 extern unsigned int  config_wake_pin;
 extern unsigned int  config_reset_pin;
+extern bool          config_connect_to_bootloader;
+extern bool          config_enter_bootloader;
 
 extern const char* const  config_socket_folder;
 extern const char*   config_instance_name;
@@ -81,6 +90,7 @@ extern operation_mode_t config_operation_mode;
 
 extern const char*   config_binding_key_file;
 extern const char*   config_fu_file;
+extern const char*   config_uart_validation_test_option;
 
 extern long          config_stats_interval;
 

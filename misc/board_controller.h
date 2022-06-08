@@ -1,6 +1,6 @@
 /***************************************************************************//**
  * @file
- * @brief Co-Processor Communication Protocol(CPC) - Server core
+ * @brief Co-Processor Communication Protocol(CPC) - Board Controller
  * @version 3.2.0
  *******************************************************************************
  * # License
@@ -16,21 +16,11 @@
  *
  ******************************************************************************/
 
-#ifndef SERVER_CORE_H
-#define SERVER_CORE_H
+#ifndef BOARD_CONTROLLER_H
+#define BOARD_CONTROLLER_H
 
-#define _GNU_SOURCE
-#include <pthread.h>
-
-#include <stdint.h>
 #include <stdbool.h>
 
-uint32_t server_core_get_secondary_rx_capability(void);
+void board_controller_get_config_vcom(const char *ip_address, unsigned int *baudrate, bool *flowcontrol);
 
-pthread_t server_core_init(int fd_socket_driver_core, bool firmware_update);
-
-void server_core_kill_signal(void);
-
-bool server_core_reset_sequence_in_progress(void);
-
-#endif //SERVER_CORE_H
+#endif //BOARD_CONTROLLER_H

@@ -16,6 +16,7 @@
  *
  ******************************************************************************/
 #define _GNU_SOURCE
+
 #include <pthread.h>
 
 #include <fcntl.h>
@@ -29,10 +30,12 @@
 #include <sys/ioctl.h>
 #include <signal.h>
 #include <linux/serial.h>
-#include <dirent.h>
 
+#include "misc/config.h"
 #include "misc/logging.h"
+#include "misc/sleep.h"
 #include "misc/utils.h"
+#include "misc/board_controller.h"
 #include "driver/driver_uart.h"
 #include "server_core/core/hdlc.h"
 #include "server_core/core/crc.h"
@@ -44,19 +47,21 @@
 static int fd_uart;
 static int fd_core;
 static int fd_epoll;
-static pthread_t drv_thread;
-static unsigned int uart_bitrate;
-static bool vcom_present = false;
+static pthread_t rx_drv_thread;
+static pthread_t tx_drv_thread;
+static pthread_t cleanup_thread;
 
 typedef void (*driver_epoll_callback_t)(void);
 
-static void* driver_thread_func(void* param);
+static void* cleanup_thread_func(void* param);
+
+static void* receive_driver_thread_func(void* param);
+
+static void* transmit_driver_thread_func(void* param);
 
 static void driver_uart_process_uart(void);
 
 static void driver_uart_process_core(void);
-
-static void driver_uart_check_for_vcom(const char* provided_device);
 
 /*
  * @return The number of bytes appended to the buffer
@@ -79,13 +84,13 @@ static bool header_re_synch(uint8_t *buffer, size_t *buffer_head);
 
 static void driver_uart_cleanup(void);
 
-pthread_t driver_uart_init(int *fd_to_core, const char *device, unsigned int bitrate, bool hardflow)
+pthread_t driver_uart_init(int *fd_to_core, const char *device, unsigned int baudrate, bool hardflow)
 {
   int fd_sockets[2];
+  pthread_attr_t detach_attr;
   ssize_t ret;
 
-  fd_uart = driver_uart_open(device, bitrate, hardflow);
-  uart_bitrate = bitrate;
+  fd_uart = driver_uart_open(device, baudrate, hardflow);
 
   /* Flush the uart IO fifo */
 
@@ -108,24 +113,6 @@ pthread_t driver_uart_init(int *fd_to_core, const char *device, unsigned int bit
       FATAL_SYSCALL_ON(fd_epoll < 0);
     }
 
-    /* Setup the socket to the core */
-    {
-      event.events = EPOLLIN; /* Level-triggered read() availability */
-      event.data.ptr = driver_uart_process_core;
-
-      ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, fd_core, &event);
-      FATAL_SYSCALL_ON(ret < 0);
-    }
-
-    /* Setup the uart */
-    {
-      event.events = EPOLLIN; /* Level-triggered read() availability */
-      event.data.ptr = driver_uart_process_uart;
-
-      ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, fd_uart, &event);
-      FATAL_SYSCALL_ON(ret < 0);
-    }
-
     /* Setup the kill file descriptor */
     {
       int eventfd_kill = driver_kill_init();
@@ -138,23 +125,37 @@ pthread_t driver_uart_init(int *fd_to_core, const char *device, unsigned int bit
     }
   }
 
-  /* create driver thread */
-  ret = pthread_create(&drv_thread, NULL, driver_thread_func, NULL);
+  /* Init detach attribute */
+  ret = pthread_attr_init(&detach_attr);
   FATAL_ON(ret != 0);
 
-  ret = pthread_setname_np(drv_thread, "drv_thread");
+  /* Set detach attribute */
+  ret = pthread_attr_setdetachstate(&detach_attr, PTHREAD_CREATE_DETACHED);
+  FATAL_ON(ret != 0);
+
+  /* create cleanup thread */
+  ret = pthread_create(&cleanup_thread, NULL, cleanup_thread_func, NULL);
+  FATAL_ON(ret != 0);
+
+  /* create transmitter driver thread */
+  ret = pthread_create(&tx_drv_thread, &detach_attr, transmit_driver_thread_func, NULL);
+  FATAL_ON(ret != 0);
+
+  /* create receiver driver thread */
+  ret = pthread_create(&rx_drv_thread, &detach_attr, receive_driver_thread_func, NULL);
+  FATAL_ON(ret != 0);
+
+  ret = pthread_setname_np(tx_drv_thread, "tx_drv_thread");
+  FATAL_ON(ret != 0);
+
+  ret = pthread_setname_np(rx_drv_thread, "rx_drv_thread");
   FATAL_ON(ret != 0);
 
   TRACE_DRIVER("Opening uart file %s", device);
 
-  if (strstr(device, "ttyACM") != 0) {
-    TRACE_DRIVER("CDC ACM driver used");
-    driver_uart_check_for_vcom(device);
-  }
-
   TRACE_DRIVER("Init done");
 
-  return drv_thread;
+  return cleanup_thread;
 }
 
 void driver_uart_print_overruns(void)
@@ -167,21 +168,35 @@ void driver_uart_print_overruns(void)
 
 static void driver_uart_cleanup(void)
 {
+  int ret;
+
+  TRACE_DRIVER("Uart driver threads cancelled");
+
+  // cancel transmission thread
+  ret = pthread_cancel(tx_drv_thread);
+  FATAL_ON(ret != 0);
+
+  // cancel reception thread
+  ret = pthread_cancel(rx_drv_thread);
+  FATAL_ON(ret != 0);
+
+  // wait for threads to exit
+  pthread_join(tx_drv_thread, NULL);
+  pthread_join(rx_drv_thread, NULL);
+
   close(fd_uart);
   close(fd_core);
   close(fd_epoll);
 
-  TRACE_DRIVER("Uart driver thread cancelled");
-
   pthread_exit(0);
 }
 
-static void* driver_thread_func(void* param)
+static void* cleanup_thread_func(void* param)
 {
   (void) param;
   struct epoll_event events[MAX_EPOLL_EVENTS] = {};
 
-  TRACE_DRIVER("Thread start");
+  TRACE_DRIVER("Cleanup thread start");
 
   while (1) {
     int event_count;
@@ -214,7 +229,33 @@ static void* driver_thread_func(void* param)
   return 0;
 }
 
-int driver_uart_open(const char *device, unsigned int bitrate, bool hardflow)
+static void* receive_driver_thread_func(void* param)
+{
+  (void) param;
+
+  TRACE_DRIVER("Receiver thread start");
+
+  while (1) {
+    driver_uart_process_uart();
+  } //while(1)
+
+  return 0;
+}
+
+static void* transmit_driver_thread_func(void* param)
+{
+  (void) param;
+
+  TRACE_DRIVER("Transmitter thread start");
+
+  while (1) {
+    driver_uart_process_core();
+  } //while(1)
+
+  return 0;
+}
+
+int driver_uart_open(const char *device, unsigned int baudrate, bool hardflow)
 {
   static const struct {
     unsigned int val;
@@ -230,7 +271,7 @@ int driver_uart_open(const char *device, unsigned int bitrate, bool hardflow)
     { 921600, B921600 },
   };
   struct termios tty;
-  int sym_bitrate = -1;
+  int sym_baudrate = -1;
   int fd;
 
   fd = open(device, O_RDWR | O_CLOEXEC);
@@ -240,17 +281,17 @@ int driver_uart_open(const char *device, unsigned int bitrate, bool hardflow)
 
   size_t i;
   for (i = 0; i < ARRAY_SIZE(conversion); i++) {
-    if (conversion[i].val == bitrate) {
-      sym_bitrate = conversion[i].symbolic;
+    if (conversion[i].val == baudrate) {
+      sym_baudrate = conversion[i].symbolic;
     }
   }
 
-  if (sym_bitrate < 0) {
-    FATAL("invalid bitrate: %d", bitrate);
+  if (sym_baudrate < 0) {
+    FATAL("invalid baudrate: %d", baudrate);
   }
 
-  cfsetispeed(&tty, (speed_t)sym_bitrate);
-  cfsetospeed(&tty, (speed_t)sym_bitrate);
+  cfsetispeed(&tty, (speed_t)sym_baudrate);
+  cfsetospeed(&tty, (speed_t)sym_baudrate);
   cfmakeraw(&tty);
   /* Nonblocking read. */
   tty.c_cc[VTIME] = 0;
@@ -272,12 +313,44 @@ int driver_uart_open(const char *device, unsigned int bitrate, bool hardflow)
   {
     /* There was once a bug in the kernel requiring a delay before flushing the uart.
      * Keep it there for backward compatibility */
-    usleep(10000);
+    sleep_ms(10);
 
     tcflush(fd, TCIOFLUSH);
   }
 
+  if (config_board_controller) {
+    unsigned int bc_baudrate;
+    bool bc_flowcontrol;
+
+    TRACE("Fetching Board Controller (%s) configuration...", config_board_controller_ip_addr);
+    board_controller_get_config_vcom(config_board_controller_ip_addr, &bc_baudrate, &bc_flowcontrol);
+
+    // Allow a baudrate error (determined on the board controller firmware to be 2% of the configured baudrate)
+    unsigned int baudrate_error = (unsigned int)(config_uart_baudrate * 0.02);
+    if (((unsigned int)(abs((int)bc_baudrate - (int)config_uart_baudrate)) > baudrate_error) || bc_flowcontrol != config_uart_hardflow) {
+      FATAL("FAILURE : Host (Baudrate: %d, Flow control: %s), Board Controller (Baudrate: %d, Flow control: %s)", config_uart_baudrate, config_uart_hardflow == 1 ? "True" : "False", bc_baudrate, bc_flowcontrol  == 1 ? "True" : "False");
+    } else {
+      TRACE("SUCCESS : Host (Baudrate: %d, Flow control: %s), Board Controller (Baudrate: %d, Flow control: %s)", config_uart_baudrate, config_uart_hardflow  == 1 ? "True" : "False", bc_baudrate, bc_flowcontrol  == 1 ? "True" : "False");
+    }
+  }
+
   return fd;
+}
+
+void driver_uart_assert_rts(bool assert)
+{
+  int ret;
+  int flag = TIOCM_RTS;
+
+  FATAL_ON(fd_uart < 0);
+
+  if (assert) {
+    ret = ioctl(fd_uart, TIOCMBIS, &flag);
+  } else {
+    ret = ioctl(fd_uart, TIOCMBIC, &flag);
+  }
+
+  FATAL_SYSCALL_ON(ret < 0);
 }
 
 static void driver_uart_process_uart(void)
@@ -314,7 +387,8 @@ static void driver_uart_process_uart(void)
         break;
 
       default:
-        BUG("Illegal switch");
+
+        BUG("Illegal switch, Case : %d", state);
         break;
     }
   }
@@ -323,62 +397,21 @@ static void driver_uart_process_uart(void)
 /* Append UART new data to the frame delimiter processing buffer */
 static size_t read_and_append_uart_received_data(uint8_t *buffer, size_t buffer_head, size_t buffer_size)
 {
-  size_t available_bytes_to_read;
-  size_t actual_bytes_to_read;
-  uint8_t* temp_buffer;
+  uint8_t temp_buffer[UART_BUFFER_SIZE];
 
   BUG_ON(buffer_head >= buffer_size);
 
-  /* Poll the uart to get the available bytes */
-  {
-    int value;
-    int retval = ioctl(fd_uart, FIONREAD, &value);
-
-    available_bytes_to_read = (size_t) value;
-
-    FATAL_SYSCALL_ON(retval < 0);
-
-    /* The uart had no data. The epoll is supposed to wake us up when the uart has data. */
-    BUG_ON(available_bytes_to_read == 0);
-  }
-
   /* Make sure we don't read more data than the supplied buffer can handle */
-  {
-    const size_t available_space = buffer_size - buffer_head - 1;
-
-    if (available_space >= available_bytes_to_read) {
-      actual_bytes_to_read = available_bytes_to_read;
-    } else {
-      actual_bytes_to_read = available_space;
-    }
-  }
-
-  /* Get a temporary buffer of the right size */
-  {
-    // Allocate a temporary buffer and pad it to 8 bytes because memcpy reads in chunks of 8.
-    // If we don't pad, Valgrind will complain.
-    temp_buffer = (uint8_t*) malloc(PAD_TO_8_BYTES(actual_bytes_to_read));
-
-    FATAL_ON(temp_buffer == NULL);
-  }
+  const size_t available_space = buffer_size - buffer_head - 1;
 
   /* Read the uart data into the temp buffer */
-  {
-    ssize_t read_retval = read(fd_uart, temp_buffer, actual_bytes_to_read);
-
-    FATAL_ON(read_retval < 0);
-
-    BUG_ON((size_t) read_retval != actual_bytes_to_read);
-
-    //TRACE_FRAME("Driver : received chunck from uart: ", temp_buffer, (size_t)actual_bytes_to_read);
-  }
+  ssize_t read_retval = read(fd_uart, temp_buffer, available_space);
+  FATAL_ON(read_retval < 0);
 
   /* copy the data in the main buffer */
-  memcpy(&buffer[buffer_head], temp_buffer, actual_bytes_to_read);
+  memcpy(&buffer[buffer_head], temp_buffer, (size_t)read_retval);
 
-  free(temp_buffer);
-
-  return actual_bytes_to_read;
+  return (size_t)read_retval;
 }
 
 static bool validate_header(uint8_t *header_start)
@@ -495,38 +528,6 @@ static bool delimit_and_push_frames_to_core(uint8_t *buffer, size_t *buffer_head
   return true;
 }
 
-static void driver_uart_check_for_vcom(const char* provided_device)
-{
-  char device_path[255];
-  char device_name[128];
-  char *ret;
-  DIR *d;
-  struct dirent *dir;
-
-  d = opendir("/dev/serial/by-id");
-
-  if (d) {
-    while ((dir = readdir(d)) != NULL) {
-      if (dir->d_type == DT_LNK) {
-        if (strstr(dir->d_name, "J-Link") != 0) {
-          strcpy(device_path, "/dev/serial/by-id/");
-          strcat(device_path, dir->d_name);
-
-          ret = realpath(device_path, device_name);
-
-          if (ret != NULL && strstr(provided_device, device_name) != 0) {
-            vcom_present = true;
-            TRACE_DRIVER("VCOM port detected, applying workaround");
-          }
-        }
-      }
-    }
-    closedir(d);
-  } else {
-    WARN("Failed to traverse /dev/serial/by-id to detect VCOM presence");
-  }
-}
-
 static void driver_uart_process_core(void)
 {
   uint8_t buffer[UART_BUFFER_SIZE];
@@ -539,22 +540,6 @@ static void driver_uart_process_core(void)
   }
 
   {
-    int ret;
-    int bytes_remaining;
-    ret = ioctl(fd_uart, TIOCOUTQ, &bytes_remaining);
-
-    FATAL_SYSCALL_ON(ret < 0);
-    BUG_ON(bytes_remaining < 0);
-
-    while (bytes_remaining != 0) {
-      // byte per usec
-      unsigned int time_usec = (unsigned int)(((double)(bytes_remaining * 8) / uart_bitrate) * 1000000);
-      usleep(time_usec);
-      ioctl(fd_uart, TIOCOUTQ, &bytes_remaining);
-    }
-  }
-
-  {
     ssize_t write_retval = write(fd_uart, buffer, (size_t)read_retval);
 
     FATAL_SYSCALL_ON(write_retval < 0);
@@ -564,9 +549,4 @@ static void driver_uart_process_core(void)
   }
 
   TRACE_FRAME("Driver : flushed frame to uart : ", buffer, (size_t)read_retval);
-
-  // Apply workaround if VCOM is present
-  if (vcom_present) {
-    usleep(1000);
-  }
 }

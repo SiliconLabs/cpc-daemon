@@ -16,6 +16,7 @@
  *
  ******************************************************************************/
 #define _GNU_SOURCE
+
 #include <pthread.h>
 
 #include <stdio.h>
@@ -27,14 +28,16 @@
 #include <errno.h>
 #include <signal.h>
 
+#include "misc/config.h"
+#include "misc/logging.h"
+#include "misc/sleep.h"
+#include "modes/uart_validation.h"
 #include "server_core.h"
 #include "server_core/epoll/epoll.h"
 #include "server_core/server/server.h"
 #include "server_core/core/core.h"
 #include "server_core/system_endpoint/system.h"
 #include "security/security.h"
-#include "misc/logging.h"
-#include "misc/config.h"
 #include "version.h"
 #include "driver/driver_kill.h"
 
@@ -43,8 +46,10 @@
 static bool set_reset_mode_ack = false;
 
 static bool reset_ack = false;
+static bool secondary_version_received = false;
 static bool reset_reason_received = false;
-static bool capabilites_received = false;
+static bool capabilities_received = false;
+static bool rx_capability_received = false;
 static bool protocol_version_received_and_match = false;
 
 static sl_cpc_system_reboot_mode_t pending_mode;
@@ -52,20 +57,19 @@ static sl_cpc_system_reboot_mode_t pending_mode;
 static int kill_eventfd = -1;
 
 static enum {
-  INITIAL_NORMAL_RESET_STATE,
   SET_NORMAL_REBOOT_MODE,
-  WAIT_NORMAL_UNNUMBERED_ACK,
   WAIT_NORMAL_REBOOT_MODE_ACK,
   WAIT_NORMAL_RESET_ACK,
   WAIT_RESET_REASON,
+  WAIT_FOR_CAPABILITIES,
   WAIT_FOR_RX_CAPABILITY,
+  WAIT_FOR_SECONDARY_VERSION,
   WAIT_FOR_PROTOCOL_VERSION,
   RESET_SEQUENCE_DONE
-} reset_sequence_state = INITIAL_NORMAL_RESET_STATE;
+} reset_sequence_state = SET_NORMAL_REBOOT_MODE;
 
 static enum {
   SET_BOOTLOADER_REBOOT_MODE,
-  WAIT_FOR_BOOTLOADER_UNNUMBERED_ACK,
   WAIT_BOOTLOADER_REBOOT_MODE_ACK,
   WAIT_BOOTLOADER_RESET_ACK
 } reboot_into_bootloader_state = SET_BOOTLOADER_REBOOT_MODE;
@@ -77,6 +81,8 @@ static uint32_t rx_capability = 1024;
 #else
 static uint32_t rx_capability = 0;
 #endif
+
+static uint32_t capabilities = 0;
 
 static int recursive_mkdir(const char *dir, const mode_t mode);
 
@@ -250,7 +256,11 @@ pthread_t server_core_init(int fd_socket_driver_core, bool firmware_update)
      * value in place to be able to work . */
     rx_capability = 256;
     server_init();
-    security_init();
+#if defined(ENABLE_ENCRYPTION)
+    if (config_operation_mode != MODE_UART_VALIDATION) {
+      security_init();
+    }
+#endif
   }
 
 #if defined(UNIT_TESTING)
@@ -290,7 +300,7 @@ static void* server_core_thread_func(void* param)
 
   while (1) {
 #if !defined(UNIT_TESTING)
-    if (config_reset_sequence == true) {
+    if ((config_reset_sequence == true) && (firmware_update == false)) {
       process_reset_sequence();
     }
 #endif
@@ -344,7 +354,7 @@ static void property_set_reset_mode_callback(sl_cpc_system_command_handle_t *han
 
     case SL_STATUS_TIMEOUT:
     case SL_STATUS_ABORT:
-      TRACE_RESET("Secondary did not reply to the set reboot mode request. Attempting again..");
+      PRINT_INFO("Failed to connect to secondary.");
       ignore_reset_reason = false; // Don't ignore a secondary that resets
       reset_sequence_state = SET_NORMAL_REBOOT_MODE;
       break;
@@ -385,6 +395,10 @@ void reset_callback(sl_cpc_system_command_handle_t *handle,
 
 static void on_unsolicited_status(sl_cpc_system_status_t status)
 {
+  if (uart_validation_reset_requested(status)) {
+    return;
+  }
+
   if (ignore_reset_reason) {
     ignore_reset_reason = false;
     TRACE_RESET("Ignored reset reason : %u", status);
@@ -416,7 +430,7 @@ static void on_unsolicited_status(sl_cpc_system_status_t status)
       }
 
       /* Wait for logs to be flushed */
-      sleep(1);
+      sleep_s(1);
 
       /* All file descriptors except stdout, stdin and stderr are supposed to be closed automatically with O_CLOEXEC */
 
@@ -432,11 +446,56 @@ static void on_unsolicited_status(sl_cpc_system_status_t status)
 }
 
 #if !defined(UNIT_TESTING)
-static void property_get_rx_capability(sl_cpc_system_command_handle_t *handle,
-                                       sl_cpc_property_id_t property_id,
-                                       void* property_value,
-                                       size_t property_length,
-                                       sl_status_t status)
+static void property_get_capabilities_callback(sl_cpc_system_command_handle_t *handle,
+                                               sl_cpc_property_id_t property_id,
+                                               void* property_value,
+                                               size_t property_length,
+                                               sl_status_t status)
+{
+  (void)handle;
+
+  FATAL_ON(property_id != PROP_CAPABILITIES);
+  FATAL_ON(status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS);
+  FATAL_ON(property_value == NULL || property_length != sizeof(uint32_t));
+
+  capabilities = *((uint32_t *)property_value);
+
+  if (capabilities & CPC_CAPABILITIES_SECURITY_ENDPOINT_MASK) {
+    TRACE_RESET("Received capability : Security endpoint");
+  }
+
+  if (capabilities & CPC_CAPABILITIES_PACKED_ENDPOINT_MASK) {
+    TRACE_RESET("Received capability : Packed endpoint");
+  }
+
+  if (capabilities & CPC_CAPABILITIES_GPIO_ENDPOINT_MASK) {
+    TRACE_RESET("Received capability : GPIO endpoint");
+  }
+
+  if (capabilities & CPC_CAPABILITIES_UART_FLOW_CONTROL_MASK) {
+    TRACE_RESET("Received capability : UART flow control");
+  }
+
+  if ((config_bus == UART) && (config_uart_hardflow != (bool)(capabilities & CPC_CAPABILITIES_UART_FLOW_CONTROL_MASK))) {
+    FATAL("UART flow control configuration mismatch between CPCd (%s) and Secondary (%s)",
+          config_uart_hardflow ? "enabled" : "disabled",
+          (bool)(capabilities & CPC_CAPABILITIES_UART_FLOW_CONTROL_MASK) ? "enabled" : "disabled");
+  }
+
+  if (config_use_encryption != (bool)(capabilities & CPC_CAPABILITIES_SECURITY_ENDPOINT_MASK)) {
+    FATAL("Security configuration mismatch between CPCd (%s) and Secondary (%s)",
+          config_use_encryption ? "enabled" : "disabled",
+          (bool)(capabilities & CPC_CAPABILITIES_SECURITY_ENDPOINT_MASK) ? "enabled" : "disabled");
+  }
+
+  capabilities_received = true;
+}
+
+static void property_get_rx_capability_callback(sl_cpc_system_command_handle_t *handle,
+                                                sl_cpc_property_id_t property_id,
+                                                void* property_value,
+                                                size_t property_length,
+                                                sl_status_t status)
 {
   (void)handle;
 
@@ -445,8 +504,27 @@ static void property_get_rx_capability(sl_cpc_system_command_handle_t *handle,
   FATAL_ON(property_value == NULL || property_length != sizeof(uint16_t));
 
   TRACE_RESET("Received RX capability of %u bytes", *((uint16_t *)property_value));
-  capabilites_received = true;
   rx_capability = *((uint16_t *)property_value);
+  rx_capability_received = true;
+}
+
+static void property_get_secondary_version_callback(sl_cpc_system_command_handle_t *handle,
+                                                    sl_cpc_property_id_t property_id,
+                                                    void* property_value,
+                                                    size_t property_length,
+                                                    sl_status_t status)
+{
+  uint32_t* version = (uint32_t*)property_value;
+  (void) handle;
+
+  if ( (property_id != PROP_SECONDARY_VERSION)
+       || (status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS)
+       || (property_value == NULL || property_length != 3 * sizeof(uint32_t))) {
+    FATAL("Cannot get secondary version (obsolete RCP firmware?)");
+  }
+
+  PRINT_INFO("Secondary is v%d.%d.%d", version[0], version[1], version[2]);
+  secondary_version_received = true;
 }
 
 static void property_get_protocol_version_callback(sl_cpc_system_command_handle_t *handle,
@@ -455,21 +533,18 @@ static void property_get_protocol_version_callback(sl_cpc_system_command_handle_
                                                    size_t property_length,
                                                    sl_status_t status)
 {
-  uint32_t* version = (uint32_t*)property_value;
   (void) handle;
+  uint8_t* version = (uint8_t*)property_value;
 
-  FATAL_ON(property_id != PROP_PROTOCOL_VERSION);
-  FATAL_ON(status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS);
-  FATAL_ON(property_value == NULL || property_length != 3 * sizeof(uint32_t));
-
-  if (version[0] != PROJECT_VER_MAJOR
-      || version[1] != PROJECT_VER_MINOR
-      || version[2] != PROJECT_VER_PATCH) {
-    FATAL("The secondary's version (%d.%d.%d) doesn't match daemon's version(%d.%d.%d)",
-          version[0], version[1], version[2], PROJECT_VER_MAJOR, PROJECT_VER_MINOR, PROJECT_VER_PATCH);
+  if ((property_id != PROP_PROTOCOL_VERSION)
+      || (status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS)
+      || (property_value == NULL || property_length != sizeof(uint8_t))) {
+    FATAL("Cannot get protocol version (obsolete RCP firmware?)");
   }
 
-  PRINT_INFO("Secondary is v%d.%d.%d", version[0], version[1], version[2]);
+  if (*version != PROTOCOL_VERSION) {
+    FATAL("The secondary's protocol version (%d) doesn't match daemon's version (%d)", *version, PROTOCOL_VERSION);
+  }
 
   protocol_version_received_and_match = true;
 }
@@ -479,18 +554,6 @@ static void process_reset_sequence(void)
   switch (reset_sequence_state) {
     case RESET_SEQUENCE_DONE:
       return;
-
-    case INITIAL_NORMAL_RESET_STATE:
-      /* Reset the sequence number on the system endpoint */
-      sl_cpc_system_request_sequence_reset();
-      reset_sequence_state = WAIT_NORMAL_UNNUMBERED_ACK;
-      break;
-
-    case WAIT_NORMAL_UNNUMBERED_ACK:
-      if (sl_cpc_system_received_unnumbered_acknowledgement()) {
-        reset_sequence_state = SET_NORMAL_REBOOT_MODE;
-      }
-      break;
 
     case SET_NORMAL_REBOOT_MODE:
       PRINT_INFO("Connecting to secondary...");
@@ -502,11 +565,12 @@ static void process_reset_sequence(void)
         pending_mode = reboot_mode;
 
         sl_cpc_system_cmd_property_set(property_set_reset_mode_callback,
-                                       0,      /* unlimited retries */
-                                       100000, /* 100ms between retries*/
+                                       1,       /* retry once */
+                                       2000000, /* 2s between retries*/
                                        PROP_BOOTLOADER_REBOOT_MODE,
                                        &reboot_mode,
-                                       sizeof(reboot_mode));
+                                       sizeof(reboot_mode),
+                                       true);
 
         reset_sequence_state = WAIT_NORMAL_REBOOT_MODE_ACK;
 
@@ -540,41 +604,67 @@ static void process_reset_sequence(void)
         reset_ack = false;
 
         TRACE_RESET("Reset request acknowledged");
-        sl_cpc_system_reset_system_endpoint();
       }
       break;
 
     case WAIT_RESET_REASON:
       TRACE_RESET("Waiting for reset reason");
-      if (reset_reason_received == true) {
+      if (reset_reason_received) {
         TRACE_RESET("Reset reason received");
-
-        sl_cpc_system_cmd_property_get(property_get_rx_capability,
+        reset_sequence_state = WAIT_FOR_RX_CAPABILITY;
+        sl_cpc_system_cmd_property_get(property_get_rx_capability_callback,
                                        PROP_RX_CAPABILITY,
                                        5,       /* 5 retries */
-                                       100000); /* 100ms between retries*/
-        reset_sequence_state = WAIT_FOR_RX_CAPABILITY;
+                                       100000,  /* 100ms between retries*/
+                                       true);
       }
       break;
 
     case WAIT_FOR_RX_CAPABILITY:
-      if (capabilites_received == true) {
-        TRACE_RESET("Obtained capabilites");
+      if (rx_capability_received) {
+        TRACE_RESET("Obtained RX capability");
         PRINT_INFO("Connected to secondary");
         reset_sequence_state = WAIT_FOR_PROTOCOL_VERSION;
         sl_cpc_system_cmd_property_get(property_get_protocol_version_callback,
                                        PROP_PROTOCOL_VERSION,
-                                       5,       /* 5 retries */
-                                       100000); /* 100ms between retries*/
+                                       5,      /* 5 retries */
+                                       100000, /* 100ms between retries*/
+                                       true);
       }
       break;
 
     case WAIT_FOR_PROTOCOL_VERSION:
-      if (protocol_version_received_and_match == true) {
-        TRACE_RESET("Matching protocol version with the secondary");
-        server_init();
-        security_init();
+      if (protocol_version_received_and_match) {
+        TRACE_RESET("Matched protocol version with the secondary");
+        reset_sequence_state = WAIT_FOR_CAPABILITIES;
+        sl_cpc_system_cmd_property_get(property_get_capabilities_callback,
+                                       PROP_CAPABILITIES,
+                                       5,       /* 5 retries */
+                                       100000,  /* 100ms between retries*/
+                                       true);
+      }
+      break;
+
+    case WAIT_FOR_CAPABILITIES:
+      if (capabilities_received) {
+        TRACE_RESET("Obtained capabilites");
+        reset_sequence_state = WAIT_FOR_SECONDARY_VERSION;
+        sl_cpc_system_cmd_property_get(property_get_secondary_version_callback,
+                                       PROP_SECONDARY_VERSION,
+                                       5,       /* 5 retries */
+                                       100000,  /* 100ms between retries*/
+                                       true);
+      }
+      break;
+
+    case WAIT_FOR_SECONDARY_VERSION:
+      if (secondary_version_received == true) {
+        TRACE_RESET("Obtained secondary version");
         reset_sequence_state = RESET_SEQUENCE_DONE;
+        server_init();
+#if defined(ENABLE_ENCRYPTION)
+        security_init();
+#endif
         PRINT_INFO("Daemon startup was successful. Waiting for client connections");
       }
       break;
@@ -590,29 +680,25 @@ static void process_reboot_into_bootloader_mode(void)
 {
   switch (reboot_into_bootloader_state) {
     case SET_BOOTLOADER_REBOOT_MODE:
-      /* This sequence can only begin when the reset sequence is completed*/
-      if (reset_sequence_state != RESET_SEQUENCE_DONE) {
-        return;
-      }
-
       /* Send a request to the secondary to set the reboot mode to 'application' */
-      {
-        const sl_cpc_system_reboot_mode_t reboot_mode = REBOOT_BOOTLOADER;
+    {
+      const sl_cpc_system_reboot_mode_t reboot_mode = REBOOT_BOOTLOADER;
 
-        pending_mode = reboot_mode;
+      pending_mode = reboot_mode;
 
-        sl_cpc_system_cmd_property_set(property_set_reset_mode_callback,
-                                       0,      /* unlimited retries */
-                                       100000, /* 100ms between retries*/
-                                       PROP_BOOTLOADER_REBOOT_MODE,
-                                       &reboot_mode,
-                                       sizeof(reboot_mode));
+      sl_cpc_system_cmd_property_set(property_set_reset_mode_callback,
+                                     1,         /* retry once */
+                                     2000000,   /* 2s between retries*/
+                                     PROP_BOOTLOADER_REBOOT_MODE,
+                                     &reboot_mode,
+                                     sizeof(reboot_mode),
+                                     true);
 
-        reboot_into_bootloader_state = WAIT_BOOTLOADER_REBOOT_MODE_ACK;
+      reboot_into_bootloader_state = WAIT_BOOTLOADER_REBOOT_MODE_ACK;
 
-        TRACE_RESET("Bootloader reboot mode sent");
-      }
-      break;
+      TRACE_RESET("Bootloader reboot mode sent");
+    }
+    break;
 
     case WAIT_BOOTLOADER_REBOOT_MODE_ACK:
       if (set_reset_mode_ack == true) {
@@ -658,4 +744,9 @@ static void server_core_cleanup(epoll_private_data_t *private_data)
   TRACE_RESET("Server core cleanup");
 
   pthread_exit(0);
+}
+
+bool server_core_reset_sequence_in_progress(void)
+{
+  return reset_sequence_state != RESET_SEQUENCE_DONE;
 }

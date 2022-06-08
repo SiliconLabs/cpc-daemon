@@ -40,8 +40,7 @@ void security_post_command(sl_cpc_security_command_t command)
   int ret;
 
   if (config_use_encryption == false) {
-    WARN("Tried to send a security command when encryption is disabled");
-    return;
+    FATAL("Tried to send a security command when encryption is disabled");
   }
 
   /* A condition is used in pair with a mutex to check against the condition's predicate

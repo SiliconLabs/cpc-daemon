@@ -22,7 +22,8 @@
 #include "lib/sl_cpc.h"
 #include "misc/sl_status.h"
 
-SL_ENUM(cpcd_exchange_type_t){
+SL_ENUM_GENERIC(cpcd_exchange_type_t, uint8_t)
+{
   EXCHANGE_ENDPOINT_STATUS_QUERY,
   EXCHANGE_OPEN_ENDPOINT_QUERY,
   EXCHANGE_MAX_WRITE_SIZE_QUERY,

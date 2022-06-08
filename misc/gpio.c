@@ -28,6 +28,7 @@
 
 #include "gpio.h"
 #include "logging.h"
+#include "sleep.h"
 
 static int simple_write(const char *filename, const char *data);
 
@@ -55,7 +56,7 @@ static int gpio_export(unsigned int gpio_pin)
   // According to this post on stackexchange, this appears to be some sort of race condition bug.
   // Adding a strategic delay immediately after the export operation solves the problem.
   //https://raspberrypi.stackexchange.com/questions/23162/gpio-value-file-appears-with-wrong-permissions-momentarily
-  usleep(100000);
+  sleep_ms(100);
 
   return ret;
 }

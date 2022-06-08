@@ -16,4 +16,9 @@
  *
  ******************************************************************************/
 
+#ifndef NORMAL_H
+#define NORMAL_H
+
 void run_normal_mode(void);
+
+#endif //NORMAL_H
