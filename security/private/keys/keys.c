@@ -20,6 +20,7 @@
 #include <ctype.h>
 #include <string.h>
 
+#include "mbedtls/version.h"
 #include "mbedtls/gcm.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/sha256.h"
@@ -32,6 +33,18 @@
 #include "security/security.h"
 #include "security/private/keys/keys.h"
 #include "server_core/core/hdlc.h"
+
+// MbedTLS minimal version required
+#define MBEDTLS_VERSION_CHECK (MBEDTLS_VERSION_NUMBER < 0x02070000)
+#if MBEDTLS_VERSION_CHECK
+#error MbedTLS minimal version required >= 2.7.0
+#endif
+
+// MbedTLS backwards compatibility
+#if (MBEDTLS_VERSION_MAJOR == 2)
+#define MBEDTLS_PRIVATE(X) X
+#define mbedtls_sha256 mbedtls_sha256_ret
+#endif
 
 #if !defined(SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE)
 #define SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE 0
@@ -61,6 +74,7 @@ typedef struct {
 
 static nonce_t nonce_primary;
 static nonce_t nonce_secondary;
+static bool security_session_reset_triggered;
 
 #if defined(UNIT_TESTING)
 /*
@@ -138,6 +152,11 @@ static void security_nonce_xfer_finalize(nonce_t *nonce, bool increment)
        */
       if (security_get_state() == SECURITY_STATE_INITIALIZED) {
         /*
+         * Keep track of the endpoint that triggered the endpoint
+         */
+        security_session_reset_triggered = true;
+
+        /*
          * make sure packets on user endpoins are blocked
          * while security session is being reset.
          */
@@ -187,6 +206,16 @@ void security_set_state_disabled(void)
   security_set_state(SECURITY_STATE_DISABLED);
 }
 
+bool security_session_has_reset(void)
+{
+  return security_session_reset_triggered;
+}
+
+void security_session_reset_clear_flag(void)
+{
+  security_session_reset_triggered = false;
+}
+
 mbedtls_ctr_drbg_context* security_keys_get_rng_context(void)
 {
   FATAL_ON(rng_context_initialized == false);
@@ -198,6 +227,9 @@ void security_keys_init(void)
   const int verbose = 0;
   int ret;
   const char app_custom[] = "CPCD custom";
+
+  /* Perform MbedTLS runtime version check */
+  FATAL_ON(MBEDTLS_VERSION_CHECK);
 
   /* Perform an initial self tests */
   FATAL_ON(mbedtls_gcm_self_test(verbose) != 0);
@@ -269,7 +301,7 @@ static void security_keys_init_ecdh(void)
     FATAL("ECDH: Failed to generate public key. ret=%d", ret);
   }
 
-  ret = mbedtls_mpi_write_binary(&our_public_key.X, ecdh_exchange_buffer, sizeof(ecdh_exchange_buffer));
+  ret = mbedtls_mpi_write_binary(&our_public_key.MBEDTLS_PRIVATE(X), ecdh_exchange_buffer, sizeof(ecdh_exchange_buffer));
   if (ret != 0) {
     FATAL("ECDH: Failed to extract public key. ret=%d", ret);
   }
@@ -293,12 +325,12 @@ void security_keys_generate_shared_key(uint8_t *remote_public_key)
   FATAL_SYSCALL_ON(output_string == NULL);
   char * p = output_string;
 
-  ret = mbedtls_mpi_read_binary(&peer_public_key.X, remote_public_key, PUBLIC_KEY_LENGTH_BYTES);
+  ret = mbedtls_mpi_read_binary(&peer_public_key.MBEDTLS_PRIVATE(X), remote_public_key, PUBLIC_KEY_LENGTH_BYTES);
   if (ret != 0) {
     FATAL("ECDH: Failed to extract public key. ret=%d", ret);
   }
 
-  ret = mbedtls_mpi_lset(&peer_public_key.Z, 1);
+  ret = mbedtls_mpi_lset(&peer_public_key.MBEDTLS_PRIVATE(Z), 1);
   if (ret != 0) {
     FATAL("ECDH: Failed to set Z. ret=%d", ret);
   }
@@ -312,7 +344,7 @@ void security_keys_generate_shared_key(uint8_t *remote_public_key)
   mbedtls_mpi_free(&shared_secret);
 
   // Hash and extract first 16 bytes as binding key
-  ret = mbedtls_sha256_ret(sha256_input, PUBLIC_KEY_LENGTH_BYTES, sha256_output, 0);
+  ret = mbedtls_sha256(sha256_input, PUBLIC_KEY_LENGTH_BYTES, sha256_output, 0);
 
   fd = fopen(config_binding_key_file, "w");
   if (fd == NULL) {
@@ -371,10 +403,10 @@ void security_compute_session_key_and_id(uint8_t * random1,
     memcpy(&random3[half_random_len], random2, half_random_len);
 
     /* Both devices will perform SHA256 on Rand-3. */
-    ret = mbedtls_sha256_ret(random3,
-                             sizeof(random3),
-                             sha256_random3,
-                             0); //is not sha224
+    ret = mbedtls_sha256(random3,
+                         sizeof(random3),
+                         sha256_random3,
+                         0); //is not sha224
     FATAL_ON(ret != 0);
 
     /*
@@ -404,10 +436,10 @@ void security_compute_session_key_and_id(uint8_t * random1,
 
     /* Both devices perform SHA256 on RAND-4
      * The resulting 256 bit number is then used as the session key */
-    ret = mbedtls_sha256_ret(random4,
-                             sizeof(random4),
-                             session_key,
-                             0); //is not sha224
+    ret = mbedtls_sha256(random4,
+                         sizeof(random4),
+                         session_key,
+                         0); //is not sha224
     FATAL_ON(ret != 0);
   }
 

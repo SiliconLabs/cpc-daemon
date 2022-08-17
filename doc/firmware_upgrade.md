@@ -29,9 +29,22 @@ name of the firmware upgrade file.
 
     cpcd -c cpcd.conf -f upgrade_image.gbl
 
+It is also possible to initiate a firmware upgrade conditional to a firmware application version with the command line argument `-a` or `--app-version`, followed by a user-defined version.
+
+    cpcd -c cpcd.conf -f upgrade_image.gbl -a 1.0.0
+
+In this case, the firmware must override the following function to implement the application version callback. There are no restrictions on the format as long as it is a null terminated string.
+
+    __WEAK const char* sl_cpc_secondary_app_version(void)
+
+Note that if there is a CPC protocol version mismatch, the firmware upgrade will go through regardless if there is a mismatch or not on the firmware application version.
+
 Once the secondary has rebooted into the bootloader, the CPCd will transfer
-the firmware image to the secondary. When the transfer is complete, the CPCd
-will exit. An exit code of `EXIT_SUCCESS` indicates that the transfer was successful.
+the firmware image to the secondary. When the transfer is complete, the CPCd will exit. An exit code of `EXIT_SUCCESS` indicates that the transfer was successful.
+
+Additionally, restarting the CPCd after a successful firmware upgrade is also possible with the command line argument `-r` or `--restart-cpcd`.
+
+    cpcd -c cpcd.conf -f upgrade_image.gbl -a 1.0.0 -r
 
 # CPCd Configuration
 

@@ -21,7 +21,10 @@
 
 #include "server_core/system_endpoint/system.h"
 
+#include <stdint.h>
+
 void sl_cpc_system_set_pending_connection(int fd);
+bool sl_cpc_system_is_waiting_for_status_reply(void);
 
 void reply_to_closing_endpoint_on_secondary_callback(sl_cpc_system_command_handle_t *handle,
                                                      sl_cpc_property_id_t property_id,

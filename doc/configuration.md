@@ -143,7 +143,7 @@ descriptors. Default is `1024`.
 
 ### Disable Encryption
 
-Optional boolean to disable encryption. Default is `true` (encryption is disabled).
+Optional boolean to disable encryption. Default is `false` (encryption is enabled).
 
     disable_encryption: false
 

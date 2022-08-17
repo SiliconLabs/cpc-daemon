@@ -25,9 +25,15 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+typedef enum {
+  SERVER_CORE_MODE_NORMAL,
+  SERVER_CORE_MODE_FIRMWARE_BOOTLOADER,
+  SERVER_CORE_MODE_FIRMWARE_RESET
+} server_core_mode_t;
+
 uint32_t server_core_get_secondary_rx_capability(void);
 
-pthread_t server_core_init(int fd_socket_driver_core, bool firmware_update);
+pthread_t server_core_init(int fd_socket_driver_core, server_core_mode_t mode);
 
 void server_core_kill_signal(void);
 

@@ -74,18 +74,24 @@ static void driver_ezsp_spi_open(const char   *device,
                                  unsigned int mode,
                                  unsigned int bit_per_word,
                                  unsigned int speed,
-                                 unsigned int cs_gpio_number,
-                                 unsigned int irq_gpio_number,
-                                 unsigned int wake_gpio_number);
+                                 const char *cs_gpio_chip,
+                                 unsigned int cs_gpio_pin,
+                                 const char *irq_gpio_chip,
+                                 unsigned int irq_gpio_pin,
+                                 const char *wake_gpio_chip,
+                                 unsigned int wake_gpio_pin);
 
 sl_status_t send_firmware(const char   * image_file,
                           const char   *device,
                           unsigned int mode,
                           unsigned int bit_per_word,
                           unsigned int speed,
-                          unsigned int cs_gpio,
-                          unsigned int irq_gpio,
-                          unsigned int wake_gpio)
+                          const char *cs_gpio_chip,
+                          unsigned int cs_gpio_pin,
+                          const char *irq_gpio_chip,
+                          unsigned int irq_gpio_pin,
+                          const char *wake_gpio_chip,
+                          unsigned int wake_gpio_pin)
 {
   struct stat stat;
   int ret = 0;
@@ -114,9 +120,12 @@ sl_status_t send_firmware(const char   * image_file,
                        mode,
                        bit_per_word,
                        speed,
-                       cs_gpio,
-                       irq_gpio,
-                       wake_gpio);
+                       cs_gpio_chip,
+                       cs_gpio_pin,
+                       irq_gpio_chip,
+                       irq_gpio_pin,
+                       wake_gpio_chip,
+                       wake_gpio_pin);
 
   // load file from fs and prepare first frame
   image_file_fd = open(image_file, O_RDONLY | O_CLOEXEC);
@@ -232,9 +241,12 @@ static void driver_ezsp_spi_open(const char   *device,
                                  unsigned int mode,
                                  unsigned int bit_per_word,
                                  unsigned int speed,
-                                 unsigned int cs_gpio_number,
-                                 unsigned int irq_gpio_number,
-                                 unsigned int wake_gpio_number)
+                                 const char *cs_gpio_chip,
+                                 unsigned int cs_gpio_pin,
+                                 const char *irq_gpio_chip,
+                                 unsigned int irq_gpio_pin,
+                                 const char *wake_gpio_chip,
+                                 unsigned int wake_gpio_pin)
 {
   int ret = 0;
   int fd;
@@ -266,19 +278,15 @@ static void driver_ezsp_spi_open(const char   *device,
   spi_dev.spi_dev_descriptor = fd;
 
   // Setup CS gpio
-  FATAL_ON(gpio_init(&spi_dev.cs_gpio, cs_gpio_number) < 0);
-  FATAL_ON(gpio_direction(spi_dev.cs_gpio, OUT) < 0);
-  FATAL_ON(gpio_write(spi_dev.cs_gpio, 1) < 0);
+  FATAL_ON(gpio_init(&spi_dev.cs_gpio, cs_gpio_chip, cs_gpio_pin, OUT, NO_EDGE) < 0);
+  FATAL_ON(gpio_write(&spi_dev.cs_gpio, 1) < 0);
 
   // Setup WAKE gpio
-  FATAL_ON(gpio_init(&spi_dev.wake_gpio, wake_gpio_number) < 0);
-  FATAL_ON(gpio_direction(spi_dev.wake_gpio, OUT) < 0);
-  FATAL_ON(gpio_write(spi_dev.wake_gpio, 1) < 0);
+  FATAL_ON(gpio_init(&spi_dev.wake_gpio, wake_gpio_chip, wake_gpio_pin, OUT, NO_EDGE) < 0);
+  FATAL_ON(gpio_write(&spi_dev.wake_gpio, 1) < 0);
 
   // Setup IRQ gpio
-  FATAL_ON(gpio_init(&spi_dev.irq_gpio, irq_gpio_number) < 0);
-  FATAL_ON(gpio_direction(spi_dev.irq_gpio, IN) < 0);
-  FATAL_ON(gpio_setedge(spi_dev.irq_gpio, FALLING) < 0);
+  FATAL_ON(gpio_init(&spi_dev.irq_gpio, irq_gpio_chip, irq_gpio_pin, NO_DIRECTION, FALLING) < 0);
 }
 
 static int read_until_end_of_frame(void)
@@ -323,7 +331,7 @@ static bool wait_irq_line(void)
 {
   int timeout = 10;
 
-  while ((gpio_read(spi_dev.irq_gpio) != 0)
+  while ((gpio_read(&spi_dev.irq_gpio) != 0)
          && timeout-- > 0) {
     sleep_ms(10);
   }
@@ -453,7 +461,7 @@ static void cs_assert(void)
 {
   int ret = 0;
 
-  ret = gpio_write(spi_dev.cs_gpio, 0);
+  ret = gpio_write(&spi_dev.cs_gpio, 0);
   FATAL_SYSCALL_ON(ret < 0);
 }
 
@@ -461,7 +469,7 @@ static void cs_deassert(void)
 {
   int ret = 0;
 
-  ret = gpio_write(spi_dev.cs_gpio, 1);
+  ret = gpio_write(&spi_dev.cs_gpio, 1);
   FATAL_SYSCALL_ON(ret < 0);
 
   sleep_ms(1);

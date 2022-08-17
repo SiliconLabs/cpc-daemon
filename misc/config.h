@@ -49,51 +49,63 @@ typedef enum {
   MODE_UART_VALIDATION
 }operation_mode_t;
 
-extern bus_t         config_bus;
+extern bus_t              config_bus;
 
-extern int           config_stdout_tracing;
-extern int           config_file_tracing;
-extern int           config_lttng_tracing;
-extern bool          config_enable_frame_trace;
+extern int                config_stdout_tracing;
+extern int                config_file_tracing;
+extern int                config_lttng_tracing;
+extern bool               config_enable_frame_trace;
 
-extern bool          config_use_noop_keep_alive;
-extern bool          config_use_encryption;
+extern bool               config_use_noop_keep_alive;
+extern bool               config_use_encryption;
 
-extern const char*   config_traces_folder;
+extern const char*        config_traces_folder;
 
-extern unsigned int  config_uart_baudrate;
-extern bool          config_uart_hardflow;
-extern const char*   config_uart_file;
+extern unsigned int       config_uart_baudrate;
+extern bool               config_uart_hardflow;
+extern const char*        config_uart_file;
 
-extern const char*   config_board_controller_ip_addr;
-extern bool          config_board_controller;
+extern const char*        config_board_controller_ip_addr;
+extern bool               config_board_controller;
 
-extern const char*   config_spi_file;
-extern unsigned int  config_spi_bitrate;
-extern unsigned int  config_spi_mode;
-extern unsigned int  config_spi_bit_per_word;
-extern unsigned int  config_spi_cs_pin;
-extern unsigned int  config_spi_irq_pin;
+extern const char*        config_spi_file;
+extern unsigned int       config_spi_bitrate;
+extern unsigned int       config_spi_mode;
+extern unsigned int       config_spi_bit_per_word;
+extern const char*        config_spi_cs_chip;
+extern unsigned int       config_spi_cs_pin;
+extern const char*        config_spi_irq_chip;
+extern unsigned int       config_spi_irq_pin;
 
-extern bool          config_recovery_enabled;
-extern unsigned int  config_wake_pin;
-extern unsigned int  config_reset_pin;
-extern bool          config_connect_to_bootloader;
-extern bool          config_enter_bootloader;
+extern const char*        config_fu_wake_chip;
+extern unsigned int       config_fu_spi_wake_pin;
+extern const char*        config_fu_reset_chip;
+extern unsigned int       config_fu_spi_reset_pin;
+extern bool               config_fu_recovery_enabled;
+extern bool               config_fu_connect_to_bootloader;
+extern bool               config_fu_enter_bootloader;
+extern const char*        config_fu_file;
+extern bool               config_restart_daemon;
+
+extern const char*        config_application_version;
+
+extern bool               config_print_secondary_versions_and_exit;
 
 extern const char* const  config_socket_folder;
-extern const char*   config_instance_name;
+extern const char*        config_instance_name;
 
-extern bool          config_reset_sequence;
+extern bool               config_reset_sequence;
 
-extern operation_mode_t config_operation_mode;
+extern operation_mode_t   config_operation_mode;
 
-extern const char*   config_binding_key_file;
-extern const char*   config_fu_file;
-extern const char*   config_uart_validation_test_option;
+extern const char*        config_binding_key_file;
 
-extern long          config_stats_interval;
+extern const char*        config_uart_validation_test_option;
+
+extern long               config_stats_interval;
 
 void config_init(int argc, char *argv[]);
+void config_restart_cpcd();
+void config_restart_cpcd_without_fw_update_args(void);
 
 #endif //CONFIG_H

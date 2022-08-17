@@ -17,6 +17,9 @@ Each API function of the library are documented in the `sl_cpc.h` header file.
 ![](doc/CPC_Diagram.svg "CPCD Diagram")
 
 ## CPCd Dependencies
+CPCd is delivered as a [CMake](https://cmake.org) project. The minimum version of CMake required to
+generate the project is `3.10`.
+
 CPCd requires MbedTLS to encrypt the endpoints. Minimal version required for Mbed-TLS is *2.7.0*.
 `libmbedtls-dev` must be installed to compile from sources.
 For development purposes, encryption can be disabled by providing `ENABLE_ENCRYPTION=FALSE`

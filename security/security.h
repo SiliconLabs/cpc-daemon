@@ -88,4 +88,8 @@ void security_drop_incoming_packet(void);
 
 size_t security_encrypt_get_extra_buffer_size(void);
 
+bool security_session_has_reset(void);
+
+void security_session_reset_clear_flag(void);
+
 #endif //SECURITY_H

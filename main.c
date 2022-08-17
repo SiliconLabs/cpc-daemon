@@ -54,18 +54,20 @@ pthread_t server_core_thread = 0;
 pthread_t security_thread = 0;
 
 static int main_crash_eventfd;
-static int main_gracefull_exit_signalfd;
-static int main_wait_crash_or_gracefull_exit_epoll;
+static int main_graceful_exit_eventfd;
+static int main_graceful_exit_signalfd;
+static int main_wait_crash_or_graceful_exit_epoll;
 
 static int exit_status = EXIT_SUCCESS;
 
 /* Global copy of argv to be able to restart the daemon with the same arguments. */
 char **argv_g = 0;
+int argc_g = 0;
 
 #define BT_BUF_SIZE 100
 
-__attribute__((noreturn)) void signal_graceful_exit(void);
-void main_wait_crash_or_gracefull_exit(void);
+__attribute__((noreturn)) void software_graceful_exit(void);
+void main_wait_crash_or_graceful_exit(void);
 
 static void segv_handler(int sig)
 {
@@ -96,6 +98,7 @@ static void segv_handler(int sig)
 
 int main(int argc, char *argv[])
 {
+  argc_g = argc;
   argv_g = argv;
 
   main_thread = pthread_self();
@@ -132,26 +135,36 @@ int main(int argc, char *argv[])
                                    EFD_CLOEXEC);
       FATAL_ON(main_crash_eventfd == -1);
 
-      main_gracefull_exit_signalfd = signalfd(-1, &mask, SFD_CLOEXEC);
-      FATAL_ON(main_gracefull_exit_signalfd == -1);
+      main_graceful_exit_eventfd = eventfd(0, //Start with 0 value
+                                           EFD_CLOEXEC);
+      FATAL_ON(main_graceful_exit_eventfd == -1);
+
+      main_graceful_exit_signalfd = signalfd(-1, &mask, SFD_CLOEXEC);
+      FATAL_ON(main_graceful_exit_signalfd == -1);
     }
 
     /* Setup epoll for those fds */
     {
       struct epoll_event event = { .events = EPOLLIN };
 
-      main_wait_crash_or_gracefull_exit_epoll = epoll_create1(EPOLL_CLOEXEC);
-      FATAL_SYSCALL_ON(main_wait_crash_or_gracefull_exit_epoll < 0);
+      main_wait_crash_or_graceful_exit_epoll = epoll_create1(EPOLL_CLOEXEC);
+      FATAL_SYSCALL_ON(main_wait_crash_or_graceful_exit_epoll < 0);
 
-      ret = epoll_ctl(main_wait_crash_or_gracefull_exit_epoll,
+      ret = epoll_ctl(main_wait_crash_or_graceful_exit_epoll,
                       EPOLL_CTL_ADD,
                       main_crash_eventfd,
                       &event);
       FATAL_SYSCALL_ON(ret < 0);
 
-      ret = epoll_ctl(main_wait_crash_or_gracefull_exit_epoll,
+      ret = epoll_ctl(main_wait_crash_or_graceful_exit_epoll,
                       EPOLL_CTL_ADD,
-                      main_gracefull_exit_signalfd,
+                      main_graceful_exit_eventfd,
+                      &event);
+      FATAL_SYSCALL_ON(ret < 0);
+
+      ret = epoll_ctl(main_wait_crash_or_graceful_exit_epoll,
+                      EPOLL_CTL_ADD,
+                      main_graceful_exit_signalfd,
                       &event);
       FATAL_SYSCALL_ON(ret < 0);
     }
@@ -163,8 +176,7 @@ int main(int argc, char *argv[])
 
   PRINT_INFO("[CPCd v%s] [Library API v%d] [RCP Protocol v%d]", PROJECT_VER, LIBRARY_API_VERSION, PROTOCOL_VERSION);
   PRINT_INFO("Git commit: %s / branch: %s", GIT_SHA1, GIT_REFSPEC);
-
-  PRINT_INFO("Reading configuration file");
+  PRINT_INFO("Sources hash: %s", SOURCES_HASH);
 
   config_init(argc, argv);
 
@@ -254,13 +266,13 @@ __attribute__((noreturn)) static void exit_daemon(void)
   exit(exit_status);
 }
 
-void main_wait_crash_or_gracefull_exit(void)
+void main_wait_crash_or_graceful_exit(void)
 {
   int event_count;
   struct epoll_event events;
 
   do {
-    event_count = epoll_wait(main_wait_crash_or_gracefull_exit_epoll,
+    event_count = epoll_wait(main_wait_crash_or_graceful_exit_epoll,
                              &events,
                              1, //only one event
                              -1); //no timeout
@@ -288,7 +300,7 @@ __attribute__((noreturn)) void signal_crash(void)
   pthread_exit(0);
 }
 
-__attribute__((noreturn)) void signal_graceful_exit(void)
+__attribute__((noreturn)) void software_graceful_exit(void)
 {
   const uint64_t event_value = 1; //doesn't matter what it is
 
@@ -299,7 +311,7 @@ __attribute__((noreturn)) void signal_graceful_exit(void)
   if (pthread_self() == main_thread) {
     exit_daemon();
   } else {
-    write(main_gracefull_exit_signalfd, &event_value, sizeof(event_value));
+    write(main_graceful_exit_eventfd, &event_value, sizeof(event_value));
   }
 
   pthread_exit(0);

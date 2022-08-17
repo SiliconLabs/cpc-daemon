@@ -21,7 +21,6 @@
 
 #define _GNU_SOURCE
 #include <pthread.h>
-
 #include <stdbool.h>
 #include "misc/gpio.h"
 
@@ -31,7 +30,7 @@ typedef struct {
   gpio_t cs_gpio;
   gpio_t irq_gpio;
   gpio_t wake_gpio;
-}cpc_spi_dev_t;
+} cpc_spi_dev_t;
 
 /*
  * Initialize the spi driver. Crashes the app if the init fails.
@@ -43,7 +42,10 @@ pthread_t driver_spi_init(int *fd_to_core,
                           unsigned int mode,
                           unsigned int bit_per_word,
                           unsigned int speed,
-                          unsigned int cs_gpio,
-                          unsigned int irq_gpio,
-                          unsigned int wake_gpio);
+                          const char *cs_gpio_chip,
+                          unsigned int cs_gpio_pin,
+                          const char *irq_gpio_chip,
+                          unsigned int irq_gpio_pin,
+                          const char *wake_gpio_chip,
+                          unsigned int wake_gpio_pin);
 #endif//DRIVER_SPI_H

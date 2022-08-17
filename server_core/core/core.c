@@ -69,11 +69,16 @@ core_debug_counters_t secondary_core_debug_counters;
  ***************************  LOCAL VARIABLES   ********************************
  ******************************************************************************/
 
-static int               driver_sock_fd;
-static int               stats_timer_fd;
-static sl_cpc_endpoint_t core_endpoints[256];
-static sl_slist_node_t   *transmit_queue = NULL;
-static sl_slist_node_t   *pending_on_security_ready_queue = NULL;
+static int                  driver_sock_fd;
+static int                  stats_timer_fd;
+static sl_cpc_endpoint_t    core_endpoints[256];
+static sl_slist_node_t      *transmit_queue = NULL;
+static sl_slist_node_t      *pending_on_security_ready_queue = NULL;
+static epoll_private_data_t *core_stats_private_data = NULL;
+
+#if defined(ENABLE_ENCRYPTION)
+static bool security_session_last_packet_acked = false;
+#endif
 
 /*******************************************************************************
  **************************   LOCAL FUNCTIONS   ********************************
@@ -107,6 +112,9 @@ static void core_push_data_to_server(uint8_t ep_id, const void *data, size_t dat
 
 static bool security_is_ready(void);
 static sl_status_t should_encrypt_frame(sl_cpc_buffer_handle_t *frame, bool *encrypt);
+#if defined(ENABLE_ENCRYPTION)
+static bool should_decrypt_frame(sl_cpc_endpoint_t *endpoint, uint16_t payload_len);
+#endif
 static void core_fetch_secondary_debug_counters(epoll_private_data_t *event_private_data);
 static void security_reset_buffer_handle(sl_cpc_buffer_handle_t *handle);
 static void endpoint_reset_encrypted_handles(sl_cpc_endpoint_t *endpoint);
@@ -256,14 +264,21 @@ void core_init(int driver_fd)
 
     /* Setup epoll */
     {
-      epoll_private_data_t* private_data = (epoll_private_data_t*) malloc(sizeof(epoll_private_data_t));
-      FATAL_SYSCALL_ON(private_data == NULL);
+      core_stats_private_data = (epoll_private_data_t*) malloc(sizeof(epoll_private_data_t));
+      FATAL_SYSCALL_ON(core_stats_private_data == NULL);
 
-      private_data->callback = core_fetch_secondary_debug_counters;
-      private_data->file_descriptor = stats_timer_fd;
+      core_stats_private_data->callback = core_fetch_secondary_debug_counters;
+      core_stats_private_data->file_descriptor = stats_timer_fd;
 
-      epoll_register(private_data);
+      epoll_register(core_stats_private_data);
     }
+  }
+}
+
+void core_cleanup(void)
+{
+  if (config_stats_interval > 0) {
+    free(core_stats_private_data);
   }
 }
 
@@ -464,23 +479,7 @@ static void core_process_rx_i_frame(frame_t *rx_frame)
   uint8_t  seq     = hdlc_get_seq(control);
 
 #if defined(ENABLE_ENCRYPTION)
-  /*
-   * In normal mode of operation, security_state is set to INITIALIZED and
-   * packets are decrypted below if they have a non-zero length. When the
-   * security session is reset (for instance because the daemon sent a packet
-   * that triggered an overflow), the secondary can still reply with encrypted
-   * packets before it detects on its side that the security session should be
-   * reset. So if packets are received while the state is RESETTING, we should
-   * try to decrypt them.
-   */
-  sl_cpc_security_state_t security_state = security_get_state();
-  bool security_ready_to_decrypt =
-    (security_state == SECURITY_STATE_INITIALIZED
-     || security_state == SECURITY_STATE_RESETTING);
-
-  if (security_ready_to_decrypt
-      && endpoint->id != SL_CPC_ENDPOINT_SECURITY
-      && rx_frame_payload_length > 0) {
+  if (should_decrypt_frame(endpoint, rx_frame_payload_length)) {
     uint16_t tag_len = (uint16_t)security_encrypt_get_extra_buffer_size();
     uint8_t *output;
     sl_status_t status;
@@ -609,7 +608,7 @@ static void core_process_rx_s_frame(frame_t *rx_frame)
           fatal_error = true;
           new_state = SL_CPC_STATE_ERROR_SECURITY_INCIDENT;
           TRACE_ENDPOINT_RXD_REJECT_SECURITY_ISSUE(endpoint);
-          WARN("Security issue on endpoint #%d, is encryption enabled ? ", endpoint->id);
+          WARN("Security issue on endpoint #%d", endpoint->id);
           break;
 
         case HDLC_REJECT_UNREACHABLE_ENDPOINT:
@@ -1168,6 +1167,12 @@ static void process_ack(sl_cpc_endpoint_t *endpoint, uint8_t ack)
       sl_cpc_system_cmd_poll_acknowledged(frame->plaintext_data);
     }
 
+#if defined(ENABLE_ENCRYPTION)
+    if (frame->security_session_last_packet) {
+      security_session_last_packet_acked = true;
+    }
+#endif
+
     // If the frame is encrypted, plaintext_data is not NULL and points to
     // a different buffer than data.
     if (frame->plaintext_data != frame->data) {
@@ -1490,6 +1495,12 @@ static bool core_process_tx_queue(void)
       return false;
     }
 
+    frame->security_session_last_packet = security_session_has_reset();
+    security_session_reset_clear_flag();
+    if (frame->security_session_last_packet) {
+      security_session_last_packet_acked = false;
+    }
+
     /*
      * Upon successful encryption, swap plaintext buffer with the encrypted one
      * and update fcs.
@@ -1704,6 +1715,42 @@ sl_status_t should_encrypt_frame(sl_cpc_buffer_handle_t *frame, bool *encrypt)
 #endif
 }
 
+#if defined(ENABLE_ENCRYPTION)
+static bool should_decrypt_frame(sl_cpc_endpoint_t *endpoint, uint16_t payload_len)
+{
+  /*
+   * In normal mode of operation, security_state is set to INITIALIZED and
+   * packets are decrypted below if they have a non-zero length. When the
+   * security session is reset (for instance because the daemon sent a packet
+   * that triggered an overflow), the secondary can still reply with encrypted
+   * packets before it detects on its side that the security session should be
+   * reset. So if packets are received while the state is RESETTING, we should
+   * try to decrypt them.
+   */
+  sl_cpc_security_state_t security_state = security_get_state();
+
+  if (security_state != SECURITY_STATE_INITIALIZED
+      && security_state != SECURITY_STATE_RESETTING) {
+    return false;
+  }
+
+  if (payload_len == 0) {
+    return false;
+  }
+
+  if (endpoint->id == SL_CPC_ENDPOINT_SECURITY) {
+    return false;
+  }
+
+  if (security_state == SECURITY_STATE_RESETTING
+      && security_session_last_packet_acked == true) {
+    return false;
+  } else {
+    return true;
+  }
+}
+#endif
+
 static bool security_is_ready(void)
 {
 #if !defined(ENABLE_ENCRYPTION)
@@ -1736,6 +1783,8 @@ static void security_reset_buffer_handle(sl_cpc_buffer_handle_t *handle)
     /* the previous BUG_ON would catch an underflow here */
     handle->data_length = (uint16_t)(handle->data_length - tag_length);
   }
+#else
+  (void)handle;
 #endif
 }
 
