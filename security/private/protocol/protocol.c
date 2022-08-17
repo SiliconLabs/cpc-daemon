@@ -22,6 +22,7 @@
 #include "misc/logging.h"
 #include "misc/sl_status.h"
 #include "misc/sleep.h"
+#include "server_core/system_endpoint/system.h"
 #include "security/private/thread/security_thread.h"
 #include "security/private/protocol/protocol.h"
 #include "security/private/keys/keys.h"
@@ -263,6 +264,39 @@ void security_exchange_plain_text_binding_key(uint8_t* const binding_key)
   exit(0);
 }
 
+static void security_property_get_state_callback(sl_cpc_system_command_handle_t *handle,
+                                                 sl_cpc_property_id_t property_id,
+                                                 void* property_value,
+                                                 size_t property_length,
+                                                 sl_status_t status)
+{
+  (void)handle;
+  (void)property_value;
+
+  // The security state of the secondary is not currently used.
+  // By receiving a response from the property get command we validate
+  // that the link is encrypted because it was sent as an I-Frame
+
+  // Secondary prior to v4.1.1 will return property_value STATUS_UNIMPLEMENTED
+  // combined with property_id PROP_LAST_STATUS
+  FATAL_ON(property_id != PROP_SECURITY_STATE && property_id != PROP_LAST_STATUS);
+
+  if (status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS) {
+    FATAL("Failed to get security state on the remote. Possible binding key mismatch!");
+  }
+
+  FATAL_ON(property_length != sizeof(uint32_t));
+}
+
+static void security_fetch_remote_security_state(void)
+{
+  sl_cpc_system_cmd_property_get(security_property_get_state_callback,
+                                 PROP_SECURITY_STATE,
+                                 1,
+                                 1000000, // 1 second timeout
+                                 false);  // Must be an i-frame to validate the encrypted link
+}
+
 void security_initialize_session(void)
 {
   int ret;
@@ -282,7 +316,7 @@ void security_initialize_session(void)
   status = security_send_session_init_request(random1, &protocol_response);
 
   if (status != SL_STATUS_OK) {
-    WARN("Sending session init request failed.");
+    FATAL("Sending session init request failed.");
     need_reconnect = true;
     return;
   }
@@ -290,7 +324,7 @@ void security_initialize_session(void)
   session_init_response = (session_init_response_t*) protocol_response.payload;
 
   if (session_init_response->status != SL_STATUS_OK) {
-    WARN("The secondary failed to initialize its session");
+    FATAL("The secondary failed to initialize its session");
     need_reconnect = true;
     return;
   }
@@ -302,4 +336,8 @@ void security_initialize_session(void)
   security_session_initialized = true;
 
   TRACE_SECURITY("Session initialized");
+
+#ifndef UNIT_TESTING
+  security_fetch_remote_security_state();
+#endif
 }

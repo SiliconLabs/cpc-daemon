@@ -29,7 +29,7 @@
 extern pthread_t driver_thread;
 extern pthread_t server_core_thread;
 
-void main_wait_crash_or_gracefull_exit(void);
+void main_wait_crash_or_graceful_exit(void);
 
 void run_normal_mode(void)
 {
@@ -45,15 +45,18 @@ void run_normal_mode(void)
                                       config_spi_mode,
                                       config_spi_bit_per_word,
                                       config_spi_bitrate,
+                                      config_spi_cs_chip,
                                       config_spi_cs_pin,
+                                      config_spi_irq_chip,
                                       config_spi_irq_pin,
-                                      config_wake_pin);
+                                      config_fu_wake_chip,
+                                      config_fu_spi_wake_pin);
     } else {
       BUG();
     }
   }
 
-  server_core_thread = server_core_init(fd_socket_driver_core, false);
+  server_core_thread = server_core_init(fd_socket_driver_core, SERVER_CORE_MODE_NORMAL);
 
 #if defined(ENABLE_ENCRYPTION)
   if (config_use_encryption == true) {
@@ -61,5 +64,5 @@ void run_normal_mode(void)
   }
 #endif
 
-  main_wait_crash_or_gracefull_exit();
+  main_wait_crash_or_graceful_exit();
 }

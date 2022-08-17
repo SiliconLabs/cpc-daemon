@@ -322,7 +322,7 @@ int driver_uart_open(const char *device, unsigned int baudrate, bool hardflow)
     unsigned int bc_baudrate;
     bool bc_flowcontrol;
 
-    TRACE("Fetching Board Controller (%s) configuration...", config_board_controller_ip_addr);
+    TRACE_DRIVER("Fetching Board Controller (%s) configuration...", config_board_controller_ip_addr);
     board_controller_get_config_vcom(config_board_controller_ip_addr, &bc_baudrate, &bc_flowcontrol);
 
     // Allow a baudrate error (determined on the board controller firmware to be 2% of the configured baudrate)
@@ -330,7 +330,7 @@ int driver_uart_open(const char *device, unsigned int baudrate, bool hardflow)
     if (((unsigned int)(abs((int)bc_baudrate - (int)config_uart_baudrate)) > baudrate_error) || bc_flowcontrol != config_uart_hardflow) {
       FATAL("FAILURE : Host (Baudrate: %d, Flow control: %s), Board Controller (Baudrate: %d, Flow control: %s)", config_uart_baudrate, config_uart_hardflow == 1 ? "True" : "False", bc_baudrate, bc_flowcontrol  == 1 ? "True" : "False");
     } else {
-      TRACE("SUCCESS : Host (Baudrate: %d, Flow control: %s), Board Controller (Baudrate: %d, Flow control: %s)", config_uart_baudrate, config_uart_hardflow  == 1 ? "True" : "False", bc_baudrate, bc_flowcontrol  == 1 ? "True" : "False");
+      TRACE_DRIVER("SUCCESS : Host (Baudrate: %d, Flow control: %s), Board Controller (Baudrate: %d, Flow control: %s)", config_uart_baudrate, config_uart_hardflow  == 1 ? "True" : "False", bc_baudrate, bc_flowcontrol  == 1 ? "True" : "False");
     }
   }
 

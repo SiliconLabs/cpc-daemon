@@ -89,6 +89,7 @@ static volatile bool gracefully_exit = false;
 static int stats_timer_fd;
 
 typedef struct {
+  FILE            *file;
   int             fd;
   uint8_t*        buffer;
   volatile size_t buffer_size;
@@ -108,6 +109,8 @@ static async_logger_t stdout_logger;
 
 static pthread_t file_logger_thread;
 static pthread_t stdout_logger_thread;
+
+static epoll_private_data_t* logging_private_data;
 
 static void* async_logger_thread_func(void* param);
 
@@ -163,7 +166,6 @@ static void stdout_logging_init(void)
 static void file_logging_init(void)
 {
   int ret;
-  FILE * file;
   struct statfs statfs_buf;
 
   ret = mkdir(config_traces_folder, 0700);
@@ -199,13 +201,13 @@ static void file_logging_init(void)
     /* Make sure the path fitted entirely in the struct's static buffer */
     NO_LOGGING_FATAL_SYSCALL_ON(nchars < 0 || (size_t) nchars >= sizeof(buf));
 
-    file = fopen(buf, "w+");
-    NO_LOGGING_FATAL_SYSCALL_ON(file == NULL);
+    file_logger.file = fopen(buf, "w+");
+    NO_LOGGING_FATAL_SYSCALL_ON(file_logger.file == NULL);
 
     PRINT_INFO("Logging to file enabled in file %s.", buf);
   }
 
-  file_logger.fd = file->_fileno;
+  file_logger.fd = file_logger.file->_fileno;
 
   ret = pthread_create(&file_logger_thread,
                        NULL,
@@ -314,6 +316,11 @@ static void* async_logger_thread_func(void* param)
         /* Dont check for 'ret' overflow, we know 256 bytes was sufficient. */
         (void)write(logger->fd, buf, (size_t)ret);
         fsync(logger->fd);
+        if (logger->fd != STDOUT_FILENO) {
+          ret = fclose(logger->file);
+          FATAL_ON(ret != 0);
+        }
+        free(logger->buffer);
         pthread_exit(NULL);
       } else {
         /* We have timed out, and there's not even a single byte of logging data available.
@@ -486,13 +493,13 @@ void init_stats_logging(void)
 
   /* Setup epoll */
   {
-    epoll_private_data_t* private_data = (epoll_private_data_t*) malloc(sizeof(epoll_private_data_t));
-    FATAL_ON(private_data == NULL);
+    logging_private_data = (epoll_private_data_t*) malloc(sizeof(epoll_private_data_t));
+    FATAL_ON(logging_private_data == NULL);
 
-    private_data->callback = logging_print_stats;
-    private_data->file_descriptor = stats_timer_fd;
+    logging_private_data->callback = logging_print_stats;
+    logging_private_data->file_descriptor = stats_timer_fd;
 
-    epoll_register(private_data);
+    epoll_register(logging_private_data);
   }
 }
 
@@ -514,6 +521,8 @@ void logging_kill(void)
     pthread_cond_signal(&file_logger.condition);
     pthread_join(file_logger_thread, NULL);
   }
+
+  free(logging_private_data);
 }
 
 /* Prints the time "hh:mm:ss:mss" or "time error" and returns the number of chars written.

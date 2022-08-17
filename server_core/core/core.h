@@ -51,6 +51,8 @@
 
 void core_init(int driver_fd);
 
+void core_cleanup(void);
+
 void core_open_endpoint(uint8_t endpoit_number, uint8_t flags, uint8_t tx_window_size);
 
 void core_process_transmit_queue(void);
@@ -139,6 +141,9 @@ typedef struct {
   uint8_t control;
   uint8_t address;
   sl_cpc_endpoint_t *endpoint;
+#if defined(ENABLE_ENCRYPTION)
+  bool security_session_last_packet;
+#endif
 } sl_cpc_buffer_handle_t;
 
 typedef struct {

@@ -43,14 +43,18 @@
 
 #define MAX_EPOLL_EVENTS 1
 
+char *server_core_secondary_app_version = NULL;
+uint8_t server_core_secondary_protocol_version;
+
 static bool set_reset_mode_ack = false;
 
 static bool reset_ack = false;
-static bool secondary_version_received = false;
+static bool secondary_cpc_version_received = false;
+static bool secondary_app_version_received_or_not_available = false;
 static bool reset_reason_received = false;
 static bool capabilities_received = false;
 static bool rx_capability_received = false;
-static bool protocol_version_received_and_match = false;
+static bool protocol_version_received = false;
 
 static sl_cpc_system_reboot_mode_t pending_mode;
 
@@ -63,7 +67,8 @@ static enum {
   WAIT_RESET_REASON,
   WAIT_FOR_CAPABILITIES,
   WAIT_FOR_RX_CAPABILITY,
-  WAIT_FOR_SECONDARY_VERSION,
+  WAIT_FOR_SECONDARY_CPC_VERSION,
+  WAIT_FOR_SECONDARY_APP_VERSION,
   WAIT_FOR_PROTOCOL_VERSION,
   RESET_SEQUENCE_DONE
 } reset_sequence_state = SET_NORMAL_REBOOT_MODE;
@@ -84,14 +89,14 @@ static uint32_t rx_capability = 0;
 
 static uint32_t capabilities = 0;
 
-static int recursive_mkdir(const char *dir, const mode_t mode);
+static int recursive_mkdir(const char *dir, size_t len, const mode_t mode);
 
 static void on_unsolicited_status(sl_cpc_system_status_t status);
 
 static void* server_core_thread_func(void* param);
 
 #if !defined(UNIT_TESTING)
-static void process_reset_sequence(void);
+static void process_reset_sequence(bool firmware_reset_mode);
 #endif
 
 static void server_core_cleanup(epoll_private_data_t *private_data);
@@ -102,7 +107,7 @@ static void property_set_reset_mode_callback(sl_cpc_system_command_handle_t *han
                                              size_t property_length,
                                              sl_status_t status);
 
-static void process_reboot_into_bootloader_mode(void);
+static void process_reboot_enter_bootloader(void);
 
 void reset_callback(sl_cpc_system_command_handle_t *handle,
                     sl_status_t status,
@@ -128,22 +133,23 @@ static void cleanup_socket_folder(const char *folder)
 }
 
 /* recursive mkdir */
-static int recursive_mkdir(const char *dir, const mode_t mode)
+static int recursive_mkdir(const char *dir, size_t len, const mode_t mode)
 {
-  const size_t dirlen = strlen(dir) + sizeof('\0');
   char *tmp = NULL;
   char *p = NULL;
   struct stat sb;
+  int ret;
 
-  tmp = malloc(dirlen);
+  tmp = (char *)malloc(len + 1);
   FATAL_ON(tmp == NULL);
 
   /* copy path */
-  strcpy(tmp, dir);
+  ret = snprintf(tmp, len + 1, "%s", dir);
+  FATAL_ON(ret < 0 || (size_t) ret >= (len + 1));
 
   /* remove trailing slash */
-  if (tmp[dirlen - 1] == '/') {
-    tmp[dirlen - 1] = '\0';
+  if (tmp[len - 1] == '/') {
+    tmp[len - 1] = '\0';
   }
 
   /* check if path exists and is a directory */
@@ -212,7 +218,7 @@ void server_core_kill_signal(void)
   FATAL_ON(ret != sizeof(event_value));
 }
 
-pthread_t server_core_init(int fd_socket_driver_core, bool firmware_update)
+pthread_t server_core_init(int fd_socket_driver_core, server_core_mode_t mode)
 {
   char* socket_folder = NULL;
   struct stat sb = { 0 };
@@ -229,11 +235,12 @@ pthread_t server_core_init(int fd_socket_driver_core, bool firmware_update)
 
   /* Create the string {socket_folder}/cpcd/{instance_name} */
   {
-    const size_t socket_folder_string_size = strlen(config_socket_folder) + strlen("/cpcd/") + strlen(config_instance_name) + sizeof('\0');
-    socket_folder = malloc(socket_folder_string_size);
+    const size_t socket_folder_string_size = strlen(config_socket_folder) + strlen("/cpcd/") + strlen(config_instance_name) + sizeof(char);
+    socket_folder = (char *)malloc(socket_folder_string_size);
     FATAL_ON(socket_folder == NULL);
 
-    sprintf(socket_folder, "%s/cpcd/%s", config_socket_folder, config_instance_name);
+    ret = snprintf(socket_folder, socket_folder_string_size, "%s/cpcd/%s", config_socket_folder, config_instance_name);
+    FATAL_ON(ret < 0 || (size_t) ret >= socket_folder_string_size);
   }
 
   /* Check if the socket folder exists */
@@ -242,7 +249,7 @@ pthread_t server_core_init(int fd_socket_driver_core, bool firmware_update)
     cleanup_socket_folder(socket_folder);
   } else {
     TRACE_SERVER("Creating socket folder %s", socket_folder);
-    recursive_mkdir(socket_folder, S_IRWXU | S_IRWXG | S_ISVTX);
+    recursive_mkdir(socket_folder, strlen(socket_folder), S_IRWXU | S_IRWXG | S_ISVTX);
     ret = access(socket_folder, W_OK);
     FATAL_SYSCALL_ON(ret < 0);
   }
@@ -283,7 +290,7 @@ pthread_t server_core_init(int fd_socket_driver_core, bool firmware_update)
   }
 
   /* create server_core thread */
-  ret = pthread_create(&server_core_thread, NULL, server_core_thread_func, (void*)firmware_update);
+  ret = pthread_create(&server_core_thread, NULL, server_core_thread_func, &mode);
   FATAL_ON(ret != 0);
 
   ret = pthread_setname_np(server_core_thread, "server_core");
@@ -294,20 +301,24 @@ pthread_t server_core_init(int fd_socket_driver_core, bool firmware_update)
 
 static void* server_core_thread_func(void* param)
 {
-  bool firmware_update = (bool) param;
+  server_core_mode_t mode = *(server_core_mode_t *)param;
   struct epoll_event events[MAX_EPOLL_EVENTS] = {};
   size_t event_count;
 
   while (1) {
 #if !defined(UNIT_TESTING)
-    if ((config_reset_sequence == true) && (firmware_update == false)) {
-      process_reset_sequence();
+    if ((config_reset_sequence == true) && (mode == SERVER_CORE_MODE_NORMAL)) {
+      process_reset_sequence(false);
+    }
+
+    if (mode == SERVER_CORE_MODE_FIRMWARE_RESET) {
+      process_reset_sequence(true);
+    }
+
+    if (mode == SERVER_CORE_MODE_FIRMWARE_BOOTLOADER) {
+      process_reboot_enter_bootloader();
     }
 #endif
-
-    if (firmware_update) {
-      process_reboot_into_bootloader_mode();
-    }
 
     core_process_transmit_queue();
 
@@ -354,7 +365,7 @@ static void property_set_reset_mode_callback(sl_cpc_system_command_handle_t *han
 
     case SL_STATUS_TIMEOUT:
     case SL_STATUS_ABORT:
-      PRINT_INFO("Failed to connect to secondary.");
+      PRINT_INFO("Failed to connect to Secondary.");
       ignore_reset_reason = false; // Don't ignore a secondary that resets
       reset_sequence_state = SET_NORMAL_REBOOT_MODE;
       break;
@@ -383,7 +394,7 @@ void reset_callback(sl_cpc_system_command_handle_t *handle,
 
     case SL_STATUS_TIMEOUT:
     case SL_STATUS_ABORT:
-      WARN("Failed to reset secondary");
+      WARN("Failed to reset Secondary");
       ignore_reset_reason = false; // Don't ignore a secondary that resets
       reset_sequence_state = SET_NORMAL_REBOOT_MODE;
       break;
@@ -429,17 +440,11 @@ static void on_unsolicited_status(sl_cpc_system_status_t status)
         server_close_endpoint(i, false);
       }
 
-      /* Wait for logs to be flushed */
-      sleep_s(1);
-
-      /* All file descriptors except stdout, stdin and stderr are supposed to be closed automatically with O_CLOEXEC */
-
       /* Restart the daemon with the same arguments as this process */
+      /* All file descriptors except stdout, stdin and stderr are supposed to be closed automatically with O_CLOEXEC */
       {
         extern char **argv_g;
-
-        /* Include argv[0] because its the name of the executable itself */
-        execv("/proc/self/exe", argv_g);
+        config_restart_cpcd(argv_g);
       }
     }
   }
@@ -476,18 +481,6 @@ static void property_get_capabilities_callback(sl_cpc_system_command_handle_t *h
     TRACE_RESET("Received capability : UART flow control");
   }
 
-  if ((config_bus == UART) && (config_uart_hardflow != (bool)(capabilities & CPC_CAPABILITIES_UART_FLOW_CONTROL_MASK))) {
-    FATAL("UART flow control configuration mismatch between CPCd (%s) and Secondary (%s)",
-          config_uart_hardflow ? "enabled" : "disabled",
-          (bool)(capabilities & CPC_CAPABILITIES_UART_FLOW_CONTROL_MASK) ? "enabled" : "disabled");
-  }
-
-  if (config_use_encryption != (bool)(capabilities & CPC_CAPABILITIES_SECURITY_ENDPOINT_MASK)) {
-    FATAL("Security configuration mismatch between CPCd (%s) and Secondary (%s)",
-          config_use_encryption ? "enabled" : "disabled",
-          (bool)(capabilities & CPC_CAPABILITIES_SECURITY_ENDPOINT_MASK) ? "enabled" : "disabled");
-  }
-
   capabilities_received = true;
 }
 
@@ -508,23 +501,52 @@ static void property_get_rx_capability_callback(sl_cpc_system_command_handle_t *
   rx_capability_received = true;
 }
 
-static void property_get_secondary_version_callback(sl_cpc_system_command_handle_t *handle,
-                                                    sl_cpc_property_id_t property_id,
-                                                    void* property_value,
-                                                    size_t property_length,
-                                                    sl_status_t status)
+static void property_get_secondary_cpc_version_callback(sl_cpc_system_command_handle_t *handle,
+                                                        sl_cpc_property_id_t property_id,
+                                                        void* property_value,
+                                                        size_t property_length,
+                                                        sl_status_t status)
 {
-  uint32_t* version = (uint32_t*)property_value;
   (void) handle;
 
-  if ( (property_id != PROP_SECONDARY_VERSION)
+  uint32_t* version = (uint32_t*)property_value;
+
+  if ( (property_id != PROP_SECONDARY_CPC_VERSION)
        || (status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS)
        || (property_value == NULL || property_length != 3 * sizeof(uint32_t))) {
-    FATAL("Cannot get secondary version (obsolete RCP firmware?)");
+    FATAL("Cannot get Secondary CPC version (obsolete RCP firmware?)");
   }
 
-  PRINT_INFO("Secondary is v%d.%d.%d", version[0], version[1], version[2]);
-  secondary_version_received = true;
+  PRINT_INFO("Secondary CPC v%d.%d.%d", version[0], version[1], version[2]);
+  secondary_cpc_version_received = true;
+}
+
+static void property_get_secondary_app_version_callback(sl_cpc_system_command_handle_t *handle,
+                                                        sl_cpc_property_id_t property_id,
+                                                        void* property_value,
+                                                        size_t property_length,
+                                                        sl_status_t status)
+{
+  (void) handle;
+  (void) property_length;
+
+  if (status == SL_STATUS_OK && property_id == PROP_SECONDARY_APP_VERSION) {
+    FATAL_ON(property_value == NULL);
+    const char *version = (const char *)property_value;
+    size_t bytes = strnlen(version, rx_capability) + 1;
+    if (server_core_secondary_app_version) {
+      free(server_core_secondary_app_version);
+    }
+    server_core_secondary_app_version = calloc(bytes, sizeof(char));
+    FATAL_SYSCALL_ON(server_core_secondary_app_version == NULL);
+    strncpy(server_core_secondary_app_version, version, bytes - 1);
+    server_core_secondary_app_version[bytes - 1] = '\0';
+    PRINT_INFO("Secondary APP v%s", server_core_secondary_app_version);
+  } else {
+    WARN("Cannot get Secondary APP version (obsolete RCP firmware?)");
+  }
+
+  secondary_app_version_received_or_not_available = true;
 }
 
 static void property_get_protocol_version_callback(sl_cpc_system_command_handle_t *handle,
@@ -534,29 +556,78 @@ static void property_get_protocol_version_callback(sl_cpc_system_command_handle_
                                                    sl_status_t status)
 {
   (void) handle;
+
   uint8_t* version = (uint8_t*)property_value;
 
   if ((property_id != PROP_PROTOCOL_VERSION)
       || (status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS)
       || (property_value == NULL || property_length != sizeof(uint8_t))) {
-    FATAL("Cannot get protocol version (obsolete RCP firmware?)");
+    FATAL("Cannot get Secondary Protocol version (obsolete RCP firmware?)");
   }
 
-  if (*version != PROTOCOL_VERSION) {
-    FATAL("The secondary's protocol version (%d) doesn't match daemon's version (%d)", *version, PROTOCOL_VERSION);
-  }
+  server_core_secondary_protocol_version = *version;
+  PRINT_INFO("Secondary Protocol v%d", server_core_secondary_protocol_version);
 
-  protocol_version_received_and_match = true;
+  protocol_version_received = true;
 }
 
-static void process_reset_sequence(void)
+static void exit_server_core(void)
+{
+  void *join_value;
+  int ret;
+
+  driver_kill_signal();
+
+  extern pthread_t driver_thread;
+  ret = pthread_join(driver_thread, &join_value);
+  FATAL_ON(ret != 0);
+  FATAL_ON(join_value != 0);
+
+  server_core_cleanup(NULL);
+}
+
+static void capabilities_checks(void)
+{
+  if ((config_bus == UART) && (config_uart_hardflow != (bool)(capabilities & CPC_CAPABILITIES_UART_FLOW_CONTROL_MASK))) {
+    FATAL("UART flow control configuration mismatch between CPCd (%s) and Secondary (%s)",
+          config_uart_hardflow ? "enabled" : "disabled",
+          (bool)(capabilities & CPC_CAPABILITIES_UART_FLOW_CONTROL_MASK) ? "enabled" : "disabled");
+  }
+
+  if (config_use_encryption != (bool)(capabilities & CPC_CAPABILITIES_SECURITY_ENDPOINT_MASK)) {
+    FATAL("Security configuration mismatch between CPCd (%s) and Secondary (%s)",
+          config_use_encryption ? "enabled" : "disabled",
+          (bool)(capabilities & CPC_CAPABILITIES_SECURITY_ENDPOINT_MASK) ? "enabled" : "disabled");
+  }
+}
+
+static void protocol_version_check(void)
+{
+  if (server_core_secondary_protocol_version != PROTOCOL_VERSION) {
+    FATAL("Secondary Protocol v%d doesn't match CPCd Protocol v%d",
+          server_core_secondary_protocol_version, PROTOCOL_VERSION);
+  }
+}
+
+static void application_version_check(void)
+{
+  if (config_application_version && server_core_secondary_app_version) {
+    if (strcmp(server_core_secondary_app_version,
+               config_application_version) != 0) {
+      FATAL("Secondary APP v%s doesn't match the provided APP v%s",
+            server_core_secondary_app_version, config_application_version);
+    }
+  }
+}
+
+static void process_reset_sequence(bool firmware_reset_mode)
 {
   switch (reset_sequence_state) {
     case RESET_SEQUENCE_DONE:
       return;
 
     case SET_NORMAL_REBOOT_MODE:
-      PRINT_INFO("Connecting to secondary...");
+      PRINT_INFO("Connecting to Secondary...");
 
       /* Send a request to the secondary to set the reboot mode to 'application' */
       {
@@ -623,7 +694,7 @@ static void process_reset_sequence(void)
     case WAIT_FOR_RX_CAPABILITY:
       if (rx_capability_received) {
         TRACE_RESET("Obtained RX capability");
-        PRINT_INFO("Connected to secondary");
+        PRINT_INFO("Connected to Secondary");
         reset_sequence_state = WAIT_FOR_PROTOCOL_VERSION;
         sl_cpc_system_cmd_property_get(property_get_protocol_version_callback,
                                        PROP_PROTOCOL_VERSION,
@@ -634,8 +705,11 @@ static void process_reset_sequence(void)
       break;
 
     case WAIT_FOR_PROTOCOL_VERSION:
-      if (protocol_version_received_and_match) {
-        TRACE_RESET("Matched protocol version with the secondary");
+      if (protocol_version_received) {
+        TRACE_RESET("Obtained Protocol version");
+        if (!firmware_reset_mode) {
+          protocol_version_check();
+        }
         reset_sequence_state = WAIT_FOR_CAPABILITIES;
         sl_cpc_system_cmd_property_get(property_get_capabilities_callback,
                                        PROP_CAPABILITIES,
@@ -647,25 +721,57 @@ static void process_reset_sequence(void)
 
     case WAIT_FOR_CAPABILITIES:
       if (capabilities_received) {
-        TRACE_RESET("Obtained capabilites");
-        reset_sequence_state = WAIT_FOR_SECONDARY_VERSION;
-        sl_cpc_system_cmd_property_get(property_get_secondary_version_callback,
-                                       PROP_SECONDARY_VERSION,
+        TRACE_RESET("Obtained Capabilites");
+        if (!firmware_reset_mode) {
+          capabilities_checks();
+        }
+        reset_sequence_state = WAIT_FOR_SECONDARY_CPC_VERSION;
+        sl_cpc_system_cmd_property_get(property_get_secondary_cpc_version_callback,
+                                       PROP_SECONDARY_CPC_VERSION,
                                        5,       /* 5 retries */
                                        100000,  /* 100ms between retries*/
                                        true);
       }
       break;
 
-    case WAIT_FOR_SECONDARY_VERSION:
-      if (secondary_version_received == true) {
-        TRACE_RESET("Obtained secondary version");
+    case WAIT_FOR_SECONDARY_CPC_VERSION:
+      if (secondary_cpc_version_received) {
+        TRACE_RESET("Obtained Secondary CPC version");
+        reset_sequence_state = WAIT_FOR_SECONDARY_APP_VERSION;
+        sl_cpc_system_cmd_property_get(property_get_secondary_app_version_callback,
+                                       PROP_SECONDARY_APP_VERSION,
+                                       5,       /* 5 retries */
+                                       100000,  /* 100ms between retries*/
+                                       true);
+      }
+      break;
+
+    case WAIT_FOR_SECONDARY_APP_VERSION:
+      if (secondary_app_version_received_or_not_available) {
+        if (server_core_secondary_app_version) {
+          TRACE_RESET("Obtained Secondary APP version");
+        }
+
+        if (config_print_secondary_versions_and_exit) {
+          sleep_s(2);
+          exit(EXIT_SUCCESS);
+        }
+
+        if (!firmware_reset_mode) {
+          application_version_check();
+        }
+
         reset_sequence_state = RESET_SEQUENCE_DONE;
-        server_init();
+
+        if (firmware_reset_mode) {
+          exit_server_core();
+        } else {
+          server_init();
 #if defined(ENABLE_ENCRYPTION)
-        security_init();
+          security_init();
 #endif
-        PRINT_INFO("Daemon startup was successful. Waiting for client connections");
+          PRINT_INFO("Daemon startup was successful. Waiting for client connections");
+        }
       }
       break;
 
@@ -674,9 +780,8 @@ static void process_reset_sequence(void)
       break;
   }
 }
-#endif
 
-static void process_reboot_into_bootloader_mode(void)
+static void process_reboot_enter_bootloader(void)
 {
   switch (reboot_into_bootloader_state) {
     case SET_BOOTLOADER_REBOOT_MODE:
@@ -715,19 +820,8 @@ static void process_reboot_into_bootloader_mode(void)
 
     case WAIT_BOOTLOADER_RESET_ACK:
       if (reset_ack == true) {
-        void* join_value;
-        int ret;
-
         TRACE_RESET("Reset request acknowledged");
-
-        driver_kill_signal();
-
-        extern pthread_t driver_thread;
-        ret = pthread_join(driver_thread, &join_value);
-        FATAL_ON(ret != 0);
-        FATAL_ON(join_value != 0);
-
-        server_core_cleanup(NULL);
+        exit_server_core();
       }
       break;
 
@@ -736,12 +830,17 @@ static void process_reboot_into_bootloader_mode(void)
       break;
   }
 }
+#endif
 
 static void server_core_cleanup(epoll_private_data_t *private_data)
 {
   (void) private_data;
 
-  TRACE_RESET("Server core cleanup");
+  PRINT_INFO("Server core cleanup");
+
+  sl_cpc_system_cleanup();
+
+  core_cleanup();
 
   pthread_exit(0);
 }

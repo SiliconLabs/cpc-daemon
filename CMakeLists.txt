@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(cpcd VERSION "4.1.0.0")
+project(cpcd VERSION "4.1.1.0")
 set(CPC_LIBRARY_API_VERSION "2")
 set(CPC_PROTOCOL_VERSION "2")
-configure_file(misc/version.h.in autogen/version.h)
+
 
 set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR})
 set(GIT_SHA1 "Unknown")
@@ -40,11 +40,18 @@ add_definitions(-DDEFAULT_CONFIG_FILE_PATH="${CMAKE_INSTALL_PREFIX}/${CMAKE_INST
 set(TARGET_GROUP release CACHE STRING "Group to build")
 set(WARN_AS_ERROR FALSE CACHE BOOL "Treat warnings as errors")
 set(ENABLE_ENCRYPTION TRUE CACHE BOOL "Enable the encryption of the CPC link using MbedTLS")
+set(ENABLE_GPIOD FALSE CACHE BOOL "Enable the gpiod interface using Libgpiod")
 
 # Enable encryption support if the user requested it
 if(ENABLE_ENCRYPTION)
-  add_definitions("-DENABLE_ENCRYPTION")
   message(STATUS "Building CPCd with encryption enabled")
+  add_definitions("-DENABLE_ENCRYPTION")
+  SET(security_sources security/security.c
+                       modes/binding.c
+                       security/private/keys/keys.c
+                       security/private/protocol/protocol.c
+                       security/private/thread/command_synchronizer.c
+                       security/private/thread/security_thread.c)
   find_package(MbedTLS REQUIRED)
   if(MBEDTLS_INCLUDE_DIR  AND  MBEDTLS_LIBRARIES)
     include_directories(${MBEDTLS_INCLUDE_DIR})
@@ -55,8 +62,24 @@ else()
   message(WARNING "Building CPCd with encryption disabled, removing MbedTLS dependency")
 endif()
 
+# Enable warnings as error
 if(WARN_AS_ERROR)
   target_compile_options(cpc PRIVATE -Werror)
+endif()
+
+# Enable gpiod support if the user requested it
+if (ENABLE_GPIOD)
+  message(STATUS "Building CPCd with gpiod enabled")
+  add_definitions(-DGPIO_GPIOD)
+  SET(gpio_sources misc/gpio_gpiod.c)
+  find_library(GPIOD_LIBRARY NAMES libgpiod.so)
+  if (NOT GPIOD_LIBRARY)
+    message(FATAL_ERROR "Failed to find gpiod library, install libgpiod-dev")
+  endif()
+else()
+  message(STATUS "Building CPCd with gpiosysfs enabled")
+  add_definitions(-DGPIO_SYSFS)
+  SET(gpio_sources misc/gpio_sysfs.c)
 endif()
 
 # Build CPC Daemon if building for release or debug
@@ -76,22 +99,12 @@ if((TARGET_GROUP STREQUAL release) OR
     add_compile_options(-funwind-tables -rdynamic)
   endif()
 
-  if(ENABLE_ENCRYPTION)
-    SET(security_sources security/security.c
-                         modes/binding.c
-                         security/private/keys/keys.c
-                         security/private/protocol/protocol.c
-                         security/private/thread/command_synchronizer.c
-                         security/private/thread/security_thread.c)
-  endif()
-
   if(TARGET_GROUP STREQUAL blackbox_test_nonce_overflow)
     # 2^29 - 4
     add_definitions("-DSLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE=536870908")
     set(ENABLE_ENCRYPTION TRUE CACHE BOOL "" FORCE)
     set(RUN_TESTS_ENCRYPTED "TRUE" CACHE STRING "Run tests with encryption")
   endif()
-
 
   add_executable(cpcd
                       cpcd.conf
@@ -109,15 +122,16 @@ if((TARGET_GROUP STREQUAL release) OR
                       driver/driver_xmodem.c
                       driver/driver_ezsp.c
                       driver/driver_kill.c
+                      misc/errno_codename.c
                       misc/logging.c
                       misc/config.c
-                      misc/gpio.c
                       misc/sl_slist.c
                       misc/board_controller.c
                       misc/sleep.c
                       modes/firmware_update.c
                       modes/normal.c
                       modes/uart_validation.c
+                      ${gpio_sources}
                       ${security_sources}
                       lib/sl_cpc.c
                       main.c)
@@ -140,6 +154,10 @@ if((TARGET_GROUP STREQUAL release) OR
 
   if(ENABLE_ENCRYPTION)
     target_link_libraries(cpcd ${MBEDTLS_LIBRARIES})
+  endif()
+
+  if(ENABLE_GPIOD)
+    target_link_libraries(cpcd ${GPIOD_LIBRARY})
   endif()
 
   install(TARGETS cpc cpcd
@@ -199,6 +217,7 @@ elseif((TARGET_GROUP STREQUAL unit_test) OR (TARGET_GROUP STREQUAL unit_test_wit
                             driver/driver_uart.c
                             lib/sl_cpc.c
                             modes/uart_validation.c
+                            misc/errno_codename.c
                             misc/logging.c
                             misc/config.c
                             misc/sl_slist.c
@@ -259,13 +278,14 @@ elseif(TARGET_GROUP STREQUAL target_test)
                     driver/driver_ezsp.c
                     driver/driver_kill.c
                     modes/uart_validation.c
+                    misc/errno_codename.c
                     misc/logging.c
                     misc/config.c
                     misc/sl_slist.c
                     misc/sl_string.c
                     misc/board_controller.c
                     misc/sleep.c
-                    misc/gpio.c
+                    ${gpio_sources}
                     ../../test/linux/common/src/sl_assert.c
                     ../../iostream/src/sl_iostream_stdio.c
                     ../../iostream/src/sl_iostream.c
@@ -294,7 +314,14 @@ elseif(TARGET_GROUP STREQUAL target_test)
                                                   misc/)
     target_link_libraries(cpc_target pthread)
     target_link_libraries(cpc_target cpc)
-    target_link_libraries(cpc_target ${MBEDTLS_LIBRARIES})
+
+    if(ENABLE_ENCRYPTION)
+      target_link_libraries(cpc_target ${MBEDTLS_LIBRARIES})
+    endif()
+
+    if(ENABLE_GPIOD)
+      target_link_libraries(cpc_target ${GPIOD_LIBRARY})
+    endif()
 
 elseif(TARGET_GROUP STREQUAL blackbox_test)
     message(STATUS "Building blackbox_test")
@@ -440,3 +467,17 @@ elseif(TARGET_GROUP STREQUAL libcpc_wrapper_test)
 else()
     message(FATAL_ERROR "Given TARGET_GROUP unknown specify when running cmake.. i.g: -DTARGET_GROUP=release")
 endif()
+
+# Hash all files except those in the output folder
+if (TARGET cpcd)
+  get_target_property(CPCD_SOURCES cpcd SOURCES)
+  foreach(file ${CPCD_SOURCES})
+    file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${file}" FILE_HASH)
+    string(APPEND SOURCES_HASH "${FILE_HASH}")
+    string(SHA256 SOURCES_HASH "${SOURCES_HASH}")
+  endforeach()
+  message(STATUS "Sources hash:${SOURCES_HASH}")
+endif()
+
+# Configure the version header file
+configure_file(misc/version.h.in autogen/version.h)

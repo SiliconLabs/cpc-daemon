@@ -33,6 +33,7 @@
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #include "sl_cpc.h"
 #include "version.h"
@@ -113,18 +114,20 @@ static void lib_trace(FILE *__restrict __stream, const char* string, ...)
   #define DEFAULT_SOCKET_FOLDER "/dev/shm"
 #endif
 
-#define CTRL_SOCKET_TIMEOUT_SEC 1
+#define CTRL_SOCKET_TIMEOUT_SEC 2
 
 #define DEFAULT_ENDPOINT_SOCKET_SIZE 4087
 
 typedef struct {
   int ctrl_sock_fd;
+  pthread_mutex_t ctrl_sock_fd_lock;
   size_t max_write_size;
 } sli_cpc_handle_t;
 
 typedef struct {
   uint8_t id;
   int sock_fd;
+  pthread_mutex_t sock_fd_lock;
   sli_cpc_handle_t *lib_handle;
 } sli_cpc_endpoint_t;
 
@@ -301,27 +304,27 @@ int cpc_init(cpc_handle_t *handle, const char* instance_name, bool enable_tracin
   }
 
   // Check if control socket exists
-  if ( access(server_addr.sun_path, F_OK) != 0 ) {
-    trace_lib("access() : %s doesn't exist. The the daemon is not started or the reset sequence is not done or the secondary is not responsive.", server_addr.sun_path);
+  if (access(server_addr.sun_path, F_OK) != 0) {
+    trace_lib_error("access() : %s doesn't exist. The daemon is not started or the reset sequence is not done or the secondary is not responsive.", server_addr.sun_path);
     return -1;
   }
 
   lib_handle = malloc(sizeof(sli_cpc_handle_t));
   if (lib_handle == NULL) {
     errno = ENOMEM;
-    trace_lib("malloc()");
+    trace_lib_error("malloc()");
     return -1;
   }
 
   lib_handle->ctrl_sock_fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
   if (!lib_handle->ctrl_sock_fd) {
-    trace_lib("socket()");
+    trace_lib_error("socket()");
     free(lib_handle);
     return -1;
   }
 
   if (connect(lib_handle->ctrl_sock_fd, (struct sockaddr *) &server_addr, sizeof(server_addr)) < 0) {
-    trace_lib("connect() : could not connect to %s. Either the process does not have the correct permissions or the secondary is not responsive.", server_addr.sun_path);
+    trace_lib_error("connect() : could not connect to %s. Either the process does not have the correct permissions or the secondary is not responsive.", server_addr.sun_path);
     free(lib_handle);
     return -1;
   }
@@ -332,21 +335,21 @@ int cpc_init(cpc_handle_t *handle, const char* instance_name, bool enable_tracin
   timeout.tv_usec = 0;
 
   if (setsockopt(lib_handle->ctrl_sock_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(struct timeval)) < 0) {
-    trace_lib("setsockopt()");
+    trace_lib_error("setsockopt()");
     free(lib_handle);
     return -1;
   }
 
   ret = set_pid(lib_handle);
   if (ret < 0) {
-    trace_lib("failed to set pid");
+    trace_lib_error("failed to set pid");
     free(lib_handle);
     return -1;
   }
 
   ret = get_max_write(lib_handle);
   if (ret < 0) {
-    trace_lib("failed to get max_write_size");
+    trace_lib_error("failed to get max_write_size");
     free(lib_handle);
     return -1;
   }
@@ -354,7 +357,13 @@ int cpc_init(cpc_handle_t *handle, const char* instance_name, bool enable_tracin
   lib_handle->max_write_size = (size_t)ret;
 
   if (!check_version(lib_handle)) {
-    trace_lib("failed to match library version with the daemon");
+    trace_lib_error("failed to match library version with the daemon");
+    free(lib_handle);
+    return -1;
+  }
+
+  if (pthread_mutex_init(&lib_handle->ctrl_sock_fd_lock, NULL) < 0) {
+    trace_lib_error("pthread_mutex_init()");
     free(lib_handle);
     return -1;
   }
@@ -383,6 +392,12 @@ int cpc_restart(cpc_handle_t *handle)
   lib_handle = (sli_cpc_handle_t *)handle->ptr;
 
   ret = close(lib_handle->ctrl_sock_fd);
+  if (ret != 0) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  ret = pthread_mutex_destroy(&lib_handle->ctrl_sock_fd_lock);
   if (ret != 0) {
     errno = EINVAL;
     return -1;
@@ -465,13 +480,6 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
   ep->id = id;
   ep->lib_handle = lib_handle;
 
-  ep->sock_fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
-  if (!ep->sock_fd) {
-    trace_lib_error("socket()");
-    free(ep);
-    return -1;
-  }
-
   open_query = (cpcd_exchange_buffer_t*) malloc(open_query_len);
   if (open_query == NULL) {
     trace_lib_error("malloc()");
@@ -484,8 +492,19 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
   *(bool*)(open_query->payload) = false;
 
   trace_lib("open endpoint, requesting open");
+
+  if (pthread_mutex_lock(&lib_handle->ctrl_sock_fd_lock) < 0) {
+    trace_lib_error("pthread_mutex_lock()");
+    free(open_query);
+    free(ep);
+    return -1;
+  }
+
   bytes_written = send(lib_handle->ctrl_sock_fd, open_query, open_query_len, 0);
   if (bytes_written < (ssize_t)open_query_len) {
+    if (pthread_mutex_unlock(&lib_handle->ctrl_sock_fd_lock) < 0) {
+      trace_lib_error("pthread_mutex_unlock()");
+    }
     trace_lib_error("write()");
     free(open_query);
     free(ep);
@@ -495,6 +514,14 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
 
   trace_lib("open endpoint, waiting for open request reply");
   bytes_read = recv(lib_handle->ctrl_sock_fd, open_query, open_query_len, 0);
+
+  if (pthread_mutex_unlock(&lib_handle->ctrl_sock_fd_lock) < 0) {
+    trace_lib_error("pthread_mutex_unlock()");
+    free(open_query);
+    free(ep);
+    return -1;
+  }
+
   if (bytes_read != (ssize_t)open_query_len) {
     if (bytes_read == 0) {
       errno = ECONNRESET;
@@ -523,8 +550,18 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
     return -1;
   }
 
+  ep->sock_fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+  if (!ep->sock_fd) {
+    trace_lib_error("socket()");
+    free(ep);
+    return -1;
+  }
+
   if (connect(ep->sock_fd, (struct sockaddr *)&ep_addr, sizeof(ep_addr)) < 0) {
     trace_lib_error("connect()");
+    if (close(ep->sock_fd) < 0) {
+      trace_lib_error("close()");
+    }
     free(open_query);
     free(ep);
     return -1;
@@ -537,24 +574,38 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
       errno = ECONNRESET;
       trace_lib_error("recv(), connection closed");
     }
+    if (close(ep->sock_fd) < 0) {
+      trace_lib_error("close()");
+    }
     trace_lib_error("open endpoint open request ack recv()");
     free(open_query);
     free(ep);
     return -1;
   }
 
+  free(open_query);
+
   int ep_socket_size = DEFAULT_ENDPOINT_SOCKET_SIZE;
   if (setsockopt(ep->sock_fd, SOL_SOCKET, SO_SNDBUF, &ep_socket_size, sizeof(int)) != 0) {
     trace_lib_error("open endpoint setsockopt()");
-    free(open_query);
+    if (close(ep->sock_fd) < 0) {
+      trace_lib_error("close()");
+    }
+    free(ep);
+    return -1;
+  }
+
+  if (pthread_mutex_init(&ep->sock_fd_lock, NULL) < 0) {
+    trace_lib_error("pthread_mutex_init()");
+    if (close(ep->sock_fd) < 0) {
+      trace_lib_error("close()");
+    }
     free(ep);
     return -1;
   }
 
   trace_lib("Opened EP #%d", ep->id);
   endpoint->ptr = (void *)ep;
-
-  free(open_query);
 
   return ep->sock_fd;
 }
@@ -601,8 +652,19 @@ int cpc_close_endpoint(cpc_endpoint_t *endpoint)
   close_query.endpoint_number = ep->id;
 
   trace_lib("Sending close request EP #%d", ep->id);
+
+  if (pthread_mutex_lock(&lib_handle->ctrl_sock_fd_lock) < 0) {
+    trace_lib_error("pthread_mutex_lock()");
+    free(ep);
+    endpoint->ptr = NULL;
+    return -1;
+  }
+
   bytes_written = send(lib_handle->ctrl_sock_fd, &close_query, close_query_len, 0);
   if (bytes_written < 0 || (size_t)bytes_written < close_query_len) {
+    if (pthread_mutex_unlock(&lib_handle->ctrl_sock_fd_lock) < 0) {
+      trace_lib_error("pthread_mutex_unlock()");
+    }
     trace_lib_error("Close endpoint request fail");
     free(ep);
     endpoint->ptr = NULL;
@@ -611,12 +673,27 @@ int cpc_close_endpoint(cpc_endpoint_t *endpoint)
 
   trace_lib("Waiting for request reply on EP #%d", ep->id);
   bytes_read = recv(lib_handle->ctrl_sock_fd, &close_query, close_query_len, 0);
+
+  if (pthread_mutex_unlock(&lib_handle->ctrl_sock_fd_lock) < 0) {
+    trace_lib_error("pthread_mutex_unlock()");
+    free(ep);
+    endpoint->ptr = NULL;
+    return -1;
+  }
+
   if (bytes_read != (ssize_t)close_query_len) {
     if (bytes_read == 0) {
       errno = ECONNRESET;
       trace_lib_error("recv(), connection closed");
     }
     trace_lib_error("Close request recv()");
+    free(ep);
+    endpoint->ptr = NULL;
+    return -1;
+  }
+
+  if (pthread_mutex_destroy(&ep->sock_fd_lock) < 0) {
+    trace_lib_error("pthread_mutex_destroy()");
     free(ep);
     endpoint->ptr = NULL;
     return -1;
@@ -753,8 +830,18 @@ int cpc_get_endpoint_state(cpc_handle_t handle, uint8_t id, cpc_endpoint_state_t
   memset(request_buffer->payload, 0, sizeof(cpc_endpoint_state_t));
 
   trace_lib("Get Endpoint state, writing");
+
+  if (pthread_mutex_lock(&lib_handle->ctrl_sock_fd_lock) < 0) {
+    trace_lib_error("pthread_mutex_lock()");
+    free(request_buffer);
+    return -1;
+  }
+
   ssize_t bytes_written = send(lib_handle->ctrl_sock_fd, request_buffer, request_buffer_len, 0);
   if (bytes_written <= 0) {
+    if (pthread_mutex_unlock(&lib_handle->ctrl_sock_fd_lock) < 0) {
+      trace_lib_error("pthread_mutex_unlock()");
+    }
     trace_lib_error("write()");
     free(request_buffer);
     return -1;
@@ -762,6 +849,13 @@ int cpc_get_endpoint_state(cpc_handle_t handle, uint8_t id, cpc_endpoint_state_t
 
   trace_lib("Get Endpoint state, reading");
   ssize_t bytes_read = recv(lib_handle->ctrl_sock_fd, request_buffer, request_buffer_len, 0);
+
+  if (pthread_mutex_unlock(&lib_handle->ctrl_sock_fd_lock) < 0) {
+    trace_lib_error("pthread_mutex_unlock()");
+    free(request_buffer);
+    return -1;
+  }
+
   if (bytes_read <= 0) {
     if (bytes_read == 0) {
       errno = ECONNRESET;
@@ -836,8 +930,16 @@ int cpc_set_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, const 
       return -1;
     }
 
+    if (pthread_mutex_lock(&ep->sock_fd_lock) < 0) {
+      trace_lib_error("pthread_mutex_lock()");
+      return -1;
+    }
+
     int flags = fcntl(ep->sock_fd, F_GETFL);
     if (flags < 0) {
+      if (pthread_mutex_unlock(&ep->sock_fd_lock) < 0) {
+        trace_lib_error("pthread_mutex_unlock()");
+      }
       trace_lib_error("fnctl()");
       return -1;
     }
@@ -849,6 +951,12 @@ int cpc_set_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, const 
     }
 
     ret = fcntl(ep->sock_fd, F_SETFL, flags);
+
+    if (pthread_mutex_unlock(&ep->sock_fd_lock) < 0) {
+      trace_lib_error("pthread_mutex_unlock()");
+      return -1;
+    }
+
     if (ret < 0) {
       trace_lib_error("fnctl()");
       return -1;

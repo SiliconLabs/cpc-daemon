@@ -16,6 +16,10 @@
  *
  ******************************************************************************/
 
+#include <sys/epoll.h>
+#include <unistd.h>
+#include <string.h>
+
 #include "modes/firmware_update.h"
 #include "server_core/server_core.h"
 #include "driver/driver_uart.h"
@@ -27,9 +31,7 @@
 #include "misc/logging.h"
 #include "misc/sl_status.h"
 #include "misc/sleep.h"
-
-#include <sys/epoll.h>
-#include <unistd.h>
+#include "version.h"
 
 #define MAX_EPOLL_EVENTS 10
 #define RESET_TIMEOUT_MS 5000
@@ -37,11 +39,13 @@
 extern pthread_t driver_thread;
 extern pthread_t server_core_thread;
 
+extern char *server_core_secondary_app_version;
+extern uint8_t server_core_secondary_protocol_version;
+
 static gpio_t wake_gpio;
 static gpio_t irq_gpio;
 static gpio_t reset_gpio;
 
-static void clear_rx_interrupt(gpio_t gpio);
 static void process_irq(void);
 
 static void assert_reset(void);
@@ -49,9 +53,8 @@ static void deassert_reset(void);
 static void assert_wake(void);
 static void deassert_wake(void);
 
-static void reboot_secondary_with_pins(void);
-static void reboot_secondary_by_cpc(void);
-static void reboot_secondary_into_bootloader(void);
+static void reboot_secondary_with_pins_into_bootloader(void);
+static void reboot_secondary_by_cpc(server_core_mode_t mode);
 
 static sl_status_t transfer_firmware(void);
 
@@ -59,28 +62,79 @@ void run_firmware_update(void)
 {
   sl_status_t status;
 
-  // If config_connect_to_bootloader is true,
+  // If config_fu_connect_to_bootloader is true,
   // we assume the bootloader is already running.
-  if (!config_connect_to_bootloader) {
-    reboot_secondary_into_bootloader();
+  if (!config_fu_connect_to_bootloader) {
+    if (config_fu_recovery_enabled) {
+      PRINT_INFO("Requesting reboot into bootloader via Pins...");
+      reboot_secondary_with_pins_into_bootloader();
+      PRINT_INFO("Secondary is in bootloader");
+    } else {
+      bool protocol_version_mismatch = true;
+      bool application_version_mismatch = true;
+
+      if (!config_fu_enter_bootloader) {
+        PRINT_INFO("Requesting versions via CPC...");
+        reboot_secondary_by_cpc(SERVER_CORE_MODE_FIRMWARE_RESET);
+
+        protocol_version_mismatch = server_core_secondary_protocol_version != PROTOCOL_VERSION;
+        if (protocol_version_mismatch) {
+          PRINT_INFO("Secondary Protocol v%d doesn't match the CPCd Protocol v%d", server_core_secondary_protocol_version, PROTOCOL_VERSION);
+        }
+
+        if (!server_core_secondary_app_version) {
+          PRINT_INFO("Secondary APP version not available, forcing update");
+        }
+
+        if (!config_application_version) {
+          PRINT_INFO("Firmware file version not provided, forcing update");
+        }
+
+        if (server_core_secondary_app_version && config_application_version) {
+          application_version_mismatch = strcmp(server_core_secondary_app_version, config_application_version) != 0;
+          if (application_version_mismatch) {
+            PRINT_INFO("Secondary APP v%s doesn't match the provided APP v%s", server_core_secondary_app_version, config_application_version);
+          }
+        }
+      }
+
+      if (config_fu_enter_bootloader || protocol_version_mismatch || application_version_mismatch) {
+        PRINT_INFO("Requesting reboot into bootloader via CPC...");
+        reboot_secondary_by_cpc(SERVER_CORE_MODE_FIRMWARE_BOOTLOADER);
+        PRINT_INFO("Secondary is in bootloader");
+      } else {
+        if (config_restart_daemon) {
+          PRINT_INFO("Firmware up to date, restarting daemon");
+          config_restart_cpcd_without_fw_update_args();
+        } else {
+          PRINT_INFO("Firmware up to date, exiting daemon");
+          sleep_s(2);
+          exit(EXIT_SUCCESS);
+        }
+      }
+    }
   }
 
-  // If config_enter_bootloader is true, exit
+  // If config_fu_enter_bootloader is true, exit
   // without transferring the firmware.
-  if (config_enter_bootloader) {
+  if (config_fu_enter_bootloader) {
     sleep_s(2);
     exit(EXIT_SUCCESS);
   }
 
-  // transfer the firmware image to the bootloader
   status = transfer_firmware();
 
   if (status == SL_STATUS_OK) {
-    PRINT_INFO("Firmware upgrade successful. Exiting, restart CPCd without -f option.");
-    sleep_s(2);
-    exit(EXIT_SUCCESS);
+    if (config_restart_daemon) {
+      PRINT_INFO("Firmware upgrade successful, restarting daemon");
+      config_restart_cpcd_without_fw_update_args();
+    } else {
+      PRINT_INFO("Firmware upgrade successful, exiting daemon");
+      sleep_s(2);
+      exit(EXIT_SUCCESS);
+    }
   } else {
-    PRINT_INFO("Firmware upgrade failed.");
+    PRINT_INFO("Firmware upgrade failed, exiting daemon");
     sleep_s(2);
     exit(EXIT_FAILURE);
   }
@@ -89,6 +143,8 @@ void run_firmware_update(void)
 static sl_status_t transfer_firmware(void)
 {
   sl_status_t status;
+
+  PRINT_INFO("Transferring firmware...");
 
   if (config_bus == UART) {
     status = xmodem_send(config_fu_file,
@@ -101,9 +157,12 @@ static sl_status_t transfer_firmware(void)
                            config_spi_mode,
                            config_spi_bit_per_word,
                            config_spi_bitrate,
+                           config_spi_cs_chip,
                            config_spi_cs_pin,
+                           config_spi_irq_chip,
                            config_spi_irq_pin,
-                           config_wake_pin);
+                           config_fu_wake_chip,
+                           config_fu_spi_wake_pin);
   } else {
     BUG();
   }
@@ -111,22 +170,7 @@ static sl_status_t transfer_firmware(void)
   return status;
 }
 
-static void reboot_secondary_into_bootloader(void)
-{
-  if (config_recovery_enabled == true) {
-    // pins are available to force a reboot into bootloader
-    PRINT_INFO("Using pins to reboot into bootloader...");
-    reboot_secondary_with_pins();
-  } else {
-    // request reboot to bootloader via CPC
-    PRINT_INFO("Requesting reboot into bootloader via CPC...");
-    reboot_secondary_by_cpc();
-  }
-
-  PRINT_INFO("Secondary is in bootloader");
-}
-
-static void reboot_secondary_by_cpc(void)
+static void reboot_secondary_by_cpc(server_core_mode_t mode)
 {
   int fd_socket_driver_core;
   void* join_value;
@@ -141,14 +185,17 @@ static void reboot_secondary_by_cpc(void)
                                     config_spi_mode,
                                     config_spi_bit_per_word,
                                     config_spi_bitrate,
+                                    config_spi_cs_chip,
                                     config_spi_cs_pin,
+                                    config_spi_irq_chip,
                                     config_spi_irq_pin,
-                                    config_wake_pin);
+                                    config_fu_wake_chip,
+                                    config_fu_spi_wake_pin);
   } else {
     BUG();
   }
 
-  server_core_thread = server_core_init(fd_socket_driver_core, true);
+  server_core_thread = server_core_init(fd_socket_driver_core, mode);
 
   ret = pthread_join(server_core_thread, &join_value);
   FATAL_ON(ret != 0);
@@ -157,7 +204,7 @@ static void reboot_secondary_by_cpc(void)
   close(fd_socket_driver_core);
 }
 
-static void reboot_secondary_with_pins(void)
+static void reboot_secondary_with_pins_into_bootloader(void)
 {
   int ret;
   int fds;
@@ -167,29 +214,25 @@ static void reboot_secondary_with_pins(void)
   static int fd_epoll;
 
   // Setup WAKE gpio
-  FATAL_ON(gpio_init(&wake_gpio, config_wake_pin) < 0);
-  FATAL_ON(gpio_direction(wake_gpio, OUT) < 0);
-  FATAL_ON(gpio_write(wake_gpio, 1) < 0);
+  FATAL_ON(gpio_init(&wake_gpio, config_fu_wake_chip, config_fu_spi_wake_pin, OUT, NO_EDGE) < 0);
+  FATAL_ON(gpio_write(&wake_gpio, 1) < 0);
 
   // Setup RESET gpio
-  FATAL_ON(gpio_init(&reset_gpio, config_reset_pin) < 0);
-  FATAL_ON(gpio_direction(reset_gpio, OUT) < 0);
-  FATAL_ON(gpio_write(reset_gpio, 1) < 0);
+  FATAL_ON(gpio_init(&reset_gpio, config_fu_reset_chip, config_fu_spi_reset_pin, OUT, NO_EDGE) < 0);
+  FATAL_ON(gpio_write(&reset_gpio, 1) < 0);
 
   if (config_bus == SPI) {
     // Setup IRQ gpio
-    FATAL_ON(gpio_init(&irq_gpio, config_spi_irq_pin) < 0);
-    FATAL_ON(gpio_direction(irq_gpio, IN) < 0);
-    FATAL_ON(gpio_setedge(irq_gpio, FALLING) < 0);
+    FATAL_ON(gpio_init(&irq_gpio, config_spi_irq_chip, config_spi_irq_pin, NO_DIRECTION, FALLING) < 0);
 
     // Create the epoll set
     fd_epoll = epoll_create1(EPOLL_CLOEXEC);
     FATAL_SYSCALL_ON(fd_epoll < 0);
 
     // Set up host interrupt
-    ev.events = EPOLLPRI; // Level-triggered read() availability
-    ev.data.fd = irq_gpio.irq_fd;
-    ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, irq_gpio.irq_fd, &ev);
+    ev.events = GPIO_EPOLL_EVENT; // Level-triggered read() availability
+    ev.data.fd = gpio_get_fd(&irq_gpio);
+    ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, gpio_get_fd(&irq_gpio), &ev);
     FATAL_SYSCALL_ON(ret < 0);
   }
 
@@ -212,8 +255,8 @@ static void reboot_secondary_with_pins(void)
       FATAL_SYSCALL_ON(fds == -1);  // epoll failed
       FATAL_ON(fds == 0);           // reset timed out
       for (n = 0; n < fds; n++) {
-        if (events[n].data.fd == irq_gpio.irq_fd) {
-          if (gpio_read(irq_gpio) == 0) {
+        if (events[n].data.fd == gpio_get_fd(&irq_gpio)) {
+          if (gpio_read(&irq_gpio) == 0) {
             irq = true;
           }
         }
@@ -235,38 +278,29 @@ static void reboot_secondary_with_pins(void)
   return;
 }
 
-static void clear_rx_interrupt(gpio_t gpio)
-{
-  char buf[8];
-
-  // Consume interrupt
-  lseek(gpio.irq_fd, 0, SEEK_SET);
-  read(gpio.irq_fd, buf, sizeof(buf));
-}
-
 static void assert_reset(void)
 {
-  FATAL_SYSCALL_ON(gpio_write(reset_gpio, 0) < 0);
+  FATAL_SYSCALL_ON(gpio_write(&reset_gpio, 0) < 0);
 }
 
 static void deassert_reset(void)
 {
-  FATAL_SYSCALL_ON(gpio_write(reset_gpio, 1) < 0);
+  FATAL_SYSCALL_ON(gpio_write(&reset_gpio, 1) < 0);
 }
 
 static void assert_wake(void)
 {
-  FATAL_SYSCALL_ON(gpio_write(wake_gpio, 0) < 0);
+  FATAL_SYSCALL_ON(gpio_write(&wake_gpio, 0) < 0);
 }
 
 static void deassert_wake(void)
 {
-  FATAL_SYSCALL_ON(gpio_write(wake_gpio, 1) < 0);
+  FATAL_SYSCALL_ON(gpio_write(&wake_gpio, 1) < 0);
 }
 
 static void process_irq(void)
 {
-  clear_rx_interrupt(irq_gpio);
+  gpio_clear_irq(&irq_gpio);
 
   deassert_wake();
 }

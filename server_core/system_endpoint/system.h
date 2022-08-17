@@ -58,7 +58,8 @@ SL_ENUM_GENERIC(sl_cpc_property_id_t, uint32_t)
   PROP_LAST_STATUS            = 0x00,
   PROP_PROTOCOL_VERSION       = 0x01,
   PROP_CAPABILITIES           = 0x02,
-  PROP_SECONDARY_VERSION      = 0x03,
+  PROP_SECONDARY_CPC_VERSION  = 0x03,
+  PROP_SECONDARY_APP_VERSION  = 0x04,
   PROP_RX_CAPABILITY          = 0x20,
   PROP_FC_VALIDATION_VALUE    = 0x30,
   PROP_BOOTLOADER_INFO        = 0x200,
@@ -465,6 +466,7 @@ typedef struct  {
   uint32_t retry_timeout_us;
   sl_status_t error_status;
   uint8_t command_seq;
+  bool acked;
   epoll_private_data_t re_transmit_timer_private_data; //for epoll for timerfd
 } sl_cpc_system_command_handle_t;
 
@@ -593,4 +595,9 @@ bool sl_cpc_system_received_unnumbered_acknowledgement(void);
  * Called upon recevining an unnumbered acknowledge
  ******************************************************************************/
 void sl_cpc_system_on_unnumbered_acknowledgement(void);
+
+/***************************************************************************//**
+ * Cleanup the system endpoint before closing the daemon
+ ******************************************************************************/
+void sl_cpc_system_cleanup(void);
 #endif

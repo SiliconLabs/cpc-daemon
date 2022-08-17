@@ -27,6 +27,7 @@
 #include <unistd.h>
 #include <signal.h>
 
+#include "misc/errno_codename.h"
 #include "misc/logging.h"
 #include "misc/config.h"
 #include "misc/utils.h"
@@ -104,7 +105,7 @@ static void server_process_epoll_fd_ep_data_socket(epoll_private_data_t *private
 static void server_handle_client_disconnected(uint8_t endpoint_number);
 static void server_handle_client_closed_ep_connection(int fd_data_socket, uint8_t endpoint_number);
 static void server_handle_client_closed_ctrl_connection(int fd_data_socket);
-static void server_pull_data_from_data_socket(int fd_data_socket, uint8_t** buffer, size_t* buffer_len);
+static int server_pull_data_from_data_socket(int fd_data_socket, uint8_t** buffer_ptr, size_t* buffer_len_ptr);
 
 /*******************************************************************************
  **************************   IMPLEMENTATION    ********************************
@@ -233,6 +234,7 @@ static void server_process_epoll_fd_ctrl_connection_socket(epoll_private_data_t 
   (void) private_data;
   int new_data_socket;
   int flags;
+  int ret;
 
   /* Accept the new ctrl connection for that client */
   new_data_socket = accept(fd_socket_ctrl, NULL, NULL);
@@ -240,29 +242,17 @@ static void server_process_epoll_fd_ctrl_connection_socket(epoll_private_data_t 
 
   /* Set socket as non-blocking */
   flags = fcntl(new_data_socket, F_GETFL, NULL);
-
-  if (flags < 0) {
-    FATAL("fcntl F_GETFL failed.%s", strerror(errno));
-  }
-
-  flags |= O_NONBLOCK;
-
-  if (fcntl(new_data_socket, F_SETFL, flags) < 0) {
-    FATAL("fcntl F_SETFL failed.%s", strerror(errno));
-  }
+  FATAL_SYSCALL_ON(flags < 0);
+  ret = fcntl(new_data_socket, F_SETFL, flags | O_NONBLOCK);
+  FATAL_SYSCALL_ON(ret < 0);
 
   /* Add the new data socket in the list of data sockets for ctrl */
   {
     ctrl_socket_private_data_list_item_t* new_item;
 
     /* Allocate resources for this new connection */
-    {
-      new_item = (ctrl_socket_private_data_list_item_t*) malloc(sizeof(ctrl_socket_private_data_list_item_t));
-      FATAL_ON(new_item == NULL);
-      memset(new_item, 0, sizeof(ctrl_socket_private_data_list_item_t));
-
-      new_item->pid = -1;
-    }
+    new_item = calloc(1, sizeof *new_item);
+    new_item->pid = -1;
 
     /* Register this new data socket to epoll set */
     {
@@ -286,14 +276,14 @@ static void server_process_epoll_fd_ctrl_data_socket(epoll_private_data_t *priva
   uint8_t* buffer;
   size_t buffer_len;
   cpcd_exchange_buffer_t *interface_buffer;
+  int ret;
 
   /* Check if the event is about the client closing the connection */
   {
     int length;
 
-    int retval = ioctl(fd_ctrl_data_socket, FIONREAD, &length);
-
-    FATAL_SYSCALL_ON(retval < 0);
+    ret = ioctl(fd_ctrl_data_socket, FIONREAD, &length);
+    FATAL_SYSCALL_ON(ret < 0);
 
     if (length == 0) {
       server_handle_client_closed_ctrl_connection(fd_ctrl_data_socket);
@@ -302,7 +292,9 @@ static void server_process_epoll_fd_ctrl_data_socket(epoll_private_data_t *priva
   }
 
   /* Retrieve the payload from the endpoint data connection */
-  server_pull_data_from_data_socket(fd_ctrl_data_socket, &buffer, &buffer_len);
+  ret = server_pull_data_from_data_socket(fd_ctrl_data_socket, &buffer, &buffer_len);
+  FATAL_ON(ret != 0);
+
   FATAL_ON(buffer_len < sizeof(cpcd_exchange_buffer_t));
   interface_buffer = (cpcd_exchange_buffer_t *)buffer;
 
@@ -466,7 +458,7 @@ void server_process_pending_connections(void)
   pending_connection_list_item_t *pending_connection;
   pending_connection = SL_SLIST_ENTRY(pending_connections, pending_connection_list_item_t, node);
 
-  if (pending_connection != NULL) {
+  if (pending_connection != NULL && sl_cpc_system_is_waiting_for_status_reply() == false) {
     if (core_ep_is_closing(pending_connection->endpoint_id)) {
       TRACE_SERVER("Endpoint #%d is currently closing, waiting before opening", pending_connection->endpoint_id);
       return;
@@ -594,6 +586,7 @@ static void server_process_epoll_fd_ep_data_socket(epoll_private_data_t *private
   size_t buffer_len;
   int fd_data_socket = private_data->file_descriptor;
   uint8_t endpoint_number = private_data->endpoint_number;
+  int ret;
 
   if (core_ep_is_busy(endpoint_number)) {
     /* Prevent epoll from unblocking right away on this [still marked as ready-read] file descriptor the next time
@@ -606,9 +599,8 @@ static void server_process_epoll_fd_ep_data_socket(epoll_private_data_t *private
   {
     int length;
 
-    int retval = ioctl(fd_data_socket, FIONREAD, &length);
-
-    FATAL_SYSCALL_ON(retval < 0);
+    ret = ioctl(fd_data_socket, FIONREAD, &length);
+    FATAL_SYSCALL_ON(ret < 0);
 
     if (length == 0) {
       server_handle_client_closed_ep_connection(fd_data_socket, endpoint_number);
@@ -619,7 +611,11 @@ static void server_process_epoll_fd_ep_data_socket(epoll_private_data_t *private
   /* The event is about rx data */
 
   /* Retrieve the payload from the endpoint data connection */
-  server_pull_data_from_data_socket(fd_data_socket, &buffer, &buffer_len);
+  ret = server_pull_data_from_data_socket(fd_data_socket, &buffer, &buffer_len);
+  if (ret != 0) {
+    server_handle_client_closed_ep_connection(fd_data_socket, endpoint_number);
+    return;
+  }
 
   /* Send the data to the core */
   if (core_get_endpoint_state(endpoint_number) == SL_CPC_STATE_OPEN) {
@@ -899,13 +895,11 @@ void server_close_endpoint(uint8_t endpoint_number, bool error)
   {
     int fd_connection_socket = endpoints[endpoint_number].connection_socket_epoll_private_data.file_descriptor;
 
-    /* Unregister the connection socket file descriptor from epoll watch list */
-    {
+    if (fd_connection_socket > 0) {
+      /* Unregister the connection socket file descriptor from epoll watch list */
       epoll_unregister(&endpoints[endpoint_number].connection_socket_epoll_private_data);
-    }
 
-    /* Close the connection socket */
-    {
+      /* Close the connection socket */
       ret = shutdown(fd_connection_socket, SHUT_RDWR);
       FATAL_SYSCALL_ON(ret < 0);
 
@@ -931,7 +925,7 @@ void server_close_endpoint(uint8_t endpoint_number, bool error)
       }
 
       ret = unlink(endpoint_path);
-      FATAL_SYSCALL_ON(ret < 0);
+      FATAL_SYSCALL_ON(ret < 0 && errno != ENOENT);
     }
 
     /* Set the connection socket file descriptor to -1 to signify that the endpoint is closed */
@@ -944,7 +938,7 @@ void server_close_endpoint(uint8_t endpoint_number, bool error)
     }
     endpoints[endpoint_number].open_connections = 0;
 
-    PRINT_INFO("Closed connection socket for ep#%u", endpoint_number);
+    TRACE_SERVER("Closed connection socket for ep#%u", endpoint_number);
   }
 }
 
@@ -976,14 +970,21 @@ void server_push_data_to_endpoint(uint8_t endpoint_number, const uint8_t* data, 
 
   /* Iterate through all data sockets for that endpoint */
   while (item != NULL) {
-    ssize_t retval = send(item->data_socket_epoll_private_data.file_descriptor,
-                          data,
-                          data_len,
-                          MSG_DONTWAIT);
+    ssize_t wc = send(item->data_socket_epoll_private_data.file_descriptor,
+                      data,
+                      data_len,
+                      MSG_DONTWAIT);
+    if (wc < 0) {
+      TRACE_SERVER("send() failed with %s", ERRNO_CODENAME[errno]);
+    }
 
     /* Close unresponsive sockets */
-    if (retval == -1 && (errno == EAGAIN || errno == EPIPE)) {
+    if (wc < 0 && (errno == EAGAIN || errno == EPIPE || errno == ECONNRESET)) {
       WARN("Unresponsive data socket on endpoint_number %d, closing", endpoint_number);
+
+      /* Unregister the data socket file descriptor from epoll watch list */
+      epoll_unregister(&item->data_socket_epoll_private_data);
+
       /* Properly shutdown and close this socket on our side */
       int ret = shutdown(item->data_socket_epoll_private_data.file_descriptor, SHUT_RDWR);
       FATAL_SYSCALL_ON(ret < 0);
@@ -1015,8 +1016,8 @@ void server_push_data_to_endpoint(uint8_t endpoint_number, const uint8_t* data, 
                             node);
     } else {
       /* The data should have been be completely written to the socket */
-      FATAL_SYSCALL_ON(retval < 0);
-      FATAL_ON((size_t)retval != data_len);
+      FATAL_SYSCALL_ON(wc < 0);
+      FATAL_ON((size_t)wc != data_len);
 
       /* Get the next data socket for that endpoint*/
       item = SL_SLIST_ENTRY((item)->node.node,
@@ -1026,10 +1027,12 @@ void server_push_data_to_endpoint(uint8_t endpoint_number, const uint8_t* data, 
   }
 }
 
-static void server_pull_data_from_data_socket(int fd_data_socket, uint8_t** buffer, size_t* buffer_len)
+static int server_pull_data_from_data_socket(int fd_data_socket, uint8_t** buffer_ptr, size_t* buffer_len_ptr)
 {
   int datagram_length;
-  ssize_t ret;
+  uint8_t* buffer;
+  ssize_t rc;
+  int ret;
 
   /* Poll the socket to get the next pending datagram size */
   {
@@ -1046,27 +1049,33 @@ static void server_pull_data_from_data_socket(int fd_data_socket, uint8_t** buff
   {
     // Allocate a buffer and pad it to 8 bytes because memcpy reads in chunks of 8.
     // If we don't pad, Valgrind will complain.
-    *buffer = (uint8_t*) malloc((size_t)PAD_TO_8_BYTES(datagram_length));
-    FATAL_ON(*buffer == NULL);
+    buffer = (uint8_t*) malloc((size_t)PAD_TO_8_BYTES(datagram_length));
+    FATAL_ON(buffer == NULL);
   }
 
   /* Fetch the data from the data socket */
   {
-    ret = recv(fd_data_socket, *buffer, (size_t)datagram_length, 0);
+    rc = recv(fd_data_socket, buffer, (size_t)datagram_length, 0);
+    if (rc < 0) {
+      TRACE_SERVER("recv() failed with %s", ERRNO_CODENAME[errno]);
+    }
 
-    FATAL_SYSCALL_ON(ret < 0);
+    if (rc == 0 || (rc < 0 && errno == ECONNRESET)) {
+      TRACE_SERVER("Client is closed");
+      free(buffer);
+      return -1;
+    }
+    FATAL_SYSCALL_ON(rc < 0);
   }
 
-  *buffer_len = (size_t)ret;
+  *buffer_ptr = buffer;
+  *buffer_len_ptr = (size_t)rc;
+  return 0;
 }
 
 bool server_listener_list_empty(uint8_t endpoint_number)
 {
-  if (endpoints[endpoint_number].open_connections == 0) {
-    return true;
-  } else {
-    return false;
-  }
+  return endpoints[endpoint_number].open_connections == 0;
 }
 
 void server_notify_connected_libs_of_secondary_reset(void)

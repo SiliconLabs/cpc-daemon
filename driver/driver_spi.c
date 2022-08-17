@@ -56,7 +56,6 @@ typedef void (*driver_epoll_callback_t)(void);
 
 static void cs_assert(void);
 static void cs_deassert(void);
-static void clear_rx_interrupt(void);
 
 static bool validate_header(uint8_t *header);
 static int get_data_size(uint8_t *header);
@@ -69,15 +68,22 @@ static void driver_spi_open(const char *device,
                             unsigned int mode,
                             unsigned int bit_per_word,
                             unsigned int speed,
-                            unsigned int cs_gpio_number,
-                            unsigned int irq_gpio_number,
-                            unsigned int wake_gpio_number);
+                            const char *cs_gpio_chip,
+                            unsigned int cs_gpio_pin,
+                            const char *irq_gpio_chip,
+                            unsigned int irq_gpio_pin,
+                            const char * wake_gpio_chip,
+                            unsigned int wake_gpio_pin);
 
 static void driver_spi_cleanup(void)
 {
   close(spi_dev.spi_dev_descriptor);
   close(fd_core);
   close(fd_epoll);
+
+  gpio_deinit(&spi_dev.cs_gpio);
+  gpio_deinit(&spi_dev.irq_gpio);
+  gpio_deinit(&spi_dev.wake_gpio);
 
   TRACE_DRIVER("SPI driver thread cancelled");
 
@@ -89,9 +95,12 @@ pthread_t driver_spi_init(int *fd_to_core,
                           unsigned int mode,
                           unsigned int bit_per_word,
                           unsigned int speed,
-                          unsigned int cs_gpio,
-                          unsigned int irq_gpio,
-                          unsigned int wake_gpio)
+                          const char *cs_gpio_chip,
+                          unsigned int cs_gpio_pin,
+                          const char *irq_gpio_chip,
+                          unsigned int irq_gpio_pin,
+                          const char *wake_gpio_chip,
+                          unsigned int wake_gpio_pin)
 {
   int fd_sockets[2];
   ssize_t ret;
@@ -100,9 +109,12 @@ pthread_t driver_spi_init(int *fd_to_core,
                   mode,
                   bit_per_word,
                   speed,
-                  cs_gpio,
-                  irq_gpio,
-                  wake_gpio);
+                  cs_gpio_chip,
+                  cs_gpio_pin,
+                  irq_gpio_chip,
+                  irq_gpio_pin,
+                  wake_gpio_chip,
+                  wake_gpio_pin);
 
   ret = socketpair(AF_UNIX, SOCK_DGRAM, 0, fd_sockets);
   FATAL_SYSCALL_ON(ret < 0);
@@ -125,26 +137,23 @@ pthread_t driver_spi_init(int *fd_to_core,
     {
       event.events = EPOLLIN; /* Level-triggered read() availability */
       event.data.ptr = driver_spi_process_core;
-
       ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, fd_core, &event);
       FATAL_SYSCALL_ON(ret < 0);
     }
 
     /* Setup the spi */
     {
-      event.events = EPOLLPRI; /* Level-triggered read() availability */
+      event.events = GPIO_EPOLL_EVENT; /* Level-triggered read() availability */
       event.data.ptr = driver_spi_process_irq;
-      ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, spi_dev.irq_gpio.irq_fd, &event);
+      ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, gpio_get_fd(&spi_dev.irq_gpio), &event);
       FATAL_SYSCALL_ON(ret < 0);
     }
 
     /* Setup the kill file descriptor */
     {
       int eventfd_kill = driver_kill_init();
-
       event.events = EPOLLIN; /* Level-triggered read() availability */
       event.data.ptr = driver_spi_cleanup;
-
       ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, eventfd_kill, &event);
       FATAL_SYSCALL_ON(ret < 0);
     }
@@ -200,6 +209,7 @@ static void* driver_thread_func(void* param)
 
   gpio_deinit(&spi_dev.cs_gpio);
   gpio_deinit(&spi_dev.irq_gpio);
+  gpio_deinit(&spi_dev.wake_gpio);
 
   return 0;
 }
@@ -235,7 +245,8 @@ static void cs_assert(void)
 {
   int ret = 0;
 
-  ret = gpio_write(spi_dev.cs_gpio, 0);
+  ret = gpio_write(&spi_dev.cs_gpio, 0);
+
   FATAL_SYSCALL_ON(ret < 0);
 }
 
@@ -243,26 +254,21 @@ static void cs_deassert(void)
 {
   int ret = 0;
 
-  ret = gpio_write(spi_dev.cs_gpio, 1);
+  ret = gpio_write(&spi_dev.cs_gpio, 1);
+
   FATAL_SYSCALL_ON(ret < 0);
-}
-
-static void clear_rx_interrupt(void)
-{
-  char buf[8];
-
-  // Consume interrupt
-  lseek(spi_dev.irq_gpio.irq_fd, 0, SEEK_SET);
-  read(spi_dev.irq_gpio.irq_fd, buf, sizeof(buf));
 }
 
 static void driver_spi_open(const char *device,
                             unsigned int mode,
                             unsigned int bit_per_word,
                             unsigned int speed,
-                            unsigned int cs_gpio_number,
-                            unsigned int irq_gpio_number,
-                            unsigned int wake_gpio_number)
+                            const char *cs_gpio_chip,
+                            unsigned int cs_gpio_pin,
+                            const char *irq_gpio_chip,
+                            unsigned int irq_gpio_pin,
+                            const char *wake_gpio_chip,
+                            unsigned int wake_gpio_pin)
 {
   int ret = 0;
   int fd;
@@ -294,19 +300,15 @@ static void driver_spi_open(const char *device,
   spi_dev.spi_dev_descriptor = fd;
 
   // Setup CS gpio
-  FATAL_ON(gpio_init(&spi_dev.cs_gpio, cs_gpio_number) < 0);
-  FATAL_ON(gpio_direction(spi_dev.cs_gpio, OUT) < 0);
-  FATAL_ON(gpio_write(spi_dev.cs_gpio, 1u) < 0);
+  FATAL_ON(gpio_init(&spi_dev.cs_gpio, cs_gpio_chip, cs_gpio_pin, OUT, NO_EDGE) < 0);
+  FATAL_ON(gpio_write(&spi_dev.cs_gpio, 1u) < 0);
 
   // Setup IRQ gpio
-  FATAL_ON(gpio_init(&spi_dev.irq_gpio, irq_gpio_number) < 0);
-  FATAL_ON(gpio_direction(spi_dev.irq_gpio, IN) < 0);
-  FATAL_ON(gpio_setedge(spi_dev.irq_gpio, FALLING) < 0);
+  FATAL_ON(gpio_init(&spi_dev.irq_gpio, irq_gpio_chip, irq_gpio_pin, NO_DIRECTION, FALLING) < 0);
 
   // Setup WAKE gpio
-  FATAL_ON(gpio_init(&spi_dev.wake_gpio, wake_gpio_number) < 0);
-  FATAL_ON(gpio_direction(spi_dev.wake_gpio, OUT) < 0);
-  FATAL_ON(gpio_write(spi_dev.wake_gpio, 1u) < 0);
+  FATAL_ON(gpio_init(&spi_dev.wake_gpio, wake_gpio_chip, wake_gpio_pin, OUT, NO_EDGE) < 0);
+  FATAL_ON(gpio_write(&spi_dev.wake_gpio, 1u) < 0);
 }
 
 static void driver_spi_process_irq(void)
@@ -319,14 +321,13 @@ static void driver_spi_process_irq(void)
   int timeout = IRQ_LINE_TIMEOUT;
   int error_timeout = 4096;
 
-  // Consume interrupt
-  clear_rx_interrupt();
+  gpio_clear_irq(&spi_dev.irq_gpio);
 
-  if (gpio_read(spi_dev.irq_gpio) == 0) {
+  if (gpio_read(&spi_dev.irq_gpio) == 0) {
     cs_assert();
     sleep_ms(1);
 
-    if (gpio_read(spi_dev.irq_gpio) != 0u) {
+    if (gpio_read(&spi_dev.irq_gpio) != 0u) {
       cs_deassert();
       return;
     }
@@ -342,7 +343,7 @@ static void driver_spi_process_irq(void)
     if (payload_size == -1) {
       spi_tranfer.len = 1u;
 
-      while ((gpio_read(spi_dev.irq_gpio) == 0u)
+      while ((gpio_read(&spi_dev.irq_gpio) == 0u)
              && (error_timeout > 0)) {
         ret = ioctl(spi_dev.spi_dev_descriptor, SPI_IOC_MESSAGE(1), &spi_tranfer);
         FATAL_ON(ret != 1);
@@ -370,7 +371,7 @@ static void driver_spi_process_irq(void)
     }
 
     // Wait for NCP to response
-    while ((gpio_read(spi_dev.irq_gpio) != 1)
+    while ((gpio_read(&spi_dev.irq_gpio) != 1)
            && timeout > 0) {
       sleep_us(100);
       timeout--;
@@ -401,7 +402,7 @@ static void driver_spi_process_core(void)
 
   sleep_ms(1);
 
-  if (gpio_read(spi_dev.irq_gpio) == 0) {
+  if (gpio_read(&spi_dev.irq_gpio) == 0) {
     return;
   }
 

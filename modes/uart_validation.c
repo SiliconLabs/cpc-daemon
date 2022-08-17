@@ -45,8 +45,8 @@ static bool wait_on_reset_software;
 /* Flag set when software reset status is received */
 static bool reset_software_received;
 
-/* Flag set when secondary version is received */
-static bool secondary_version_received;
+/* Flag set when secondary cpc version is received */
+static bool secondary_cpc_version_received;
 
 /* Flag set when fc validation value is received */
 static bool fc_validation_value_received;
@@ -71,7 +71,7 @@ static void test_2_rts_cts(void);
 static void open_uart_port_subtest(bool flowcontrol);
 static void reset_external_subtest(void);
 static void reset_software_subtest(void);
-static void get_secondary_version_subtest(void);
+static void get_secondary_cpc_version_subtest(void);
 static void enable_uframe_processing_subtest(bool enable);
 static void enter_irq_subtest(uint32_t start_in_ms, uint32_t end_in_ms);
 static void send_noop_subtest(void);
@@ -87,11 +87,11 @@ static void reset_software_callback(sl_cpc_system_command_handle_t *handle,
                                     sl_status_t status,
                                     sl_cpc_system_status_t reset_status);
 
-static void get_secondary_version_callback(sl_cpc_system_command_handle_t *handle,
-                                           sl_cpc_property_id_t property_id,
-                                           void* property_value,
-                                           size_t property_length,
-                                           sl_status_t status);
+static void get_secondary_cpc_version_callback(sl_cpc_system_command_handle_t *handle,
+                                               sl_cpc_property_id_t property_id,
+                                               void* property_value,
+                                               size_t property_length,
+                                               sl_status_t status);
 
 static void get_fc_validation_value_callback(sl_cpc_system_command_handle_t *handle,
                                              sl_cpc_property_id_t property_id,
@@ -115,8 +115,7 @@ static void noop_callback(sl_cpc_system_command_handle_t *handle,
                           sl_status_t status);
 
 /* External functions */
-__attribute__((noreturn)) void signal_graceful_exit(void);
-void main_wait_crash_or_gracefull_exit(void);
+__attribute__((noreturn)) void software_graceful_exit(void);
 
 void run_uart_validation(void)
 {
@@ -132,8 +131,7 @@ void run_uart_validation(void)
       BUG("Invalid UART validation test option: %c, see --help", test_option);
   }
 
-  signal_graceful_exit();
-  main_wait_crash_or_gracefull_exit();
+  software_graceful_exit();
 }
 
 bool uart_validation_reset_requested(sl_cpc_system_status_t status)
@@ -176,7 +174,7 @@ static void test_2_rts_cts(void)
 
   PRINT_INFO("Validating Host TX/RX <-> Secondary RX/TX...");
   reset_software_subtest();
-  get_secondary_version_subtest();
+  get_secondary_cpc_version_subtest();
 
   PRINT_INFO("Validating Host CTS <-> Secondary RTS...");
   enable_uframe_processing_subtest(true);
@@ -209,7 +207,7 @@ static void open_uart_port_subtest(bool flowcontrol)
 
   // Disable reset sequence because we want to do it ourselves
   config_reset_sequence = false;
-  server_core_thread = server_core_init(fd_socket_driver_core, false);
+  server_core_thread = server_core_init(fd_socket_driver_core, SERVER_CORE_MODE_NORMAL);
 }
 
 static void reset_external_subtest(void)
@@ -258,19 +256,19 @@ static void reset_software_subtest(void)
   }
 }
 
-static void get_secondary_version_subtest(void)
+static void get_secondary_cpc_version_subtest(void)
 {
   uint8_t timeout_seconds = TIMEOUT_SECONDS;
-  TRACE_UART_VALIDATION("Sending get version command");
-  sl_cpc_system_cmd_property_get(get_secondary_version_callback,
-                                 PROP_SECONDARY_VERSION,
+  TRACE_UART_VALIDATION("Sending get Secondary CPC version command");
+  sl_cpc_system_cmd_property_get(get_secondary_cpc_version_callback,
+                                 PROP_SECONDARY_CPC_VERSION,
                                  TIMEOUT_SECONDS,
                                  TIME_BETWEEN_RETRIES_US,
                                  false);
 
   while (1) {
-    if (secondary_version_received) {
-      TRACE_UART_VALIDATION("Received secondary version");
+    if (secondary_cpc_version_received) {
+      TRACE_UART_VALIDATION("Received Secondary CPC version");
       break;
     }
 
@@ -463,24 +461,24 @@ static void reset_software_callback(sl_cpc_system_command_handle_t *handle,
   }
 }
 
-static void get_secondary_version_callback(sl_cpc_system_command_handle_t *handle,
-                                           sl_cpc_property_id_t property_id,
-                                           void* property_value,
-                                           size_t property_length,
-                                           sl_status_t status)
+static void get_secondary_cpc_version_callback(sl_cpc_system_command_handle_t *handle,
+                                               sl_cpc_property_id_t property_id,
+                                               void* property_value,
+                                               size_t property_length,
+                                               sl_status_t status)
 {
   (void) handle;
 
   uint32_t *version = (uint32_t*)property_value;
 
-  if ( (property_id != PROP_SECONDARY_VERSION)
+  if ( (property_id != PROP_SECONDARY_CPC_VERSION)
        || (status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS)
        || (property_value == NULL || property_length != 3 * sizeof(uint32_t))) {
-    FATAL("Cannot get secondary version (obsolete firmware?)");
+    FATAL("Cannot get Secondary CPC version (obsolete firmware?)");
   }
 
-  TRACE_UART_VALIDATION("Secondary is v%d.%d.%d", version[0], version[1], version[2]);
-  secondary_version_received = true;
+  TRACE_UART_VALIDATION("Secondary CPC v%d.%d.%d", version[0], version[1], version[2]);
+  secondary_cpc_version_received = true;
 }
 
 static void get_fc_validation_value_callback(sl_cpc_system_command_handle_t *handle,

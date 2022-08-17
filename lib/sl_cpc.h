@@ -23,6 +23,10 @@
 #include <stdbool.h>
 #include <sys/types.h>
 
+#if !defined(__linux__)
+#error Wrong platform - this header file is intended for Linux applications that use libcpc
+#endif
+
 #ifdef DOXYGEN
 #define SL_ENUM(name) enum name
 #define SL_ENUM_GENERIC(name, type) enum name

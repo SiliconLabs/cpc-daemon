@@ -28,6 +28,11 @@
 
 static int fd_ctrl_data_of_pending_open = 0;
 
+bool sl_cpc_system_is_waiting_for_status_reply(void)
+{
+  return fd_ctrl_data_of_pending_open != 0;
+}
+
 void sl_cpc_system_set_pending_connection(int fd)
 {
   fd_ctrl_data_of_pending_open = fd;
@@ -136,6 +141,7 @@ void property_get_single_endpoint_state_and_reply_to_pending_open_callback(sl_cp
     interface_buffer->type = EXCHANGE_OPEN_ENDPOINT_QUERY;
     ssize_t ret = send(fd_ctrl_data_of_pending_open, interface_buffer, buffer_len, 0);
     TRACE_SERVER("Replied to endpoint open query on ep#%d", endpoint_id);
+    fd_ctrl_data_of_pending_open = 0;
 
     if (ret == -1) {
       WARN("Failed to acknowledge the open request for endpoint #%d. %m", endpoint_id);
