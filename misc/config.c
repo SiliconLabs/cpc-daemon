@@ -393,7 +393,7 @@ static bool is_comment_or_newline(const char* line)
   }
 
   // match lines beginning with #, ignoring leading whitespace
-  if (sscanf(line, " #%256c", match) == 1) {
+  if (sscanf(line, " %256[#]", match) == 1) {
     return true;
   }
 
