@@ -79,7 +79,7 @@ static void write_until_success_or_error(int fd, uint8_t* buff, size_t size)
 }
 
 #define ASYNC_LOGGER_PAGE_SIZE    4096
-#define ASYNC_LOGGER_PAGE_COUNT   100
+#define ASYNC_LOGGER_PAGE_COUNT   7
 #define ASYNC_LOGGER_BUFFER_DEPTH (ASYNC_LOGGER_PAGE_SIZE * ASYNC_LOGGER_PAGE_COUNT)
 #define ASYNC_LOGGER_TIMEOUT_MS   100
 #define ASYNC_LOGGER_DONT_TRIGG_UNLESS_THIS_CHUNK_SIZE ASYNC_LOGGER_PAGE_SIZE
@@ -168,16 +168,16 @@ static void file_logging_init(void)
   int ret;
   struct statfs statfs_buf;
 
-  ret = mkdir(config_traces_folder, 0700);
+  ret = mkdir(config.traces_folder, 0700);
   NO_LOGGING_FATAL_SYSCALL_ON(ret < 0 && errno != EEXIST);
 
-  ret = statfs(config_traces_folder, &statfs_buf);
+  ret = statfs(config.traces_folder, &statfs_buf);
   NO_LOGGING_FATAL_SYSCALL_ON(ret < 0);
   if (statfs_buf.f_type != TMPFS_MAGIC) {
-    WARN("Traces folder %s is not mounted on a tmpfs", config_traces_folder);
+    WARN("Traces folder %s is not mounted on a tmpfs", config.traces_folder);
   }
 
-  ret = access(config_traces_folder, W_OK);
+  ret = access(config.traces_folder, W_OK);
   NO_LOGGING_FATAL_SYSCALL_ON(ret < 0);
 
   /* Build file string and open file */
@@ -190,7 +190,7 @@ static void file_logging_init(void)
     nchars = snprintf(buf,
                       sizeof(buf),
                       "%s/trace-%d-%02d-%02d_%02d-%02d-%02d.log",
-                      config_traces_folder,
+                      config.traces_folder,
                       tm.tm_year + 1900,
                       tm.tm_mon + 1,
                       tm.tm_mday,
@@ -207,7 +207,7 @@ static void file_logging_init(void)
     PRINT_INFO("Logging to file enabled in file %s.", buf);
   }
 
-  file_logger.fd = file_logger.file->_fileno;
+  file_logger.fd = fileno(file_logger.file);
 
   ret = pthread_create(&file_logger_thread,
                        NULL,
@@ -469,7 +469,7 @@ static void logging_print_stats(epoll_private_data_t *event_private_data)
         secondary_core_debug_counters.invalid_payload_checksum);
 
 #ifndef UNIT_TESTING
-  if (config_bus == UART) {
+  if (config.bus == UART) {
     driver_uart_print_overruns();
   }
 #endif
@@ -481,8 +481,8 @@ void init_stats_logging(void)
   stats_timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
   FATAL_SYSCALL_ON(stats_timer_fd < 0);
 
-  struct itimerspec timeout_time = { .it_interval = { .tv_sec = config_stats_interval, .tv_nsec = 0 },
-                                     .it_value    = { .tv_sec = config_stats_interval, .tv_nsec = 0 } };
+  struct itimerspec timeout_time = { .it_interval = { .tv_sec = config.stats_interval, .tv_nsec = 0 },
+                                     .it_value    = { .tv_sec = config.stats_interval, .tv_nsec = 0 } };
 
   int ret = timerfd_settime(stats_timer_fd,
                             0,
@@ -517,7 +517,7 @@ void logging_kill(void)
   pthread_cond_signal(&stdout_logger.condition);
   pthread_join(stdout_logger_thread, NULL);
 
-  if (config_file_tracing) {
+  if (config.file_tracing) {
     pthread_cond_signal(&file_logger.condition);
     pthread_join(file_logger_thread, NULL);
   }
@@ -560,7 +560,7 @@ void trace(const bool force_stdout, const char* string, ...)
   char log_string[512];
   size_t log_string_length = 0;
 
-  if (!config_file_tracing && !config_stdout_tracing && !force_stdout) {
+  if (!config.file_tracing && !config.stdout_tracing && !force_stdout) {
     return;
   }
 
@@ -596,10 +596,10 @@ void trace(const bool force_stdout, const char* string, ...)
     va_end(vl);
   }
 
-  if (config_stdout_tracing || force_stdout) {
+  if (config.stdout_tracing || force_stdout) {
     stdio_log(log_string, log_string_length);
   }
-  if (config_file_tracing) {
+  if (config.file_tracing) {
     file_log(log_string, log_string_length);
   }
 }
@@ -609,7 +609,7 @@ void trace_no_timestamp(const char* string, ...)
   char log_string[512];
   size_t log_string_length = 0;
 
-  if (!config_file_tracing && !config_stdout_tracing) {
+  if (!config.file_tracing && !config.stdout_tracing) {
     return;
   }
 
@@ -637,10 +637,10 @@ void trace_no_timestamp(const char* string, ...)
     va_end(vl);
   }
 
-  if (config_stdout_tracing) {
+  if (config.stdout_tracing) {
     stdio_log(log_string, log_string_length);
   }
-  if (config_file_tracing) {
+  if (config.file_tracing) {
     file_log(log_string, log_string_length);
   }
 }
@@ -669,7 +669,7 @@ void trace_frame(const char* string, const void* buffer, size_t len)
   size_t log_string_length = 0;
   uint8_t* frame = (uint8_t*) buffer;
 
-  if ((!config_file_tracing && !config_stdout_tracing) || config_enable_frame_trace == false) {
+  if ((!config.file_tracing && !config.stdout_tracing) || config.enable_frame_trace == false) {
     return;
   }
 
@@ -690,10 +690,10 @@ void trace_frame(const char* string, const void* buffer, size_t len)
     /* Edge case where the string itself can fill the whole buffer.. */
     if (log_string_length == sizeof(log_string)) {
       /* Flush the buffer */
-      if (config_stdout_tracing) {
+      if (config.stdout_tracing) {
         stdio_log(log_string, log_string_length);
       }
-      if (config_file_tracing) {
+      if (config.file_tracing) {
         file_log(log_string, log_string_length);
       }
 
@@ -708,10 +708,10 @@ void trace_frame(const char* string, const void* buffer, size_t len)
      * in the middle of the parsing, flush the buffer */
     if (log_string_length >= sizeof(log_string) - sizeof("xx:")) {
       /* Flush the buffer */
-      if (config_stdout_tracing) {
+      if (config.stdout_tracing) {
         stdio_log(log_string, log_string_length);
       }
-      if (config_file_tracing) {
+      if (config.file_tracing) {
         file_log(log_string, log_string_length);
       }
 
@@ -727,10 +727,10 @@ void trace_frame(const char* string, const void* buffer, size_t len)
   /* Newline terminate the string (overriding the last semicolon)*/
   log_string[log_string_length - 1] = '\n';
 
-  if (config_stdout_tracing) {
+  if (config.stdout_tracing) {
     stdio_log(log_string, log_string_length);
   }
-  if (config_file_tracing) {
+  if (config.file_tracing) {
     file_log(log_string, log_string_length);
   }
 }

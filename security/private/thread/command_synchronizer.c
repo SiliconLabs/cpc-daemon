@@ -39,7 +39,7 @@ void security_post_command(sl_cpc_security_command_t command)
 {
   int ret;
 
-  if (config_use_encryption == false) {
+  if (config.use_encryption == false) {
     FATAL("Tried to send a security command when encryption is disabled");
   }
 

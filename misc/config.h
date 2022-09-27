@@ -20,6 +20,7 @@
 #define CONFIG_H
 
 #include <stdbool.h>
+#include <sys/resource.h>
 
 #ifndef DEFAULT_INSTANCE_NAME
   #define DEFAULT_INSTANCE_NAME "cpcd_0"
@@ -49,60 +50,70 @@ typedef enum {
   MODE_UART_VALIDATION
 }operation_mode_t;
 
-extern bus_t              config_bus;
+typedef struct __attribute__((packed)) {
+  const char *file_path;
 
-extern int                config_stdout_tracing;
-extern int                config_file_tracing;
-extern int                config_lttng_tracing;
-extern bool               config_enable_frame_trace;
+  const char *instance_name;
 
-extern bool               config_use_noop_keep_alive;
-extern bool               config_use_encryption;
+  const char *const socket_folder;
 
-extern const char*        config_traces_folder;
+  operation_mode_t operation_mode;
 
-extern unsigned int       config_uart_baudrate;
-extern bool               config_uart_hardflow;
-extern const char*        config_uart_file;
+  bool use_encryption;
 
-extern const char*        config_board_controller_ip_addr;
-extern bool               config_board_controller;
+  const char *binding_key_file;
 
-extern const char*        config_spi_file;
-extern unsigned int       config_spi_bitrate;
-extern unsigned int       config_spi_mode;
-extern unsigned int       config_spi_bit_per_word;
-extern const char*        config_spi_cs_chip;
-extern unsigned int       config_spi_cs_pin;
-extern const char*        config_spi_irq_chip;
-extern unsigned int       config_spi_irq_pin;
+  const char *binding_method;
 
-extern const char*        config_fu_wake_chip;
-extern unsigned int       config_fu_spi_wake_pin;
-extern const char*        config_fu_reset_chip;
-extern unsigned int       config_fu_spi_reset_pin;
-extern bool               config_fu_recovery_enabled;
-extern bool               config_fu_connect_to_bootloader;
-extern bool               config_fu_enter_bootloader;
-extern const char*        config_fu_file;
-extern bool               config_restart_daemon;
+  bool stdout_tracing;
+  bool file_tracing;
+  int lttng_tracing;
+  bool enable_frame_trace;
+  const char *traces_folder;
 
-extern const char*        config_application_version;
+  bus_t bus;
 
-extern bool               config_print_secondary_versions_and_exit;
+  unsigned int uart_baudrate;
+  bool uart_hardflow;
+  const char *uart_file;
 
-extern const char* const  config_socket_folder;
-extern const char*        config_instance_name;
+  const char *spi_file;
+  unsigned int spi_bitrate;
+  unsigned int spi_mode;
+  unsigned int spi_bit_per_word;
+  const char *spi_cs_chip;
+  unsigned int spi_cs_pin;
+  const char *spi_irq_chip;
+  unsigned int spi_irq_pin;
 
-extern bool               config_reset_sequence;
+  const char *fu_reset_chip;
+  unsigned int fu_spi_reset_pin;
+  const char *fu_wake_chip;
+  unsigned int fu_spi_wake_pin;
+  bool fu_recovery_enabled;
+  bool fu_connect_to_bootloader;
+  bool fu_enter_bootloader;
+  const char *fu_file;
+  bool fu_restart_daemon;
 
-extern operation_mode_t   config_operation_mode;
+  const char *board_controller_ip_addr;
 
-extern const char*        config_binding_key_file;
+  const char *application_version_validation;
 
-extern const char*        config_uart_validation_test_option;
+  bool print_secondary_versions_and_exit;
 
-extern long               config_stats_interval;
+  bool use_noop_keep_alive;
+
+  bool reset_sequence;
+
+  const char *uart_validation_test_option;
+
+  long stats_interval;
+
+  rlim_t rlimit_nofile;
+} config_t;
+
+extern config_t config;
 
 void config_init(int argc, char *argv[]);
 void config_restart_cpcd();

@@ -61,8 +61,8 @@ binding is used, a key must be generated manually, for example with openssl:
     cpcd --bind ecdh --key ./binding-ecdh.key
 
 If binding is successful, the daemon should exit without errors. The daemon can
-then be started normally without the `--bing` argument.
-Data is now encrypted between daemon and secondary.
+then be started normally. Data is now encrypted between daemon and secondary.
+
 
 ## Unbinding
 
@@ -85,9 +85,6 @@ unbinding:
 
 If the unbind has not been implemented, the device can be recovered by using the
 sample application `cpc_secondary_uart_security_device_recovery`.
-
-Once the daemon has unbound from the secondary, you may restart the daemon without
-the `--unbing` argument.
 
 ## Side-effect Of Encryption On Secondary
 

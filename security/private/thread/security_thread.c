@@ -45,11 +45,11 @@ void* security_thread_func(void* param)
   (void)param;
   int ret;
 
-  FATAL_ON(config_operation_mode == MODE_BINDING_UNKNOWN);
+  FATAL_ON(config.operation_mode == MODE_BINDING_UNKNOWN);
 
   /* The server can take time to be up; try to to load the key first
    * to crash early if its bad. */
-  if (config_operation_mode != MODE_BINDING_ECDH && config_operation_mode != MODE_BINDING_UNBIND) {
+  if (config.operation_mode != MODE_BINDING_ECDH && config.operation_mode != MODE_BINDING_UNBIND) {
     security_load_binding_key_from_file();
   }
 
@@ -58,7 +58,7 @@ void* security_thread_func(void* param)
   /* Block until the server is up and running */
   server_ready_wait();
 
-  ret = cpc_init(&lib_handle, config_instance_name, false, NULL);
+  ret = cpc_init(&lib_handle, config.instance_name, false, NULL);
   FATAL_ON(ret < 0);
 
   security_open_security_endpoint();

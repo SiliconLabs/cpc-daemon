@@ -41,7 +41,7 @@ void board_controller_get_config_vcom(const char *ip_address, unsigned int *baud
   server.sin_family = AF_INET;
   server.sin_port = htons(telnet_port);
   server.sin_addr.s_addr = inet_addr(ip_address);
-  if (connect(socket_handle, &server, sizeof(server)) < 0) {
+  if (connect(socket_handle, (const struct sockaddr *)&server, sizeof(server)) < 0) {
     close(socket_handle);
     FATAL("Cannot connect to board controller");
   }

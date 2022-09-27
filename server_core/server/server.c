@@ -138,7 +138,7 @@ void server_init(void)
         int nchars;
         const size_t size = sizeof(name.sun_path) - 1;
 
-        nchars = snprintf(name.sun_path, size, "%s/cpcd/%s/ctrl.cpcd.sock", config_socket_folder, config_instance_name);
+        nchars = snprintf(name.sun_path, size, "%s/cpcd/%s/ctrl.cpcd.sock", config.socket_folder, config.instance_name);
 
         /* Make sure the path fitted entirely in the struct's static buffer */
         FATAL_ON(nchars < 0 || (size_t) nchars >= size);
@@ -177,7 +177,7 @@ void server_init(void)
   }
 
   /* Setup no-op timer. Trig in 1 sec, and every 1 sec after that */
-  if (config_use_noop_keep_alive) {
+  if (config.use_noop_keep_alive) {
 #if !defined(UNIT_TESTING)
     const struct itimerspec timeout = { .it_interval = { .tv_sec = 5, .tv_nsec = 0 },
                                         .it_value    = { .tv_sec = 5, .tv_nsec = 0 } };
@@ -388,7 +388,7 @@ static void server_process_epoll_fd_ctrl_data_socket(epoll_private_data_t *priva
       //Be careful when asked about opening the security endpoint...
       if (interface_buffer->endpoint_number == SL_CPC_ENDPOINT_SECURITY) {
         if (endpoints[SL_CPC_ENDPOINT_SECURITY].data_socket_epoll_private_data != NULL // Make sure only 1 client is connected (ie, the daemon' security thread)
-            || config_use_encryption == false) {                                      // Make sure security is enabled
+            || config.use_encryption == false) {                                      // Make sure security is enabled
           // Reuse the same buffer to send a negative reply
           *(bool*)(interface_buffer->payload) = false;
 
@@ -792,7 +792,7 @@ void server_open_endpoint(uint8_t endpoint_number) /* <-- has been made public f
         int nchars;
         const size_t size = sizeof(name.sun_path) - 1;
 
-        nchars = snprintf(name.sun_path, size, "%s/cpcd/%s/ep%d.cpcd.sock", config_socket_folder, config_instance_name, endpoint_number);
+        nchars = snprintf(name.sun_path, size, "%s/cpcd/%s/ep%d.cpcd.sock", config.socket_folder, config.instance_name, endpoint_number);
 
         /* Make sure the path fitted entirely in the struct's static buffer */
         FATAL_ON(nchars < 0 || (size_t) nchars >= size);
@@ -918,7 +918,7 @@ void server_close_endpoint(uint8_t endpoint_number, bool error)
         int nchars;
         const size_t size = sizeof(endpoint_path);
 
-        nchars = snprintf(endpoint_path, size, "%s/cpcd/%s/ep%d.cpcd.sock", config_socket_folder, config_instance_name, endpoint_number);
+        nchars = snprintf(endpoint_path, size, "%s/cpcd/%s/ep%d.cpcd.sock", config.socket_folder, config.instance_name, endpoint_number);
 
         /* Make sure the path fitted entirely in the struct's static buffer */
         FATAL_ON(nchars < 0 || (size_t) nchars >= size);

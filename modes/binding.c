@@ -41,26 +41,26 @@ void run_binding_mode(void)
   FATAL("Tried to run binding mode with daemon compiled with encryption disabled");
 #endif
 
-  if (config_use_encryption == false) {
+  if (config.use_encryption == false) {
     FATAL("Tried to run binding mode with encryption disabled");
   }
 
   // Init the driver
   {
-    if (config_bus == UART) {
-      driver_thread = driver_uart_init(&fd_socket_driver_core, config_uart_file, config_uart_baudrate, config_uart_hardflow);
-    } else if (config_bus == SPI) {
+    if (config.bus == UART) {
+      driver_thread = driver_uart_init(&fd_socket_driver_core, config.uart_file, config.uart_baudrate, config.uart_hardflow);
+    } else if (config.bus == SPI) {
       driver_thread = driver_spi_init(&fd_socket_driver_core,
-                                      config_spi_file,
-                                      config_spi_mode,
-                                      config_spi_bit_per_word,
-                                      config_spi_bitrate,
-                                      config_spi_cs_chip,
-                                      config_spi_cs_pin,
-                                      config_spi_irq_chip,
-                                      config_spi_irq_pin,
-                                      config_fu_wake_chip,
-                                      config_fu_spi_wake_pin);
+                                      config.spi_file,
+                                      config.spi_mode,
+                                      config.spi_bit_per_word,
+                                      config.spi_bitrate,
+                                      config.spi_cs_chip,
+                                      config.spi_cs_pin,
+                                      config.spi_irq_chip,
+                                      config.spi_irq_pin,
+                                      config.fu_wake_chip,
+                                      config.fu_spi_wake_pin);
     } else {
       BUG();
     }
@@ -68,7 +68,7 @@ void run_binding_mode(void)
 
   server_core_thread = server_core_init(fd_socket_driver_core, SERVER_CORE_MODE_NORMAL);
 
-  switch (config_operation_mode) {
+  switch (config.operation_mode) {
     case MODE_BINDING_PLAIN_TEXT:
       security_post_command(SECURITY_COMMAND_PLAIN_TEXT_BINDING);
       break;

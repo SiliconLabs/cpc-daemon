@@ -32,7 +32,6 @@
 #include <sys/epoll.h>
 #include <unistd.h>
 #include <sys/time.h>
-#include <execinfo.h>
 #include <errno.h>
 
 #include "version.h"
@@ -47,6 +46,10 @@
 #include "security/security.h"
 #include "server_core/server_core.h"
 #include "server_core/epoll/epoll.h"
+
+#if defined(HAVE_BACKTRACE)
+#include "backtrace.h"
+#endif
 
 pthread_t main_thread = 0;
 pthread_t driver_thread = 0;
@@ -69,6 +72,7 @@ int argc_g = 0;
 __attribute__((noreturn)) void software_graceful_exit(void);
 void main_wait_crash_or_graceful_exit(void);
 
+#if defined(HAVE_BACKTRACE)
 static void segv_handler(int sig)
 {
   (void) sig;
@@ -95,6 +99,7 @@ static void segv_handler(int sig)
 
   exit(EXIT_FAILURE);
 }
+#endif
 
 int main(int argc, char *argv[])
 {
@@ -104,6 +109,7 @@ int main(int argc, char *argv[])
   main_thread = pthread_self();
   pthread_setname_np(main_thread, "cpcd");
 
+#if defined(HAVE_BACKTRACE)
   /* Setup signaling segfault */
   {
     struct sigaction sa = { 0 };
@@ -113,6 +119,7 @@ int main(int argc, char *argv[])
     sigemptyset(&sa.sa_mask);
     sigaction(SIGSEGV, &sa, NULL);
   }
+#endif
 
   /* Setup crash and gracefull exit signaling */
   {
@@ -183,12 +190,12 @@ int main(int argc, char *argv[])
 #if !defined(ENABLE_ENCRYPTION)
   PRINT_INFO("\033[31;1mENCRYPTION IS DISABLED \033[0m");
 #else
-  if (config_use_encryption == false) {
+  if (config.use_encryption == false) {
     PRINT_INFO("\033[31;1mENCRYPTION IS DISABLED \033[0m");
   }
 #endif
 
-  switch (config_operation_mode) {
+  switch (config.operation_mode) {
     case MODE_NORMAL:
       PRINT_INFO("Starting daemon in normal mode");
       run_normal_mode();
@@ -248,7 +255,7 @@ __attribute__((noreturn)) static void exit_daemon(void)
   server_core_kill_signal();
   pthread_join(server_core_thread, NULL);
 
-  if (config_use_encryption && security_thread != 0) {
+  if (config.use_encryption && security_thread != 0) {
     int ret = pthread_tryjoin_np(security_thread, NULL);
     if (ret == EBUSY) {
 #if defined(ENABLE_ENCRYPTION)
