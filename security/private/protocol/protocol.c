@@ -264,6 +264,7 @@ void security_exchange_plain_text_binding_key(uint8_t* const binding_key)
   exit(0);
 }
 
+#if 0
 static void security_property_get_state_callback(sl_cpc_system_command_handle_t *handle,
                                                  sl_cpc_property_id_t property_id,
                                                  void* property_value,
@@ -296,6 +297,7 @@ static void security_fetch_remote_security_state(void)
                                  1000000, // 1 second timeout
                                  false);  // Must be an i-frame to validate the encrypted link
 }
+#endif
 
 void security_initialize_session(void)
 {
@@ -337,7 +339,9 @@ void security_initialize_session(void)
 
   TRACE_SECURITY("Session initialized");
 
+#if 0
 #ifndef UNIT_TESTING
   security_fetch_remote_security_state();
+#endif
 #endif
 }

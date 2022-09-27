@@ -62,10 +62,10 @@ void run_firmware_update(void)
 {
   sl_status_t status;
 
-  // If config_fu_connect_to_bootloader is true,
+  // If fu_connect_to_bootloader is true,
   // we assume the bootloader is already running.
-  if (!config_fu_connect_to_bootloader) {
-    if (config_fu_recovery_enabled) {
+  if (!config.fu_connect_to_bootloader) {
+    if (config.fu_recovery_enabled) {
       PRINT_INFO("Requesting reboot into bootloader via Pins...");
       reboot_secondary_with_pins_into_bootloader();
       PRINT_INFO("Secondary is in bootloader");
@@ -73,7 +73,7 @@ void run_firmware_update(void)
       bool protocol_version_mismatch = true;
       bool application_version_mismatch = true;
 
-      if (!config_fu_enter_bootloader) {
+      if (!config.fu_enter_bootloader) {
         PRINT_INFO("Requesting versions via CPC...");
         reboot_secondary_by_cpc(SERVER_CORE_MODE_FIRMWARE_RESET);
 
@@ -86,24 +86,24 @@ void run_firmware_update(void)
           PRINT_INFO("Secondary APP version not available, forcing update");
         }
 
-        if (!config_application_version) {
+        if (!config.application_version_validation) {
           PRINT_INFO("Firmware file version not provided, forcing update");
         }
 
-        if (server_core_secondary_app_version && config_application_version) {
-          application_version_mismatch = strcmp(server_core_secondary_app_version, config_application_version) != 0;
+        if (server_core_secondary_app_version && config.application_version_validation) {
+          application_version_mismatch = strcmp(server_core_secondary_app_version, config.application_version_validation) != 0;
           if (application_version_mismatch) {
-            PRINT_INFO("Secondary APP v%s doesn't match the provided APP v%s", server_core_secondary_app_version, config_application_version);
+            PRINT_INFO("Secondary APP v%s doesn't match the provided APP v%s", server_core_secondary_app_version, config.application_version_validation);
           }
         }
       }
 
-      if (config_fu_enter_bootloader || protocol_version_mismatch || application_version_mismatch) {
+      if (config.fu_enter_bootloader || protocol_version_mismatch || application_version_mismatch) {
         PRINT_INFO("Requesting reboot into bootloader via CPC...");
         reboot_secondary_by_cpc(SERVER_CORE_MODE_FIRMWARE_BOOTLOADER);
         PRINT_INFO("Secondary is in bootloader");
       } else {
-        if (config_restart_daemon) {
+        if (config.fu_restart_daemon) {
           PRINT_INFO("Firmware up to date, restarting daemon");
           config_restart_cpcd_without_fw_update_args();
         } else {
@@ -115,9 +115,9 @@ void run_firmware_update(void)
     }
   }
 
-  // If config_fu_enter_bootloader is true, exit
+  // If fu_enter_bootloader is true, exit
   // without transferring the firmware.
-  if (config_fu_enter_bootloader) {
+  if (config.fu_enter_bootloader) {
     sleep_s(2);
     exit(EXIT_SUCCESS);
   }
@@ -125,7 +125,7 @@ void run_firmware_update(void)
   status = transfer_firmware();
 
   if (status == SL_STATUS_OK) {
-    if (config_restart_daemon) {
+    if (config.fu_restart_daemon) {
       PRINT_INFO("Firmware upgrade successful, restarting daemon");
       config_restart_cpcd_without_fw_update_args();
     } else {
@@ -146,23 +146,23 @@ static sl_status_t transfer_firmware(void)
 
   PRINT_INFO("Transferring firmware...");
 
-  if (config_bus == UART) {
-    status = xmodem_send(config_fu_file,
-                         config_uart_file,
-                         config_uart_baudrate,
-                         config_uart_hardflow);
-  } else if (config_bus == SPI) {
-    status = send_firmware(config_fu_file,
-                           config_spi_file,
-                           config_spi_mode,
-                           config_spi_bit_per_word,
-                           config_spi_bitrate,
-                           config_spi_cs_chip,
-                           config_spi_cs_pin,
-                           config_spi_irq_chip,
-                           config_spi_irq_pin,
-                           config_fu_wake_chip,
-                           config_fu_spi_wake_pin);
+  if (config.bus == UART) {
+    status = xmodem_send(config.fu_file,
+                         config.uart_file,
+                         config.uart_baudrate,
+                         config.uart_hardflow);
+  } else if (config.bus == SPI) {
+    status = send_firmware(config.fu_file,
+                           config.spi_file,
+                           config.spi_mode,
+                           config.spi_bit_per_word,
+                           config.spi_bitrate,
+                           config.spi_cs_chip,
+                           config.spi_cs_pin,
+                           config.spi_irq_chip,
+                           config.spi_irq_pin,
+                           config.fu_wake_chip,
+                           config.fu_spi_wake_pin);
   } else {
     BUG();
   }
@@ -177,20 +177,20 @@ static void reboot_secondary_by_cpc(server_core_mode_t mode)
   int ret;
 
   // Init the driver
-  if (config_bus == UART) {
-    driver_thread = driver_uart_init(&fd_socket_driver_core, config_uart_file, config_uart_baudrate, config_uart_hardflow);
-  } else if (config_bus == SPI) {
+  if (config.bus == UART) {
+    driver_thread = driver_uart_init(&fd_socket_driver_core, config.uart_file, config.uart_baudrate, config.uart_hardflow);
+  } else if (config.bus == SPI) {
     driver_thread = driver_spi_init(&fd_socket_driver_core,
-                                    config_spi_file,
-                                    config_spi_mode,
-                                    config_spi_bit_per_word,
-                                    config_spi_bitrate,
-                                    config_spi_cs_chip,
-                                    config_spi_cs_pin,
-                                    config_spi_irq_chip,
-                                    config_spi_irq_pin,
-                                    config_fu_wake_chip,
-                                    config_fu_spi_wake_pin);
+                                    config.spi_file,
+                                    config.spi_mode,
+                                    config.spi_bit_per_word,
+                                    config.spi_bitrate,
+                                    config.spi_cs_chip,
+                                    config.spi_cs_pin,
+                                    config.spi_irq_chip,
+                                    config.spi_irq_pin,
+                                    config.fu_wake_chip,
+                                    config.fu_spi_wake_pin);
   } else {
     BUG();
   }
@@ -214,16 +214,16 @@ static void reboot_secondary_with_pins_into_bootloader(void)
   static int fd_epoll;
 
   // Setup WAKE gpio
-  FATAL_ON(gpio_init(&wake_gpio, config_fu_wake_chip, config_fu_spi_wake_pin, OUT, NO_EDGE) < 0);
+  FATAL_ON(gpio_init(&wake_gpio, config.fu_wake_chip, config.fu_spi_wake_pin, OUT, NO_EDGE) < 0);
   FATAL_ON(gpio_write(&wake_gpio, 1) < 0);
 
   // Setup RESET gpio
-  FATAL_ON(gpio_init(&reset_gpio, config_fu_reset_chip, config_fu_spi_reset_pin, OUT, NO_EDGE) < 0);
+  FATAL_ON(gpio_init(&reset_gpio, config.fu_reset_chip, config.fu_spi_reset_pin, OUT, NO_EDGE) < 0);
   FATAL_ON(gpio_write(&reset_gpio, 1) < 0);
 
-  if (config_bus == SPI) {
+  if (config.bus == SPI) {
     // Setup IRQ gpio
-    FATAL_ON(gpio_init(&irq_gpio, config_spi_irq_chip, config_spi_irq_pin, NO_DIRECTION, FALLING) < 0);
+    FATAL_ON(gpio_init(&irq_gpio, config.spi_irq_chip, config.spi_irq_pin, NO_DIRECTION, FALLING) < 0);
 
     // Create the epoll set
     fd_epoll = epoll_create1(EPOLL_CLOEXEC);
@@ -247,7 +247,7 @@ static void reboot_secondary_with_pins_into_bootloader(void)
   deassert_reset();
   sleep_us(100);
 
-  if (config_bus == SPI) {
+  if (config.bus == SPI) {
     // wait for host interrupt
     bool irq = false;
     do {
@@ -271,7 +271,7 @@ static void reboot_secondary_with_pins_into_bootloader(void)
 
   gpio_deinit(&wake_gpio);
   gpio_deinit(&reset_gpio);
-  if (config_bus == SPI) {
+  if (config.bus == SPI) {
     gpio_deinit(&irq_gpio);
   }
 

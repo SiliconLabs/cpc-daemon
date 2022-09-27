@@ -119,7 +119,7 @@ __attribute__((noreturn)) void software_graceful_exit(void);
 
 void run_uart_validation(void)
 {
-  int test_option = (int) *config_uart_validation_test_option;
+  int test_option = (int) *config.uart_validation_test_option;
   switch (test_option) {
     case '1':
       test_1_rx_tx();
@@ -198,15 +198,15 @@ static void open_uart_port_subtest(bool flowcontrol)
 {
   TRACE_UART_VALIDATION("Opening UART port");
   int fd_socket_driver_core;
-  if (config_bus == UART) {
+  if (config.bus == UART) {
     // Bypass configuration for flow control: set to true to determine that RTS/CTS pins are not connected properly
-    driver_thread = driver_uart_init(&fd_socket_driver_core, config_uart_file, config_uart_baudrate, flowcontrol);
+    driver_thread = driver_uart_init(&fd_socket_driver_core, config.uart_file, config.uart_baudrate, flowcontrol);
   } else {
     BUG("Invalid bus_type, should be UART, see cpcd.conf");
   }
 
   // Disable reset sequence because we want to do it ourselves
-  config_reset_sequence = false;
+  config.reset_sequence = false;
   server_core_thread = server_core_init(fd_socket_driver_core, SERVER_CORE_MODE_NORMAL);
 }
 

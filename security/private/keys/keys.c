@@ -257,7 +257,7 @@ void security_keys_init(void)
 
   rng_context_initialized = true;
 
-  if (config_operation_mode == MODE_BINDING_ECDH) {
+  if (config.operation_mode == MODE_BINDING_ECDH) {
     security_keys_init_ecdh();
   }
 }
@@ -346,7 +346,7 @@ void security_keys_generate_shared_key(uint8_t *remote_public_key)
   // Hash and extract first 16 bytes as binding key
   ret = mbedtls_sha256(sha256_input, PUBLIC_KEY_LENGTH_BYTES, sha256_output, 0);
 
-  fd = fopen(config_binding_key_file, "w");
+  fd = fopen(config.binding_key_file, "w");
   if (fd == NULL) {
     FATAL("Failed to open key file in write mode. errno:%m");
   }
@@ -373,7 +373,7 @@ void security_keys_generate_shared_key(uint8_t *remote_public_key)
   free(sha256_input);
   free(sha256_output);
 
-  TRACE_SECURITY("Successfully generated the binding key. Stored it to provided file (%s)", config_binding_key_file);
+  TRACE_SECURITY("Successfully generated the binding key. Stored it to provided file (%s)", config.binding_key_file);
 }
 
 uint8_t* security_keys_get_ecdh_public_key(void)
@@ -459,9 +459,9 @@ void security_load_binding_key_from_file(void)
   size_t string_len;
   size_t i;
 
-  /* The presence and read access of config_binding_key_file has already been checked
+  /* The presence and read access of binding_key_file has already been checked
    * in the function 'config_validate_configuration' */
-  binding_key_file = fopen(config_binding_key_file, "r");
+  binding_key_file = fopen(config.binding_key_file, "r");
   FATAL_ON(binding_key_file == NULL);
 
   ret = getline(&line, &len, binding_key_file);
@@ -480,7 +480,7 @@ void security_load_binding_key_from_file(void)
 
   /* Assert that the key is 128 bit long */
   if (string_len != BINDING_KEY_LENGTH_BYTES * 2) {
-    FATAL("The binding key \'%s\' : [%s] is %u bits long, should be %u bits long", config_binding_key_file, line, (unsigned int)(string_len * 4), BINDING_KEY_LENGTH_BYTES * 8);
+    FATAL("The binding key \'%s\' : [%s] is %u bits long, should be %u bits long", config.binding_key_file, line, (unsigned int)(string_len * 4), BINDING_KEY_LENGTH_BYTES * 8);
   }
 
   /* Make sure that all chars are hex symbols */
@@ -497,7 +497,7 @@ void security_load_binding_key_from_file(void)
 
     for (i = 0; i < BINDING_KEY_LENGTH_BYTES * 2; i += 2 ) {
       if (sscanf(&line[i], "%2x", &chr) != 1) {
-        FATAL("The binding key \'%s\' : [%s] doesn't respect hexadecimal syntax", config_binding_key_file, line);
+        FATAL("The binding key \'%s\' : [%s] doesn't respect hexadecimal syntax", config.binding_key_file, line);
       }
       binding_key[i / 2] = (unsigned char)chr;
     }

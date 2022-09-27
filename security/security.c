@@ -34,7 +34,7 @@ void security_init(void)
 {
   int ret;
 
-  if (config_use_encryption == false) {
+  if (config.use_encryption == false) {
     TRACE_SECURITY("Encryption is disabled");
     security_set_state_disabled();
     return;

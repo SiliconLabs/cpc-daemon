@@ -90,7 +90,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     group = parser.add_argument_group('required arguments')
 
-    group.add_argument("-n", "--name",
+    group.add_argument("-i", "--instance",
                       dest="instance_name", type=str, required=True,
                       help="CPC instance name")
 

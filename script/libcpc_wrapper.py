@@ -22,6 +22,19 @@ class Option(Enum):
     CPC_OPTION_MAX_WRITE_SIZE = 5
 #end class
 
+class CPCTimeval(Structure):
+    _fields_ = [('seconds', c_int),
+                ('microseconds', c_int)]
+
+    def __init__(self, secs):
+        """
+        Initialize CPCTimeval with the given number of seconds. The argument
+        may be a floating point number.
+        """
+        self.microseconds = int((secs % 1.0) * 1e6)
+        self.seconds = int(secs)
+#end class
+
 class Endpoint(Structure):
 
     class Id(Enum):
@@ -93,25 +106,50 @@ class Endpoint(Structure):
     #end def
 
     # int cpc_set_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, const void *optval, size_t optlen);
-    def set_option(self, option, optval, optlen):
+    def set_option(self, option, optval):
+        if option == Option.CPC_OPTION_BLOCKING:
+            optval = c_bool(optval)
+        elif option == Option.CPC_OPTION_RX_TIMEOUT or option == Option.CPC_OPTION_TX_TIMEOUT:
+            if type(optval) is not CPCTimeval:
+                raise Exception("Invalid option type {}, expected CPCTimeval".format(type(optval)))
+        elif option == Option.CPC_OPTION_SOCKET_SIZE:
+            optval = c_int(optval)
+        else:
+            # best effort, convert it to int and let the library handle the failure
+            optval = c_int(optval)
+
         opt = c_short(option.value)
-        size = c_short(optlen)
-        value = c_short(optval)
-        ret = self.cpc_handle.lib_cpc.cpc_set_endpoint_option(self, opt, byref(value), size)
+        size = c_size_t(sizeof(optval))
+        ret = self.cpc_handle.lib_cpc.cpc_set_endpoint_option(self, opt, byref(optval), size)
         if ret != 0:
             raise Exception("Failed to set option")
     #end def
 
     # int cpc_get_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, void *optval, size_t *optlen);
     def get_option(self, option):
+        if option == Option.CPC_OPTION_BLOCKING:
+            optval = c_bool()
+        elif option == Option.CPC_OPTION_RX_TIMEOUT or option == Option.CPC_OPTION_TX_TIMEOUT:
+            optval = CPCTimeval(0)
+        elif option == Option.CPC_OPTION_SOCKET_SIZE:
+            optval = c_int()
+        elif option == Option.CPC_OPTION_MAX_WRITE_SIZE:
+            optval = c_int()
+        else:
+            # best effort, try to pass an int and see how it goes
+            optval = c_int()
+
         opt = c_short(option.value)
-        size = c_short()
-        value = c_short()
-        ret = self.cpc_handle.lib_cpc.cpc_get_endpoint_option(self, opt, byref(value), byref(size))
-        if ret != 0:
+        size = c_size_t(sizeof(optval))
+        input_size = size
+        ret = self.cpc_handle.lib_cpc.cpc_get_endpoint_option(self, opt, byref(optval), byref(size))
+        if ret != 0 or input_size != size:
             raise Exception("Failed to get option")
 
-        return value.value, size.value
+        if hasattr(optval, "value"):
+            return optval.value
+        else:
+            return optval
     #end def
 #end class
 

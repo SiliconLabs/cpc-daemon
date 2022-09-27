@@ -248,12 +248,12 @@ void core_init(int driver_fd)
   }
 
   /* Setup timer to fetch secondary debug counter */
-  if (config_stats_interval > 0) {
+  if (config.stats_interval > 0) {
     stats_timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
     FATAL_SYSCALL_ON(stats_timer_fd < 0);
 
-    struct itimerspec timeout_time = { .it_interval = { .tv_sec = config_stats_interval, .tv_nsec = 0 },
-                                       .it_value    = { .tv_sec = config_stats_interval, .tv_nsec = 0 } };
+    struct itimerspec timeout_time = { .it_interval = { .tv_sec = config.stats_interval, .tv_nsec = 0 },
+                                       .it_value    = { .tv_sec = config.stats_interval, .tv_nsec = 0 } };
 
     int ret = timerfd_settime(stats_timer_fd,
                               0,
@@ -277,7 +277,7 @@ void core_init(int driver_fd)
 
 void core_cleanup(void)
 {
-  if (config_stats_interval > 0) {
+  if (config.stats_interval > 0) {
     free(core_stats_private_data);
   }
 }

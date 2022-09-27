@@ -107,7 +107,7 @@ if __name__ == '__main__':
   usage = "usage: %prog [options]"
   parser = OptionParser()
 
-  parser.add_option("-n", "--name",
+  parser.add_option("-i", "--instance",
                 dest="instance_name", type='str',
                 help="CPC instance name, e.g. cpcd_0")
 

@@ -1,9 +1,18 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(cpcd VERSION "4.1.1.0")
+project(cpcd VERSION "4.1.2.0")
 set(CPC_LIBRARY_API_VERSION "2")
 set(CPC_PROTOCOL_VERSION "2")
 
+find_package(Backtrace)
+add_library(backtrace INTERFACE)
+if(Backtrace_FOUND)
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/backtrace/backtrace.h" "#include <${Backtrace_HEADER}>\n")
+  target_compile_definitions(backtrace INTERFACE HAVE_BACKTRACE)
+  target_include_directories(backtrace INTERFACE "${CMAKE_CURRENT_BINARY_DIR}/backtrace")
+  target_include_directories(backtrace INTERFACE ${Backtrace_INCLUDE_DIRS})
+  target_link_libraries(backtrace INTERFACE ${Backtrace_LIBRARIES})
+endif()
 
 set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR})
 set(GIT_SHA1 "Unknown")
@@ -149,6 +158,7 @@ if((TARGET_GROUP STREQUAL release) OR
   target_include_directories(cpcd PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/autogen")
   target_include_directories(cpcd PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_include_directories(cpcd PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/lib")
+  target_link_libraries(cpcd backtrace)
   target_link_libraries(cpcd util)
   target_link_libraries(cpcd pthread)
 
@@ -239,6 +249,7 @@ elseif((TARGET_GROUP STREQUAL unit_test) OR (TARGET_GROUP STREQUAL unit_test_wit
     target_include_directories(cpc_unity PRIVATE ${UNITY_SOURCES}/src/)
     target_include_directories(cpc_unity PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_include_directories(cpc_unity PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/lib")
+    target_link_libraries(cpc_unity backtrace)
     target_link_libraries(cpc_unity pthread)
     target_link_libraries(cpc_unity unity)
     target_link_libraries(cpc_unity cpc)
@@ -312,6 +323,7 @@ elseif(TARGET_GROUP STREQUAL target_test)
                                                   ../../cli/inc/
                                                   ../../cli/src/
                                                   misc/)
+    target_link_libraries(cpc_target backtrace)
     target_link_libraries(cpc_target pthread)
     target_link_libraries(cpc_target cpc)
 

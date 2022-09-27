@@ -56,6 +56,8 @@ static bool capabilities_received = false;
 static bool rx_capability_received = false;
 static bool protocol_version_received = false;
 
+static server_core_mode_t server_core_mode = SERVER_CORE_MODE_NORMAL;
+
 static sl_cpc_system_reboot_mode_t pending_mode;
 
 static int kill_eventfd = -1;
@@ -235,11 +237,11 @@ pthread_t server_core_init(int fd_socket_driver_core, server_core_mode_t mode)
 
   /* Create the string {socket_folder}/cpcd/{instance_name} */
   {
-    const size_t socket_folder_string_size = strlen(config_socket_folder) + strlen("/cpcd/") + strlen(config_instance_name) + sizeof(char);
+    const size_t socket_folder_string_size = strlen(config.socket_folder) + strlen("/cpcd/") + strlen(config.instance_name) + sizeof(char);
     socket_folder = (char *)malloc(socket_folder_string_size);
     FATAL_ON(socket_folder == NULL);
 
-    ret = snprintf(socket_folder, socket_folder_string_size, "%s/cpcd/%s", config_socket_folder, config_instance_name);
+    ret = snprintf(socket_folder, socket_folder_string_size, "%s/cpcd/%s", config.socket_folder, config.instance_name);
     FATAL_ON(ret < 0 || (size_t) ret >= socket_folder_string_size);
   }
 
@@ -258,13 +260,13 @@ pthread_t server_core_init(int fd_socket_driver_core, server_core_mode_t mode)
 
   /* The server is not initialized immediately because we want to perform a successful reset sequence
    * of the secondary before. That is, unless we explicitly disable the reset sequence in the config file */
-  if (config_reset_sequence == false) {
+  if (config.reset_sequence == false) {
     /* FIXME : If we don't perform a reset sequence, the rx_capability won't be fetched. Lets put a very conservative
      * value in place to be able to work . */
     rx_capability = 256;
     server_init();
 #if defined(ENABLE_ENCRYPTION)
-    if (config_operation_mode != MODE_UART_VALIDATION) {
+    if (config.operation_mode != MODE_UART_VALIDATION) {
       security_init();
     }
 #endif
@@ -290,7 +292,8 @@ pthread_t server_core_init(int fd_socket_driver_core, server_core_mode_t mode)
   }
 
   /* create server_core thread */
-  ret = pthread_create(&server_core_thread, NULL, server_core_thread_func, &mode);
+  server_core_mode = mode;
+  ret = pthread_create(&server_core_thread, NULL, server_core_thread_func, NULL);
   FATAL_ON(ret != 0);
 
   ret = pthread_setname_np(server_core_thread, "server_core");
@@ -301,21 +304,21 @@ pthread_t server_core_init(int fd_socket_driver_core, server_core_mode_t mode)
 
 static void* server_core_thread_func(void* param)
 {
-  server_core_mode_t mode = *(server_core_mode_t *)param;
+  (void)param;
   struct epoll_event events[MAX_EPOLL_EVENTS] = {};
   size_t event_count;
 
   while (1) {
 #if !defined(UNIT_TESTING)
-    if ((config_reset_sequence == true) && (mode == SERVER_CORE_MODE_NORMAL)) {
+    if ((config.reset_sequence == true) && (server_core_mode == SERVER_CORE_MODE_NORMAL)) {
       process_reset_sequence(false);
     }
 
-    if (mode == SERVER_CORE_MODE_FIRMWARE_RESET) {
+    if (server_core_mode == SERVER_CORE_MODE_FIRMWARE_RESET) {
       process_reset_sequence(true);
     }
 
-    if (mode == SERVER_CORE_MODE_FIRMWARE_BOOTLOADER) {
+    if (server_core_mode == SERVER_CORE_MODE_FIRMWARE_BOOTLOADER) {
       process_reboot_enter_bootloader();
     }
 #endif
@@ -588,15 +591,15 @@ static void exit_server_core(void)
 
 static void capabilities_checks(void)
 {
-  if ((config_bus == UART) && (config_uart_hardflow != (bool)(capabilities & CPC_CAPABILITIES_UART_FLOW_CONTROL_MASK))) {
+  if ((config.bus == UART) && (config.uart_hardflow != (bool)(capabilities & CPC_CAPABILITIES_UART_FLOW_CONTROL_MASK))) {
     FATAL("UART flow control configuration mismatch between CPCd (%s) and Secondary (%s)",
-          config_uart_hardflow ? "enabled" : "disabled",
+          config.uart_hardflow ? "enabled" : "disabled",
           (bool)(capabilities & CPC_CAPABILITIES_UART_FLOW_CONTROL_MASK) ? "enabled" : "disabled");
   }
 
-  if (config_use_encryption != (bool)(capabilities & CPC_CAPABILITIES_SECURITY_ENDPOINT_MASK)) {
+  if (config.use_encryption != (bool)(capabilities & CPC_CAPABILITIES_SECURITY_ENDPOINT_MASK)) {
     FATAL("Security configuration mismatch between CPCd (%s) and Secondary (%s)",
-          config_use_encryption ? "enabled" : "disabled",
+          config.use_encryption ? "enabled" : "disabled",
           (bool)(capabilities & CPC_CAPABILITIES_SECURITY_ENDPOINT_MASK) ? "enabled" : "disabled");
   }
 }
@@ -611,11 +614,11 @@ static void protocol_version_check(void)
 
 static void application_version_check(void)
 {
-  if (config_application_version && server_core_secondary_app_version) {
+  if (config.application_version_validation && server_core_secondary_app_version) {
     if (strcmp(server_core_secondary_app_version,
-               config_application_version) != 0) {
+               config.application_version_validation) != 0) {
       FATAL("Secondary APP v%s doesn't match the provided APP v%s",
-            server_core_secondary_app_version, config_application_version);
+            server_core_secondary_app_version, config.application_version_validation);
     }
   }
 }
@@ -752,7 +755,7 @@ static void process_reset_sequence(bool firmware_reset_mode)
           TRACE_RESET("Obtained Secondary APP version");
         }
 
-        if (config_print_secondary_versions_and_exit) {
+        if (config.print_secondary_versions_and_exit) {
           sleep_s(2);
           exit(EXIT_SUCCESS);
         }
