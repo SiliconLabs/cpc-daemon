@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - UART Validation Mode
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this

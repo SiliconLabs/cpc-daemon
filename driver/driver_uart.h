@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol (CPC) - UART driver
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -28,7 +27,7 @@
  * Returns the file descriptor of the paired socket to the driver
  * to use in a select() call.
  */
-pthread_t driver_uart_init(int *fd_to_core, const char *device, unsigned int baudrate, bool hardflow);
+pthread_t driver_uart_init(int *fd_to_core, int *fd_notify_core, const char *device, unsigned int baudrate, bool hardflow);
 
 int driver_uart_open(const char *device, unsigned int baudrate, bool hardflow);
 void driver_uart_assert_rts(bool assert);

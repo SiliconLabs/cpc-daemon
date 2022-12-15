@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Poll
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -19,6 +18,7 @@
 #include "epoll.h"
 #include "misc/logging.h"
 #include "misc/sl_slist.h"
+#include "misc/utils.h"
 #include "server_core/core/core.h"
 #include "server_core/server/server.h"
 
@@ -95,7 +95,7 @@ void epoll_unwatch(epoll_private_data_t *private_data)
 {
   epoll_unregister(private_data);
 
-  unwatched_endpoint_list_item_t *item = malloc(sizeof(unwatched_endpoint_list_item_t));
+  unwatched_endpoint_list_item_t *item = zalloc(sizeof(unwatched_endpoint_list_item_t));
   FATAL_ON(item == NULL);
 
   item->unregistered_epoll_private_data = private_data;

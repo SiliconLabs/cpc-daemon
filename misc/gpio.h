@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - GPIO Interface
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -21,7 +20,7 @@
 
 #include "sl_cpc.h"
 
-#ifdef GPIO_SYSFS
+#ifdef USE_LEGACY_GPIO_SYSFS
 #define gpio_t gpio_sysfs_t
 typedef struct {
   unsigned int pin;
@@ -30,7 +29,6 @@ typedef struct {
 } gpio_t;
 #define GPIO_EPOLL_EVENT EPOLLPRI
 #else
-#ifdef GPIO_GPIOD
 #include <pthread.h>
 #include <gpiod.h>
 #define gpio_t gpio_gpiod_t
@@ -38,11 +36,9 @@ typedef struct {
   const char *chip_name;
   unsigned int pin;
   struct gpiod_line *line;
-  int fd_socketpair[2];
-  pthread_t thread;
+  int irq_fd;
 } gpio_t;
 #define GPIO_EPOLL_EVENT EPOLLIN
-#endif
 #endif
 
 SL_ENUM(gpio_direction_t){

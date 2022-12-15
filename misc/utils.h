@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Util
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -19,28 +18,37 @@
 #ifndef UTILS_H
 #define UTILS_H
 
+#include <stdlib.h>
 #include <string.h>
 
+#define sizeof_member(T, m) (sizeof(((T *)0)->m))
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 
 #define __bf_shf(x) (__builtin_ffsll(x) - 1)
 #define FIELD_GET(mask, reg) (((reg) & (mask)) >> __bf_shf(mask))
 #define FIELD_PREP(mask, val) (((val) << __bf_shf(mask)) & (mask))
 
-#define min(x, y) ({   \
-    typeof(x)_x = (x); \
-    typeof(y)_y = (y); \
-    _x < _y ? _x : _y; \
+#define min(x, y) ({    \
+    typeof(x) _x = (x); \
+    typeof(y) _y = (y); \
+    _x < _y ? _x : _y;  \
   })
 
-#define max(x, y) ({   \
-    typeof(x)_x = (x); \
-    typeof(y)_y = (y); \
-    _x > _y ? _x : _y; \
+#define max(x, y) ({    \
+    typeof(x) _x = (x); \
+    typeof(y) _y = (y); \
+    _x > _y ? _x : _y;  \
   })
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 
 #define PAD_TO_8_BYTES(x) (x + 8 - (x % 8))
+
+static inline void* zalloc(size_t size)
+{
+  return calloc(1, size);
+}
+
+int recursive_mkdir(const char *dir, size_t len, const mode_t mode);
 
 #endif

@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - CPC SPI driver
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -42,6 +41,7 @@
 #define IRQ_LINE_TIMEOUT  10
 
 static int fd_core;
+static int fd_core_notify;
 static int fd_epoll;
 static pthread_t drv_thread;
 
@@ -61,6 +61,7 @@ static bool validate_header(uint8_t *header);
 static int get_data_size(uint8_t *header);
 
 static void driver_spi_process_irq(void);
+static void driver_spi_clear_and_process_irq(void);
 static void driver_spi_process_core(void);
 static void* driver_thread_func(void* param);
 
@@ -79,6 +80,7 @@ static void driver_spi_cleanup(void)
 {
   close(spi_dev.spi_dev_descriptor);
   close(fd_core);
+  close(fd_core_notify);
   close(fd_epoll);
 
   gpio_deinit(&spi_dev.cs_gpio);
@@ -91,6 +93,7 @@ static void driver_spi_cleanup(void)
 }
 
 pthread_t driver_spi_init(int *fd_to_core,
+                          int *fd_notify_core,
                           const char *device,
                           unsigned int mode,
                           unsigned int bit_per_word,
@@ -103,6 +106,7 @@ pthread_t driver_spi_init(int *fd_to_core,
                           unsigned int wake_gpio_pin)
 {
   int fd_sockets[2];
+  int fd_sockets_notify[2];
   ssize_t ret;
 
   driver_spi_open(device,
@@ -116,12 +120,17 @@ pthread_t driver_spi_init(int *fd_to_core,
                   wake_gpio_chip,
                   wake_gpio_pin);
 
-  ret = socketpair(AF_UNIX, SOCK_DGRAM, 0, fd_sockets);
+  ret = socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd_sockets);
   FATAL_SYSCALL_ON(ret < 0);
 
   fd_core  = fd_sockets[0];
-
   *fd_to_core = fd_sockets[1];
+
+  ret = socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd_sockets_notify);
+  FATAL_SYSCALL_ON(ret < 0);
+
+  fd_core_notify  = fd_sockets_notify[0];
+  *fd_notify_core = fd_sockets_notify[1];
 
   /* Setup epoll */
   {
@@ -144,7 +153,7 @@ pthread_t driver_spi_init(int *fd_to_core,
     /* Setup the spi */
     {
       event.events = GPIO_EPOLL_EVENT; /* Level-triggered read() availability */
-      event.data.ptr = driver_spi_process_irq;
+      event.data.ptr = driver_spi_clear_and_process_irq;
       ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, gpio_get_fd(&spi_dev.irq_gpio), &event);
       FATAL_SYSCALL_ON(ret < 0);
     }
@@ -180,6 +189,14 @@ static void* driver_thread_func(void* param)
   int event_count;
 
   TRACE_DRIVER("Thread start");
+
+  /*
+   * There's a slight behaviour difference when using sysfs or gpiod to
+   * control the GPIO: the initial interrupt is reported by the former but
+   * not by the latter. As a generic workaround, always try to fetch data
+   * from the secondary when the thread spawns.
+   */
+  driver_spi_process_irq();
 
   while (1) {
     /* Wait for action */
@@ -304,7 +321,7 @@ static void driver_spi_open(const char *device,
   FATAL_ON(gpio_write(&spi_dev.cs_gpio, 1u) < 0);
 
   // Setup IRQ gpio
-  FATAL_ON(gpio_init(&spi_dev.irq_gpio, irq_gpio_chip, irq_gpio_pin, NO_DIRECTION, FALLING) < 0);
+  FATAL_ON(gpio_init(&spi_dev.irq_gpio, irq_gpio_chip, irq_gpio_pin, IN, FALLING) < 0);
 
   // Setup WAKE gpio
   FATAL_ON(gpio_init(&spi_dev.wake_gpio, wake_gpio_chip, wake_gpio_pin, OUT, NO_EDGE) < 0);
@@ -320,8 +337,6 @@ static void driver_spi_process_irq(void)
   ssize_t write_retval;
   int timeout = IRQ_LINE_TIMEOUT;
   int error_timeout = 4096;
-
-  gpio_clear_irq(&spi_dev.irq_gpio);
 
   if (gpio_read(&spi_dev.irq_gpio) == 0) {
     cs_assert();
@@ -392,6 +407,13 @@ static void driver_spi_process_irq(void)
   }
 }
 
+static void driver_spi_clear_and_process_irq(void)
+{
+  gpio_clear_irq(&spi_dev.irq_gpio);
+
+  driver_spi_process_irq();
+}
+
 static void driver_spi_process_core(void)
 {
   uint8_t buffer[4096];
@@ -417,6 +439,13 @@ static void driver_spi_process_core(void)
   FATAL_SYSCALL_ON(ret < 0);
 
   cs_deassert();
+
+  struct timespec tx_complete_timestamp;
+  clock_gettime(CLOCK_MONOTONIC, &tx_complete_timestamp);
+
+  /* Push write notification to core */
+  ssize_t write_retval = write(fd_core_notify, &tx_complete_timestamp, sizeof(tx_complete_timestamp));
+  FATAL_SYSCALL_ON(write_retval != sizeof(tx_complete_timestamp));
 
   sleep_ms(1);
 

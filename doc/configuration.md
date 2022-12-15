@@ -154,4 +154,4 @@ on the filesystem of the binding key. The file must contain one line of 32 alpha
 characters representing a 128-bit key. If ECDH encryption is used, this file will
 be created during the binding operation.
 
-    binding_key_file: /etc/binding-key.key
+    binding_key_file: ~/.cpcd/binding.key

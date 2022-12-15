@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol (CPC) -  SPI driver
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -38,6 +37,7 @@ typedef struct {
  * to use in a select() call.
  */
 pthread_t driver_spi_init(int *fd_to_core,
+                          int *fd_notify_core,
                           const char *device,
                           unsigned int mode,
                           unsigned int bit_per_word,

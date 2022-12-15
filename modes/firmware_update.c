@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Firmware Update Mode
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -22,6 +21,7 @@
 
 #include "modes/firmware_update.h"
 #include "server_core/server_core.h"
+#include "server_core/system_endpoint/system.h"
 #include "driver/driver_uart.h"
 #include "driver/driver_spi.h"
 #include "driver/driver_xmodem.h"
@@ -41,6 +41,7 @@ extern pthread_t server_core_thread;
 
 extern char *server_core_secondary_app_version;
 extern uint8_t server_core_secondary_protocol_version;
+extern sl_cpc_bootloader_t server_core_secondary_bootloader_type;
 
 static gpio_t wake_gpio;
 static gpio_t irq_gpio;
@@ -95,6 +96,12 @@ void run_firmware_update(void)
           if (application_version_mismatch) {
             PRINT_INFO("Secondary APP v%s doesn't match the provided APP v%s", server_core_secondary_app_version, config.application_version_validation);
           }
+        }
+
+        if (server_core_secondary_bootloader_type != SL_CPC_BOOTLOADER_EMBER_APPLICATION
+            && server_core_secondary_bootloader_type != SL_CPC_BOOTLOADER_EMBER_STANDALONE
+            && server_core_secondary_bootloader_type != SL_CPC_BOOTLOADER_GECKO) {
+          WARN("Unsupported bootloader type, update might fail unexpectedly");
         }
       }
 
@@ -173,14 +180,20 @@ static sl_status_t transfer_firmware(void)
 static void reboot_secondary_by_cpc(server_core_mode_t mode)
 {
   int fd_socket_driver_core;
+  int fd_socket_driver_core_notify;
   void* join_value;
   int ret;
 
   // Init the driver
   if (config.bus == UART) {
-    driver_thread = driver_uart_init(&fd_socket_driver_core, config.uart_file, config.uart_baudrate, config.uart_hardflow);
+    driver_thread = driver_uart_init(&fd_socket_driver_core,
+                                     &fd_socket_driver_core_notify,
+                                     config.uart_file,
+                                     config.uart_baudrate,
+                                     config.uart_hardflow);
   } else if (config.bus == SPI) {
     driver_thread = driver_spi_init(&fd_socket_driver_core,
+                                    &fd_socket_driver_core_notify,
                                     config.spi_file,
                                     config.spi_mode,
                                     config.spi_bit_per_word,
@@ -195,13 +208,14 @@ static void reboot_secondary_by_cpc(server_core_mode_t mode)
     BUG();
   }
 
-  server_core_thread = server_core_init(fd_socket_driver_core, mode);
+  server_core_thread = server_core_init(fd_socket_driver_core, fd_socket_driver_core_notify, mode);
 
   ret = pthread_join(server_core_thread, &join_value);
   FATAL_ON(ret != 0);
   FATAL_ON(join_value != 0);
 
   close(fd_socket_driver_core);
+  close(fd_socket_driver_core_notify);
 }
 
 static void reboot_secondary_with_pins_into_bootloader(void)
@@ -223,7 +237,7 @@ static void reboot_secondary_with_pins_into_bootloader(void)
 
   if (config.bus == SPI) {
     // Setup IRQ gpio
-    FATAL_ON(gpio_init(&irq_gpio, config.spi_irq_chip, config.spi_irq_pin, NO_DIRECTION, FALLING) < 0);
+    FATAL_ON(gpio_init(&irq_gpio, config.spi_irq_chip, config.spi_irq_pin, IN, FALLING) < 0);
 
     // Create the epoll set
     fd_epoll = epoll_create1(EPOLL_CLOEXEC);

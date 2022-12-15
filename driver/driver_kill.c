@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol (CPC) - Driver kill
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -19,6 +18,8 @@
 #include <fcntl.h>              /* Definition of O_* constants */
 #include <sys/eventfd.h>
 #include <unistd.h>
+
+#include <pthread.h>
 
 #include "driver_kill.h"
 #include "misc/logging.h"
@@ -46,4 +47,22 @@ void driver_kill_signal(void)
 
   ret = write(kill_eventfd, &event_value, sizeof(event_value));
   FATAL_ON(ret != sizeof(event_value));
+}
+
+int driver_kill_join(void)
+{
+  void *join_value;
+  int ret;
+
+  extern pthread_t driver_thread;
+  ret = pthread_join(driver_thread, &join_value);
+
+  return ret;
+}
+
+int driver_kill_signal_and_join(void)
+{
+  driver_kill_signal();
+
+  return driver_kill_join();
 }

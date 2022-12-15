@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Binding Mode
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -34,6 +33,7 @@ void main_wait_crash_or_graceful_exit(void);
 void run_binding_mode(void)
 {
   int fd_socket_driver_core;
+  int fd_socket_driver_core_notify;
 
   PRINT_INFO("Note: Please make sure the unbind functionality is implemented for your product. By default, unbinding requests will be refused, refer to CPC documentation for further details.");
 
@@ -48,9 +48,14 @@ void run_binding_mode(void)
   // Init the driver
   {
     if (config.bus == UART) {
-      driver_thread = driver_uart_init(&fd_socket_driver_core, config.uart_file, config.uart_baudrate, config.uart_hardflow);
+      driver_thread = driver_uart_init(&fd_socket_driver_core,
+                                       &fd_socket_driver_core_notify,
+                                       config.uart_file,
+                                       config.uart_baudrate,
+                                       config.uart_hardflow);
     } else if (config.bus == SPI) {
       driver_thread = driver_spi_init(&fd_socket_driver_core,
+                                      &fd_socket_driver_core_notify,
                                       config.spi_file,
                                       config.spi_mode,
                                       config.spi_bit_per_word,
@@ -66,7 +71,7 @@ void run_binding_mode(void)
     }
   }
 
-  server_core_thread = server_core_init(fd_socket_driver_core, SERVER_CORE_MODE_NORMAL);
+  server_core_thread = server_core_init(fd_socket_driver_core, fd_socket_driver_core_notify, SERVER_CORE_MODE_NORMAL);
 
   switch (config.operation_mode) {
     case MODE_BINDING_PLAIN_TEXT:

@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Logging Interface
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -163,11 +162,11 @@ extern core_debug_counters_t secondary_core_debug_counters;
 
 #define TRACE_ENDPOINT_RXD_DUPLICATE_DATA_FRAME(ep)       TRACE_CORE("Endpoint #%u: rxd duplicate data frame", ep->id)
 
-#define TRACE_ENDPOINT_RXD_ACK(ep)                        TRACE_CORE("Endpoint #%u: rxd ack", ep->id)
+#define TRACE_ENDPOINT_RXD_ACK(ep, ack)                        TRACE_CORE("Endpoint #%u: rxd ack %u", ep->id, ack)
 
 #define TRACE_ENDPOINT_RXD_REJECT_DESTINATION_UNREACHABLE(ep)  TRACE_CORE("Endpoint #%u: rxd reject destination unreachable", ep->id)
 
-#define TRACE_ENDPOINT_RXD_REJECT_SEQ_MISMATCH(ep)        TRACE_CORE(" Endpoint #%u: rxd reject seq mismatch", ep->id)
+#define TRACE_ENDPOINT_RXD_REJECT_SEQ_MISMATCH(ep)        TRACE_CORE("Endpoint #%u: rxd reject seq mismatch", ep->id)
 
 #define TRACE_ENDPOINT_RXD_REJECT_CHECKSUM_MISMATCH(ep)    TRACE_CORE("Endpoint #%u: rxd reject checksum mismatch", ep->id)
 

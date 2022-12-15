@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Config Interface
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -24,14 +23,6 @@
 
 #ifndef DEFAULT_INSTANCE_NAME
   #define DEFAULT_INSTANCE_NAME "cpcd_0"
-#endif
-
-#ifndef DEFAULT_SOCKET_FOLDER
-  #define DEFAULT_SOCKET_FOLDER "/dev/shm"
-#endif
-
-#ifndef DEFAULT_CONFIG_FILE_PATH
-  #define DEFAULT_CONFIG_FILE_PATH "/etc/cpcd.conf"
 #endif
 
 typedef enum {
@@ -61,7 +52,9 @@ typedef struct __attribute__((packed)) {
 
   bool use_encryption;
 
-  const char *binding_key_file;
+  char *binding_key_file;
+
+  bool binding_key_override;
 
   const char *binding_method;
 
@@ -116,7 +109,7 @@ typedef struct __attribute__((packed)) {
 extern config_t config;
 
 void config_init(int argc, char *argv[]);
-void config_restart_cpcd();
+void config_restart_cpcd(char **argv);
 void config_restart_cpcd_without_fw_update_args(void);
 
 #endif //CONFIG_H

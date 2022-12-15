@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol (CPC) - UART driver
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -26,8 +25,10 @@
 #include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
+#include <sys/timerfd.h>
 #include <signal.h>
 #include <linux/serial.h>
 
@@ -42,18 +43,16 @@
 #include "driver/driver_kill.h"
 
 #define UART_BUFFER_SIZE 4096 + SLI_CPC_HDLC_HEADER_RAW_SIZE
-#define MAX_EPOLL_EVENTS 5
+#define MAX_EPOLL_EVENTS 1
 
 static int fd_uart;
 static int fd_core;
-static int fd_epoll;
+static int fd_core_notify;
+static int fd_stop_drv;
+static unsigned int device_baudrate = 0;
 static pthread_t rx_drv_thread;
 static pthread_t tx_drv_thread;
 static pthread_t cleanup_thread;
-
-typedef void (*driver_epoll_callback_t)(void);
-
-static void* cleanup_thread_func(void* param);
 
 static void* receive_driver_thread_func(void* param);
 
@@ -62,6 +61,10 @@ static void* transmit_driver_thread_func(void* param);
 static void driver_uart_process_uart(void);
 
 static void driver_uart_process_core(void);
+
+typedef struct notify_private_data{
+  int timer_file_descriptor;
+}notify_private_data_t;
 
 /*
  * @return The number of bytes appended to the buffer
@@ -82,12 +85,12 @@ static bool delimit_and_push_frames_to_core(uint8_t *buffer, size_t *buffer_head
  */
 static bool header_re_synch(uint8_t *buffer, size_t *buffer_head);
 
-static void driver_uart_cleanup(void);
+static void* driver_uart_cleanup(void *param);
 
-pthread_t driver_uart_init(int *fd_to_core, const char *device, unsigned int baudrate, bool hardflow)
+pthread_t driver_uart_init(int *fd_to_core, int *fd_notify_core, const char *device, unsigned int baudrate, bool hardflow)
 {
   int fd_sockets[2];
-  pthread_attr_t detach_attr;
+  int fd_sockets_notify[2];
   ssize_t ret;
 
   fd_uart = driver_uart_open(device, baudrate, hardflow);
@@ -96,53 +99,34 @@ pthread_t driver_uart_init(int *fd_to_core, const char *device, unsigned int bau
 
   tcflush(fd_uart, TCIOFLUSH);
 
-  ret = socketpair(AF_UNIX, SOCK_DGRAM, 0, fd_sockets);
+  ret = socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd_sockets);
   FATAL_SYSCALL_ON(ret < 0);
 
   fd_core  = fd_sockets[0];
-
   *fd_to_core = fd_sockets[1];
 
-  /* Setup epoll */
-  {
-    struct epoll_event event = {};
+  ret = socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd_sockets_notify);
+  FATAL_SYSCALL_ON(ret < 0);
 
-    /* Create the epoll set */
-    {
-      fd_epoll = epoll_create1(EPOLL_CLOEXEC);
-      FATAL_SYSCALL_ON(fd_epoll < 0);
-    }
+  fd_core_notify  = fd_sockets_notify[0];
+  *fd_notify_core = fd_sockets_notify[1];
 
-    /* Setup the kill file descriptor */
-    {
-      int eventfd_kill = driver_kill_init();
-
-      event.events = EPOLLIN; /* Level-triggered read() availability */
-      event.data.ptr = driver_uart_cleanup;
-
-      ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, eventfd_kill, &event);
-      FATAL_SYSCALL_ON(ret < 0);
-    }
-  }
-
-  /* Init detach attribute */
-  ret = pthread_attr_init(&detach_attr);
-  FATAL_ON(ret != 0);
-
-  /* Set detach attribute */
-  ret = pthread_attr_setdetachstate(&detach_attr, PTHREAD_CREATE_DETACHED);
-  FATAL_ON(ret != 0);
-
-  /* create cleanup thread */
-  ret = pthread_create(&cleanup_thread, NULL, cleanup_thread_func, NULL);
-  FATAL_ON(ret != 0);
+  /*
+   * Create stop driver event, this file descriptor will be used by
+   * receive and transmit thread to exit gracefully
+   */
+  fd_stop_drv = driver_kill_init();
 
   /* create transmitter driver thread */
-  ret = pthread_create(&tx_drv_thread, &detach_attr, transmit_driver_thread_func, NULL);
+  ret = pthread_create(&tx_drv_thread, NULL, transmit_driver_thread_func, NULL);
   FATAL_ON(ret != 0);
 
   /* create receiver driver thread */
-  ret = pthread_create(&rx_drv_thread, &detach_attr, receive_driver_thread_func, NULL);
+  ret = pthread_create(&rx_drv_thread, NULL, receive_driver_thread_func, NULL);
+  FATAL_ON(ret != 0);
+
+  /* create cleanup thread */
+  ret = pthread_create(&cleanup_thread, NULL, driver_uart_cleanup, NULL);
   FATAL_ON(ret != 0);
 
   ret = pthread_setname_np(tx_drv_thread, "tx_drv_thread");
@@ -166,45 +150,59 @@ void driver_uart_print_overruns(void)
   TRACE_DRIVER("Overruns %d,%d", counters.overrun, counters.buf_overrun);
 }
 
-static void driver_uart_cleanup(void)
+static void* driver_uart_cleanup(void *param)
 {
-  int ret;
-
-  TRACE_DRIVER("Uart driver threads cancelled");
-
-  // cancel transmission thread
-  ret = pthread_cancel(tx_drv_thread);
-  FATAL_ON(ret != 0);
-
-  // cancel reception thread
-  ret = pthread_cancel(rx_drv_thread);
-  FATAL_ON(ret != 0);
+  (void) param;
 
   // wait for threads to exit
   pthread_join(tx_drv_thread, NULL);
   pthread_join(rx_drv_thread, NULL);
 
+  TRACE_DRIVER("Uart driver threads cancelled");
+
   close(fd_uart);
   close(fd_core);
-  close(fd_epoll);
+  close(fd_core_notify);
+  close(fd_stop_drv);
 
   pthread_exit(0);
+  return NULL;
 }
 
-static void* cleanup_thread_func(void* param)
+static void* receive_driver_thread_func(void* param)
 {
+  struct epoll_event events[2] = {};
+  bool exit_thread = false;
+  int fd_epoll;
+  int ret;
+
   (void) param;
-  struct epoll_event events[MAX_EPOLL_EVENTS] = {};
 
-  TRACE_DRIVER("Cleanup thread start");
+  TRACE_DRIVER("Receiver thread start");
 
-  while (1) {
+  /* Create the epoll set */
+  fd_epoll = epoll_create1(EPOLL_CLOEXEC);
+  FATAL_SYSCALL_ON(fd_epoll < 0);
+
+  /* Setup poll event for reading uart device */
+  events[0].events = EPOLLIN;
+  events[0].data.fd = fd_uart;
+  ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, fd_uart, &events[0]);
+  FATAL_SYSCALL_ON(ret < 0);
+
+  /* Setup poll event for stop event */
+  events[1].events = EPOLLIN;
+  events[1].data.fd = fd_stop_drv;
+  ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, fd_stop_drv, &events[1]);
+  FATAL_SYSCALL_ON(ret < 0);
+
+  while (!exit_thread) {
     int event_count;
 
     /* Wait for action */
     {
       do {
-        event_count = epoll_wait(fd_epoll, events, MAX_EPOLL_EVENTS, -1);
+        event_count = epoll_wait(fd_epoll, events, 2, -1);
         if (event_count == -1 && errno == EINTR) {
           continue;
         }
@@ -220,37 +218,83 @@ static void* cleanup_thread_func(void* param)
     {
       size_t event_i;
       for (event_i = 0; event_i != (size_t)event_count; event_i++) {
-        driver_epoll_callback_t callback = (driver_epoll_callback_t) events[event_i].data.ptr;
-        callback();
+        int current_event_fd = events[event_i].data.fd;
+
+        if (current_event_fd == fd_uart) {
+          driver_uart_process_uart();
+        } else if (current_event_fd == fd_stop_drv) {
+          exit_thread = true;
+        }
       }
     }
-  } //while(1)
+  }
 
-  return 0;
-}
-
-static void* receive_driver_thread_func(void* param)
-{
-  (void) param;
-
-  TRACE_DRIVER("Receiver thread start");
-
-  while (1) {
-    driver_uart_process_uart();
-  } //while(1)
+  close(fd_epoll);
 
   return 0;
 }
 
 static void* transmit_driver_thread_func(void* param)
 {
+  struct epoll_event events[2] = {};
+  bool exit_thread = false;
+  int fd_epoll;
+  int ret;
+
   (void) param;
 
   TRACE_DRIVER("Transmitter thread start");
 
-  while (1) {
-    driver_uart_process_core();
-  } //while(1)
+  /* Create the epoll set */
+  fd_epoll = epoll_create1(EPOLL_CLOEXEC);
+  FATAL_SYSCALL_ON(fd_epoll < 0);
+
+  /* Setup poll event for reading core socket */
+  events[0].events = EPOLLIN;
+  events[0].data.fd = fd_core;
+  ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, fd_core, &events[0]);
+  FATAL_SYSCALL_ON(ret < 0);
+
+  /* Setup poll event for stop event */
+  events[1].events = EPOLLIN;
+  events[1].data.fd = fd_stop_drv;
+  ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, fd_stop_drv, &events[1]);
+  FATAL_SYSCALL_ON(ret < 0);
+
+  while (!exit_thread) {
+    int event_count;
+
+    /* Wait for action */
+    {
+      do {
+        event_count = epoll_wait(fd_epoll, events, 2, -1);
+        if (event_count == -1 && errno == EINTR) {
+          continue;
+        }
+        FATAL_SYSCALL_ON(event_count == -1);
+        break;
+      } while (1);
+
+      /* Timeouts should not occur */
+      FATAL_ON(event_count == 0);
+    }
+
+    /* Process each ready file descriptor */
+    {
+      size_t event_i;
+      for (event_i = 0; event_i != (size_t)event_count; event_i++) {
+        int current_event_fd = events[event_i].data.fd;
+
+        if (current_event_fd == fd_core) {
+          driver_uart_process_core();
+        } else if (current_event_fd == fd_stop_drv) {
+          exit_thread = true;
+        }
+      }
+    }
+  }
+
+  close(fd_epoll);
 
   return 0;
 }
@@ -333,6 +377,8 @@ int driver_uart_open(const char *device, unsigned int baudrate, bool hardflow)
       TRACE_DRIVER("SUCCESS : Host (Baudrate: %d, Flow control: %s), Board Controller (Baudrate: %d, Flow control: %s)", config.uart_baudrate, config.uart_hardflow == 1 ? "True" : "False", bc_baudrate, bc_flowcontrol  == 1 ? "True" : "False");
     }
   }
+
+  device_baudrate = baudrate;
 
   return fd;
 }
@@ -528,8 +574,21 @@ static bool delimit_and_push_frames_to_core(uint8_t *buffer, size_t *buffer_head
   return true;
 }
 
+static long driver_get_time_to_drain_ns(uint32_t bytes_left)
+{
+  BUG_ON(device_baudrate == 0);
+  uint64_t nanoseconds;
+  uint64_t bytes_per_sec = device_baudrate / 8;
+
+  nanoseconds = bytes_left * (uint64_t)1000000000 / bytes_per_sec;
+
+  return (long)(nanoseconds);
+}
+
 static void driver_uart_process_core(void)
 {
+  int ret;
+  int length;
   uint8_t buffer[UART_BUFFER_SIZE];
   ssize_t read_retval;
 
@@ -548,5 +607,20 @@ static void driver_uart_process_core(void)
     FATAL_ON((size_t)write_retval != (size_t)read_retval);
   }
 
-  TRACE_FRAME("Driver : flushed frame to uart : ", buffer, (size_t)read_retval);
+  ret = ioctl(fd_uart, TIOCOUTQ, &length);
+  TRACE_DRIVER("%d bytes left in the UART char driver", length);
+  FATAL_SYSCALL_ON(ret < 0);
+
+  struct timespec tx_complete_timestamp;
+  clock_gettime(CLOCK_MONOTONIC, &tx_complete_timestamp);
+
+  if (tx_complete_timestamp.tv_nsec + driver_get_time_to_drain_ns((uint32_t)length) > 1000000000) {
+    tx_complete_timestamp.tv_sec += (tx_complete_timestamp.tv_nsec + driver_get_time_to_drain_ns((uint32_t)length)) / 1000000000;
+  }
+  tx_complete_timestamp.tv_nsec += driver_get_time_to_drain_ns((uint32_t)length);
+  tx_complete_timestamp.tv_nsec %= 1000000000;
+
+  /* Push write notification to core */
+  ssize_t write_retval = write(fd_core_notify, &tx_complete_timestamp, sizeof(tx_complete_timestamp));
+  FATAL_SYSCALL_ON(write_retval != sizeof(tx_complete_timestamp));
 }

@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Security Endpoint
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -22,6 +21,7 @@
 #include "misc/logging.h"
 #include "misc/sl_status.h"
 #include "misc/sleep.h"
+#include "server_core/server_core.h"
 #include "server_core/system_endpoint/system.h"
 #include "security/private/thread/security_thread.h"
 #include "security/private/protocol/protocol.h"
@@ -78,21 +78,18 @@ static sl_status_t send_request(sl_cpc_security_protocol_cmd_info_t request_comm
                            + request_command.request_len, 0);
 
   if (ret != (ssize_t)(SLI_SECURITY_PROTOCOL_HEADER_LENGTH + request_command.request_len)) {
-    need_reconnect = true;
     return SL_STATUS_FAIL;
   }
 
   // Wait for response
-  ret = cpc_read_endpoint(security_ep, buffer, sizeof(buffer), 0u);
+  ret = cpc_read_endpoint(security_ep, buffer, sizeof(buffer), CPC_ENDPOINT_READ_FLAG_NONE);
   memcpy(response, buffer, SLI_SECURITY_PROTOCOL_HEADER_LENGTH + request_command.response_len);
 
   if (ret != (ssize_t)(SLI_SECURITY_PROTOCOL_HEADER_LENGTH + request_command.response_len)) {
-    need_reconnect = true;
     return SL_STATUS_FAIL;
   }
 
   if (response->command_id != (request_command.command_id | SLI_CPC_SECURITY_PROTOCOL_RESPONSE_MASK)) {
-    need_reconnect = true;
     return SL_STATUS_FAIL;
   }
 
@@ -164,6 +161,8 @@ void security_request_unbind(void)
 
   TRACE_SECURITY("Successfully completed unbind with the remote");
 
+  PRINT_INFO("Unbind successful, you may restart the daemon without the --unbind argument");
+
   // We're done
   sleep_s(1); // Wait for logs to be flushed
   exit(0);
@@ -207,6 +206,11 @@ void security_exchange_ecdh_binding_key(void)
     FATAL("Failed to bind, secondary is not configured for ECDH binding");
   }
 
+  if (status == SL_STATUS_NOT_SUPPORTED) {
+    FATAL("Secondary doesn't support this operation. If it has a Secure Element (SE), "
+          "please make sure SE firmware is up to date.");
+  }
+
   if (status != SL_STATUS_OK) {
     FATAL("ECDH exchange failed. Status = 0x%x", status);
   }
@@ -214,6 +218,8 @@ void security_exchange_ecdh_binding_key(void)
   security_keys_generate_shared_key(response.payload + sizeof(sl_status_t));
 
   TRACE_SECURITY("Successfully completed ECDH exchange");
+
+  PRINT_INFO("Binding successful, you may restart the daemon without the --bind argument");
 
   // We're done
   sleep_s(1); // Wait for logs to be flushed
@@ -259,45 +265,12 @@ void security_exchange_plain_text_binding_key(uint8_t* const binding_key)
 
   TRACE_SECURITY("Successfully sent plain text key");
 
+  PRINT_INFO("Binding successful, you may restart the daemon without the --bind argument");
+
   // We're done, the secondary is binded with our key
   sleep_s(1); // Wait for logs to be flushed
   exit(0);
 }
-
-#if 0
-static void security_property_get_state_callback(sl_cpc_system_command_handle_t *handle,
-                                                 sl_cpc_property_id_t property_id,
-                                                 void* property_value,
-                                                 size_t property_length,
-                                                 sl_status_t status)
-{
-  (void)handle;
-  (void)property_value;
-
-  // The security state of the secondary is not currently used.
-  // By receiving a response from the property get command we validate
-  // that the link is encrypted because it was sent as an I-Frame
-
-  // Secondary prior to v4.1.1 will return property_value STATUS_UNIMPLEMENTED
-  // combined with property_id PROP_LAST_STATUS
-  FATAL_ON(property_id != PROP_SECURITY_STATE && property_id != PROP_LAST_STATUS);
-
-  if (status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS) {
-    FATAL("Failed to get security state on the remote. Possible binding key mismatch!");
-  }
-
-  FATAL_ON(property_length != sizeof(uint32_t));
-}
-
-static void security_fetch_remote_security_state(void)
-{
-  sl_cpc_system_cmd_property_get(security_property_get_state_callback,
-                                 PROP_SECURITY_STATE,
-                                 1,
-                                 1000000, // 1 second timeout
-                                 false);  // Must be an i-frame to validate the encrypted link
-}
-#endif
 
 void security_initialize_session(void)
 {
@@ -319,7 +292,6 @@ void security_initialize_session(void)
 
   if (status != SL_STATUS_OK) {
     FATAL("Sending session init request failed.");
-    need_reconnect = true;
     return;
   }
 
@@ -327,7 +299,6 @@ void security_initialize_session(void)
 
   if (session_init_response->status != SL_STATUS_OK) {
     FATAL("The secondary failed to initialize its session");
-    need_reconnect = true;
     return;
   }
 
@@ -339,9 +310,6 @@ void security_initialize_session(void)
 
   TRACE_SECURITY("Session initialized");
 
-#if 0
-#ifndef UNIT_TESTING
-  security_fetch_remote_security_state();
-#endif
-#endif
+  /* Notify server_core that security is ready */
+  server_core_notify_security_ready();
 }

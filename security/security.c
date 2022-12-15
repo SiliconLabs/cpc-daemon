@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Security Endpoint
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -54,7 +53,8 @@ void security_kill_signal(void)
   security_post_command(SECURITY_COMMAND_KILL_THREAD);
 }
 
-sl_status_t security_encrypt(const uint8_t *header, const size_t header_len,
+sl_status_t security_encrypt(sl_cpc_endpoint_t *ep, sl_cpc_security_frame_t *sec_frame,
+                             const uint8_t *header, const size_t header_len,
                              const uint8_t *payload, const size_t payload_len,
                              uint8_t *output,
                              uint8_t *tag, const size_t tag_len)
@@ -63,13 +63,15 @@ sl_status_t security_encrypt(const uint8_t *header, const size_t header_len,
     return SL_STATUS_NOT_INITIALIZED;
   }
 
-  return __security_encrypt(header, header_len,
+  return __security_encrypt(ep, sec_frame,
+                            header, header_len,
                             payload, payload_len,
                             output,
                             tag, tag_len);
 }
 
-sl_status_t security_decrypt(const uint8_t *header, const size_t header_len,
+sl_status_t security_decrypt(sl_cpc_endpoint_t *ep,
+                             const uint8_t *header, const size_t header_len,
                              const uint8_t *payload, const size_t payload_len,
                              uint8_t *output,
                              const uint8_t *tag, const size_t tag_len)
@@ -78,14 +80,16 @@ sl_status_t security_decrypt(const uint8_t *header, const size_t header_len,
     return SL_STATUS_NOT_INITIALIZED;
   }
 
-  return __security_decrypt(header, header_len,
+  return __security_decrypt(ep,
+                            header, header_len,
                             payload, payload_len,
                             output,
                             tag, tag_len);
 }
 
 #if defined(UNIT_TESTING)
-sl_status_t security_encrypt_secondary(const uint8_t *header, const size_t header_len,
+sl_status_t security_encrypt_secondary(sl_cpc_endpoint_t *ep,
+                                       const uint8_t *header, const size_t header_len,
                                        const uint8_t *payload, const size_t payload_len,
                                        uint8_t *output,
                                        uint8_t *tag, const size_t tag_len)
@@ -94,13 +98,15 @@ sl_status_t security_encrypt_secondary(const uint8_t *header, const size_t heade
     return SL_STATUS_NOT_INITIALIZED;
   }
 
-  return __security_encrypt_secondary(header, header_len,
+  return __security_encrypt_secondary(ep,
+                                      header, header_len,
                                       payload, payload_len,
                                       output,
                                       tag, tag_len);
 }
 
-sl_status_t security_decrypt_secondary(const uint8_t *header, const size_t header_len,
+sl_status_t security_decrypt_secondary(sl_cpc_endpoint_t *ep,
+                                       const uint8_t *header, const size_t header_len,
                                        const uint8_t *payload, const size_t payload_len,
                                        uint8_t *output,
                                        const uint8_t *tag, const size_t tag_len)
@@ -109,7 +115,8 @@ sl_status_t security_decrypt_secondary(const uint8_t *header, const size_t heade
     return SL_STATUS_NOT_INITIALIZED;
   }
 
-  return __security_decrypt_secondary(header, header_len,
+  return __security_decrypt_secondary(ep,
+                                      header, header_len,
                                       payload, payload_len,
                                       output,
                                       tag, tag_len);

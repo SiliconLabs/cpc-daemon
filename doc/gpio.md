@@ -20,7 +20,7 @@ To use the sysfs interface,
 To use the gpiod interface, 
 
 - You must have `libgpiod-dev` installed.
-- You must build the project with the following parameter:` -DENABLE_GPIOD=TRUE` or set the `ENABLE_GPIOD` flag to `TRUE` in `CMakeLists.txt`
+- You must build the project with the following parameter: `-D USE_LEGACY_GPIO_SYSFS=FALSE`
 - You must configure `cpcd.conf` to map the proper chips and pins: 
   - `spi_cs_gpio_chip` & `spi_cs_gpio`
   - `spi_rx_irq_gpio_chip` & `spi_rx_irq_gpio`

@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - EZSP-SPI driver
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -43,7 +42,7 @@
 #define SPI_STATUS        0x0B
 #define SPI_VERSION       0x0A
 
-#define BOOTLOADER_TIMEOUT      (10)
+#define BOOTLOADER_TIMEOUT      (20)
 #define MAX_RETRANSMIT_ATTEMPTS (5)
 
 #define TIMEOUT     0x16
@@ -144,11 +143,15 @@ sl_status_t send_firmware(const char   * image_file,
   frame.header = XMODEM_CMD_SOH;
   frame.seq = 1;   //Sequence number starts at one initially, wraps around to 0 afterward
 
+  TRACE_EZSP_SPI("===== State: GET_INFO =====");
+  TRACE_EZSP_SPI("Sending query to bootloader.");
+
   while (1) {
     if (retries > MAX_RETRANSMIT_ATTEMPTS) {
       TRACE_EZSP_SPI("Max retries, exiting");
       error = true;
       state = CLEAN_UP;
+      TRACE_EZSP_SPI("===== State: CLEAN_UP =====");
     }
     switch (state) {
       case GET_INFO:
@@ -157,9 +160,14 @@ sl_status_t send_firmware(const char   * image_file,
         ret = send_query();
         if (ret == QUERYFOUND) {
           // bootloader returns device info
+          TRACE_EZSP_SPI("Received QUERYFOUND, bootloader ready.");
           send_query();
           retries = 0;
           state = SEND_FRAMES;
+          TRACE_EZSP_SPI("===== State: SEND_FRAMES =====");
+          TRACE_EZSP_SPI("Starting image file transmission.");
+        } else {
+          TRACE_EZSP_SPI("Failed to receive QUERYFOUND, received 0x%X. Retrying.", ret);
         }
         break;
       case SEND_FRAMES:
@@ -176,12 +184,14 @@ sl_status_t send_firmware(const char   * image_file,
         proceed_to_next_frame = ezsp_send_bootloader_raw_bytes((const uint8_t *)&frame, sizeof(frame));
 
         if (proceed_to_next_frame) {
+          TRACE_EZSP_SPI("Sent frame number %d successfully.", frame.seq);
           frame.seq++;
           image_file_len -= z;
           image_file_data += z;
           status = '.';
           retries = 0;
         } else {
+          TRACE_EZSP_SPI("Failed to send frame number %d, retrying.", frame.seq);
           status = 'N';
           retransmit_count++;
           retries++;
@@ -189,9 +199,11 @@ sl_status_t send_firmware(const char   * image_file,
         trace_no_timestamp("%c", status);
 
         if (image_file_len == 0) {
+          TRACE_EZSP_SPI("Finished sending image file. Sent a total of %d Bytes.", (size_t)(image_file_data - mmaped_image_file_data));
           trace_no_timestamp("\n");
           retries = 0;
           state = SEND_EOT;
+          TRACE_EZSP_SPI("===== State: SEND_EOT =====");
         }
         break;
       case SEND_EOT:
@@ -199,6 +211,7 @@ sl_status_t send_firmware(const char   * image_file,
           TRACE_EZSP_SPI("Transfer of file \"%s\" completed with %u retransmits.", image_file, retransmit_count);
           retries = 0;
           state = CONFIRM_EOT;
+          TRACE_EZSP_SPI("===== State: CONFIRM_EOT =====");
         } else {
           retries++;
         }
@@ -207,9 +220,13 @@ sl_status_t send_firmware(const char   * image_file,
         ret = send_query();
         // bootloader should respond with an ACK and the last frame number + 1
         if ((ret == XMODEM_CMD_ACK) && (rx_spi_buffer[3] == frame.seq)) {
+          TRACE_EZSP_SPI("Received EOT confirmation, cleaning up...");
           retries = 0;
           state = CLEAN_UP;
+          TRACE_EZSP_SPI("===== State: CLEAN_UP =====");
         } else {
+          TRACE_EZSP_SPI("Failed to receive EOT confirmation for final frame number %d."
+                         "Received 0x%X for frame number %d instead. Retrying.", frame.seq, ret, rx_spi_buffer[3]);
           retries++;
           // the confirmation can take ~3 seconds
           sleep_s(1);
@@ -250,7 +267,7 @@ static void driver_ezsp_spi_open(const char   *device,
 {
   int ret = 0;
   int fd;
-
+  TRACE_EZSP_SPI("Opening EZSP interface...");
   mode |= SPI_NO_CS;
 
   memset(&spi_transfer, 0, sizeof(struct spi_ioc_transfer));
@@ -286,7 +303,8 @@ static void driver_ezsp_spi_open(const char   *device,
   FATAL_ON(gpio_write(&spi_dev.wake_gpio, 1) < 0);
 
   // Setup IRQ gpio
-  FATAL_ON(gpio_init(&spi_dev.irq_gpio, irq_gpio_chip, irq_gpio_pin, NO_DIRECTION, FALLING) < 0);
+  FATAL_ON(gpio_init(&spi_dev.irq_gpio, irq_gpio_chip, irq_gpio_pin, IN, FALLING) < 0);
+  TRACE_EZSP_SPI("EZSP interface opened successfully.");
 }
 
 static int read_until_end_of_frame(void)
@@ -304,6 +322,7 @@ static int read_until_end_of_frame(void)
 
   do {
     if (cpt >= SPI_BUFFER_SIZE) {
+      TRACE_EZSP_SPI("Tried to write outside the rx_buffer while waiting for EOF.");
       return -1;
     }
     ret = ioctl(spi_dev.spi_dev_descriptor, SPI_IOC_MESSAGE(1), &spi_transfer);
@@ -319,6 +338,7 @@ static int read_until_end_of_frame(void)
   } while ((rx_spi_buffer[0] != END_BTL_FRAME) && (timeout > 0));
 
   if (timeout == 0) {
+    TRACE_EZSP_SPI("Timed out while waiting for EOF.");
     return -1;
   }
 
@@ -329,7 +349,7 @@ static int read_until_end_of_frame(void)
 
 static bool wait_irq_line(void)
 {
-  int timeout = 10;
+  int timeout = BOOTLOADER_TIMEOUT;
 
   while ((gpio_read(&spi_dev.irq_gpio) != 0)
          && timeout-- > 0) {
@@ -364,11 +384,17 @@ static int send_query(void)
   FATAL_ON(ret != 4);
 
   if (!wait_irq_line()) {
+    TRACE_EZSP_SPI("Timed out while waiting for the IRQ line to go high while sending query.");
     cs_deassert();
     return -1;
   }
 
   ret = read_until_end_of_frame();
+  if (ret < 0) {
+    TRACE_EZSP_SPI("Timed out while waiting for the end of frame while sending query.");
+    cs_deassert();
+    return -1;
+  }
 
   cs_deassert();
 
@@ -397,15 +423,25 @@ static bool send_end_of_file(void)
 
   if (!wait_irq_line()) {
     cs_deassert();
+    TRACE_EZSP_SPI("Timed out while waiting for the IRQ line to go high while waiting for EOF.");
     return false;
   }
 
   ret = read_until_end_of_frame();
+  if (ret < 0) {
+    TRACE_EZSP_SPI("Timed out while waiting for the end of frame while sending EOF.");
+    cs_deassert();
+    return -1;
+  }
+
+  cs_deassert();
 
   if (rx_spi_buffer[2] == FILEDONE) {
+    TRACE_EZSP_SPI("Received FILEDONE.");
     return true;
   }
 
+  TRACE_EZSP_SPI("Failed to receive FILEDONE, received 0x%X instead.", rx_spi_buffer[2]);
   return false;
 }
 
@@ -433,14 +469,23 @@ static bool ezsp_send_bootloader_raw_bytes(const uint8_t *message, uint8_t lengt
 
   if (!wait_irq_line()) {
     cs_deassert();
+    TRACE_EZSP_SPI("Timed out while waiting for the IRQ line to go high after sending FW frame number %d to the bootloader.", seq_no);
     return false;
   }
 
   // the bootloader should respond to the transmission
   // with BLOCKOK
   ret = read_until_end_of_frame();
+  if (ret < 0) {
+    cs_deassert();
+    TRACE_EZSP_SPI("Timed out while waiting for EOF after sending FW frame number %d to the bootloader.", seq_no);
+    return false;
+  }
+
+  cs_deassert();
 
   if (rx_spi_buffer[2] != BLOCKOK) {
+    TRACE_EZSP_SPI("Received 0x%X instead of BLOCKOK for frame number 0x%X.", rx_spi_buffer[2], seq_no);
     return false;
   }
 
@@ -449,8 +494,13 @@ static bool ezsp_send_bootloader_raw_bytes(const uint8_t *message, uint8_t lengt
   while ((send_query() != XMODEM_CMD_ACK) && (timeout-- > 0)) {
     sleep_ms(1);
   }
+  if (timeout <= 0) {
+    TRACE_EZSP_SPI("Failed to get a XMODEM_ACK after writing frame numer %d", seq_no);
+    return false;
+  }
 
   if (rx_spi_buffer[3] != seq_no) {
+    TRACE_EZSP_SPI("Received XMODEM_CMD_ACK for frame number %d instead of %d.", rx_spi_buffer[3], seq_no);
     return false;
   }
 

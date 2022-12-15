@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Server Core
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -22,8 +21,9 @@
 #include <time.h>
 
 #include "sl_cpc.h"
-#include "misc/sl_slist.h"
+
 #include "hdlc.h"
+#include "misc/sl_slist.h"
 #include "server_core/cpcd_exchange.h"
 
 #define SL_CPC_OPEN_ENDPOINT_FLAG_IFRAME_DISABLE    0x01 << 0   // I-frame is enabled by default; This flag MUST be set to disable the i-frame support by the endpoint
@@ -36,10 +36,10 @@
 #define SL_CPC_FLAG_INFORMATION_POLL            0x01 << 4
 
 // Maximum number of retry while sending a frame
-#define SLI_CPC_RE_TRANSMIT 5
-#define SL_CPC_MAX_RE_TRANSMIT_TIMEOUT_MS 5000 // 5s
-#define SL_CPC_MIN_RE_TRANSMIT_TIMEOUT_MS 250  // 250ms
-#define SL_CPC_MIN_RE_TRANSMIT_TIMEOUT_MINIMUM_VARIATION_MS  50 // 50ms
+#define SLI_CPC_RE_TRANSMIT 10
+#define SL_CPC_MAX_RE_TRANSMIT_TIMEOUT_MS 5000
+#define SL_CPC_MIN_RE_TRANSMIT_TIMEOUT_MS 5
+#define SL_CPC_MIN_RE_TRANSMIT_TIMEOUT_MINIMUM_VARIATION_MS  5
 
 #define TRANSMIT_WINDOW_MIN_SIZE  1u
 #define TRANSMIT_WINDOW_MAX_SIZE  1u
@@ -49,16 +49,16 @@
 
 #define SL_CPC_ENDPOINT_MAX_COUNT  256
 
-void core_init(int driver_fd);
+void core_init(int driver_fd, int driver_notify_fd);
 
-void core_cleanup(void);
-
-void core_open_endpoint(uint8_t endpoit_number, uint8_t flags, uint8_t tx_window_size);
+void core_open_endpoint(uint8_t endpoit_number, uint8_t flags, uint8_t tx_window_size, bool encryption);
 
 void core_process_transmit_queue(void);
 
 #ifdef UNIT_TESTING
 void core_reset_endpoint(uint8_t endpoint_number);
+uint32_t core_endpoint_get_frame_counter(uint8_t endpoint_number, bool tx);
+void core_endpoint_set_frame_counter(uint8_t endpoint_number, uint32_t new_value, bool tx);
 #endif
 
 void core_reset_endpoint_sequence(uint8_t endpoint_number);
@@ -68,6 +68,14 @@ bool core_ep_is_busy(uint8_t ep_id);
 sl_status_t core_close_endpoint(uint8_t endpoint_number, bool notify_secondary, bool force_close);
 
 cpc_endpoint_state_t core_get_endpoint_state(uint8_t ep_id);
+
+bool core_get_endpoint_encryption(uint8_t ep_id);
+
+void core_set_endpoint_state(uint8_t ep_id, cpc_endpoint_state_t state);
+
+cpc_endpoint_state_t core_state_mapper(uint8_t state);
+
+const char* core_stringify_state(cpc_endpoint_state_t state);
 
 void core_write(uint8_t endpoint_number, const void* message, size_t message_len, uint8_t flags);
 
@@ -86,7 +94,7 @@ SL_ENUM(sl_cpc_endpoint_option_t){
   SL_CPC_ENDPOINT_ON_FINAL_ARG,
 };
 
-void core_process_endpoint_change(uint8_t endpoint_number, cpc_endpoint_state_t ep_state);
+void core_process_endpoint_change(uint8_t endpoint_number, cpc_endpoint_state_t ep_state, bool encryption);
 
 bool core_ep_is_closing(uint8_t ep_id);
 
@@ -130,12 +138,20 @@ typedef struct endpoint {
   struct timespec last_iframe_sent_timestamp;
   long smoothed_rtt;
   long rtt_variation;
+#if defined(ENABLE_ENCRYPTION)
+  bool encrypted;
+  uint32_t frame_counter_tx;
+  uint32_t frame_counter_rx;
+#endif
 }sl_cpc_endpoint_t;
+
+typedef struct {
+  uint32_t frame_counter;
+} sl_cpc_security_frame_t;
 
 typedef struct {
   void *hdlc_header;
   const void *data;
-  const void *plaintext_data;
   uint16_t data_length;
   uint8_t fcs[2];
   uint8_t control;
@@ -143,7 +159,11 @@ typedef struct {
   sl_cpc_endpoint_t *endpoint;
 #if defined(ENABLE_ENCRYPTION)
   bool security_session_last_packet;
+  sl_cpc_security_frame_t *security_info;
 #endif
+  uint8_t pending_ack;
+  bool acked;
+  bool pending_tx_complete;
 } sl_cpc_buffer_handle_t;
 
 typedef struct {

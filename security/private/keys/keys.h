@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Security Endpoint
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -38,6 +37,7 @@
 #define SHA256_LENGTH_BYTES              32
 #define TAG_LENGTH_BYTES                 8
 #define NONCE_FRAME_COUNTER_MAX_VALUE    (1UL << 29)
+#define NONCE_FRAME_COUNTER_PRIMARY_ENCRYPT_BITMASK (1UL << 31)
 
 void security_keys_init(void);
 
@@ -57,23 +57,27 @@ uint8_t* security_get_binding_key(void);
 
 size_t __security_encrypt_get_extra_buffer_size(void);
 
-sl_status_t __security_encrypt(const uint8_t *header, const size_t header_len,
+sl_status_t __security_encrypt(sl_cpc_endpoint_t *ep, sl_cpc_security_frame_t *sec_frame,
+                               const uint8_t *header, const size_t header_len,
                                const uint8_t *payload, const size_t payload_len,
                                uint8_t *output,
                                uint8_t *tag, const size_t tag_len);
 
-sl_status_t __security_decrypt(const uint8_t *header, const size_t header_len,
+sl_status_t __security_decrypt(sl_cpc_endpoint_t *ep,
+                               const uint8_t *header, const size_t header_len,
                                const uint8_t *payload, const size_t payload_len,
                                uint8_t *output,
                                const uint8_t *tag, const size_t tag_len);
 
 #if defined(UNIT_TESTING)
-sl_status_t __security_encrypt_secondary(const uint8_t *header, const size_t header_len,
+sl_status_t __security_encrypt_secondary(sl_cpc_endpoint_t *ep,
+                                         const uint8_t *header, const size_t header_len,
                                          const uint8_t *payload, const size_t payload_len,
                                          uint8_t *output,
                                          uint8_t *tag, const size_t tag_len);
 
-sl_status_t __security_decrypt_secondary(const uint8_t *header, const size_t header_len,
+sl_status_t __security_decrypt_secondary(sl_cpc_endpoint_t *ep,
+                                         const uint8_t *header, const size_t header_len,
                                          const uint8_t *payload, const size_t payload_len,
                                          uint8_t *output,
                                          const uint8_t *tag, const size_t tag_len);

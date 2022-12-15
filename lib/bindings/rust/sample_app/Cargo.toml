@@ -1,0 +1,7 @@
+[package]
+name = "sample-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libcpc = { version = "0.1.0", path = ".." }

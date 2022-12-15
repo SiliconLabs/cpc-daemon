@@ -21,5 +21,7 @@ Additional CPCd features include:
 - Initiate a firmware update for the secondary
 - Validate the UART RX/TX and CTS/RTS connections with the secondary.
 
+![](CPC_Building_blocks.svg "CPC Building blocks")
+
 ![](CPC_Diagram.svg "CPCD Diagram")
 

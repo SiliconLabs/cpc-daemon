@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - System Endpoint
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -62,12 +61,14 @@ SL_ENUM_GENERIC(sl_cpc_property_id_t, uint32_t)
   PROP_SECONDARY_APP_VERSION  = 0x04,
   PROP_RX_CAPABILITY          = 0x20,
   PROP_FC_VALIDATION_VALUE    = 0x30,
+  PROP_BUS_SPEED_VALUE        = 0x40,
   PROP_BOOTLOADER_INFO        = 0x200,
   PROP_BOOTLOADER_REBOOT_MODE = 0x202,
   PROP_SECURITY_STATE         = 0x301,
   PROP_CORE_DEBUG_COUNTERS    = 0x400,
   PROP_UFRAME_PROCESSING      = 0x500,
   PROP_ENTER_IRQ              = 0x600,
+  PROP_ENDPOINT_ENCRYPTION    = 0x700,
   PROP_ENDPOINT_STATE_0       = 0x1000,
   PROP_ENDPOINT_STATE_1       = 0x1001,
   PROP_ENDPOINT_STATE_2       = 0x1002,
@@ -328,17 +329,26 @@ SL_ENUM_GENERIC(sl_cpc_property_id_t, uint32_t)
 };
 
 /***************************************************************************//**
+ * Helper macros to convert a property and an enpoint id (uint8_t) to a
+ * sl_cpc_property_id_t enum value.
+ ******************************************************************************/
+#define EP_ID_TO_PROPERTY_ID(property, ep_id)  ((sl_cpc_property_id_t)((property) | ((ep_id) & 0x000000FF)))
+
+/***************************************************************************//**
+ * Helper macros to convert a property enum value to an endpoint id (uint8_t)
+ ******************************************************************************/
+#define PROPERTY_ID_TO_EP_ID(property_id) ((uint8_t)(property_id & 0x000000FF))
+
+/***************************************************************************//**
  * Helper macros to convert an enpoint id (uint8_t) to a PROP_ENDPOINT_STATE_x
  * enum value.
  ******************************************************************************/
-#define EP_ID_TO_PROPERTY_ID(ep_id) \
-  (sl_cpc_property_id_t)(0x00001000 | (ep_id & 0x000000FF))
+#define EP_ID_TO_PROPERTY_STATE(ep_id)         EP_ID_TO_PROPERTY_ID(PROP_ENDPOINT_STATE_0, ep_id)
 
 /***************************************************************************//**
- * Helper macros to convert a PROP_ENDPOINT_STATE_x enum value to an endpoint id
- * (uint8_t)
+ * Helper macros to convert an enpoint id (uint8_t) to a PROP_ENCRYPTION_STATE
  ******************************************************************************/
-#define PROPERTY_ID_TO_EP_ID(property_id) ((uint8_t)(property_id & 0x000000FF))
+#define EP_ID_TO_PROPERTY_ENCRYPTION(ep_id)         EP_ID_TO_PROPERTY_ID(PROP_ENDPOINT_ENCRYPTION, ep_id)
 
 /***************************************************************************//**
  * Helper macros to extract the two aggregated endpoint states encoded in one
@@ -413,6 +423,21 @@ SL_ENUM_GENERIC(sl_cpc_system_reboot_mode_t, uint32_t)
 {
   REBOOT_APPLICATION = 0, ///< At the next reboot application is executed.
   REBOOT_BOOTLOADER  = 1  ///< At the next reboot bootloader is executed
+};
+
+/***************************************************************************//**
+ * List of bootloaders that the secondary suports
+ *
+ * @note
+ *   This enum is encoded with 4 bytes.
+ ******************************************************************************/
+SL_ENUM_GENERIC(sl_cpc_bootloader_t, uint32_t)
+{
+  SL_CPC_BOOTLOADER_NONE                = 0,  ///< No bootloader
+  SL_CPC_BOOTLOADER_EMBER_APPLICATION   = 1,  ///< Ember bootloader in application mode
+  SL_CPC_BOOTLOADER_EMBER_STANDALONE    = 2,  ///< Ember bootloader in standalone mode
+  SL_CPC_BOOTLOADER_GECKO               = 3,  ///< Gecko SDK bootloader
+  SL_CPC_BOOTLOADER_UNKNOWN             = 4,  ///< Unknown, third party bootloader?
 };
 
 /***************************************************************************//**
@@ -600,4 +625,9 @@ void sl_cpc_system_on_unnumbered_acknowledgement(void);
  * Cleanup the system endpoint before closing the daemon
  ******************************************************************************/
 void sl_cpc_system_cleanup(void);
+
+/***************************************************************************//**
+ * Convert bootloader type to string
+ ******************************************************************************/
+const char* sl_cpc_system_bootloader_type_to_str(sl_cpc_bootloader_t bootloader);
 #endif

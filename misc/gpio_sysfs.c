@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - GPIO Sysfs Interface
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -17,13 +16,16 @@
  ******************************************************************************/
 #define _GNU_SOURCE
 
-#include <unistd.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "gpio.h"
 #include "logging.h"
 #include "sleep.h"
+
+static int get_fd(unsigned int gpio_pin);
 
 static int simple_write(const char *filename, const char *data)
 {
@@ -49,12 +51,23 @@ static int export (unsigned int gpio_pin)
 
   snprintf(buf, 256, "%d", gpio_pin);
   ret = simple_write("/sys/class/gpio/export", buf);
+  FATAL_SYSCALL_ON(ret < 0);
 
-  //FIXME:
-  // According to this post on stackexchange, this appears to be some sort of race condition bug.
-  // Adding a strategic delay immediately after the export operation solves the problem.
-  //https://raspberrypi.stackexchange.com/questions/23162/gpio-value-file-appears-with-wrong-permissions-momentarily
-  sleep_ms(100);
+  for (int i = 0; i < 5; i++) {
+    // According to this post on stackexchange, this appears to be some sort of race condition bug.
+    // Adding a strategic delay immediately after the export operation solves the problem. On some
+    // occurrences, the 100ms delay was not enough, so handle the situation in a for loop to get
+    // better chances of success.
+    // https://raspberrypi.stackexchange.com/questions/23162/gpio-value-file-appears-with-wrong-permissions-momentarily
+    sleep_ms(100);
+
+    ret = get_fd(gpio_pin);
+    if (ret != -1) {
+      break;
+    } else {
+      FATAL_SYSCALL_ON(errno != EACCES);
+    }
+  }
 
   return ret;
 }
@@ -74,7 +87,6 @@ static int get_fd(unsigned int gpio_pin)
 
   snprintf(buf, 256, "/sys/class/gpio/gpio%d/value", gpio_pin);
   fd = open(buf, O_RDWR | O_NONBLOCK | O_CLOEXEC);
-  FATAL_SYSCALL_ON(fd < 0);
 
   return fd;
 }
@@ -130,9 +142,10 @@ int gpio_init(gpio_sysfs_t *gpio, const char *gpio_chip, unsigned int gpio_pin, 
   (void)gpio_chip;
 
   unexport(gpio_pin);
-  FATAL_ON(export (gpio_pin) < 0);
 
-  gpio->value_fd = get_fd(gpio_pin);
+  gpio->value_fd = export (gpio_pin);
+  FATAL_ON(gpio->value_fd < 0);
+
   gpio->irq_fd = get_fd(gpio_pin);
   gpio->pin = gpio_pin;
 

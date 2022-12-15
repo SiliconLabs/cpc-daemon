@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Tracing Interface
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -39,6 +38,7 @@
 #include "misc/logging.h"
 #include "server_core/epoll/epoll.h"
 #include "config.h"
+#include "utils.h"
 
 #ifndef UNIT_TESTING
 #include "driver/driver_uart.h"
@@ -135,7 +135,7 @@ static void async_logger_init(async_logger_t* logger, int file_descriptor, const
   ret = pthread_mutex_init(&logger->mutex, NULL);
   NO_LOGGING_FATAL_ON(ret != 0);
 
-  logger->buffer = malloc(logger->buffer_size);
+  logger->buffer = zalloc(logger->buffer_size);
   NO_LOGGING_FATAL_ON(logger->buffer == NULL);
 
   /* Lock the buffer in RAM since it's a long buffer and we will use it often to prevent
@@ -493,7 +493,7 @@ void init_stats_logging(void)
 
   /* Setup epoll */
   {
-    logging_private_data = (epoll_private_data_t*) malloc(sizeof(epoll_private_data_t));
+    logging_private_data = (epoll_private_data_t*) zalloc(sizeof(epoll_private_data_t));
     FATAL_ON(logging_private_data == NULL);
 
     logging_private_data->callback = logging_print_stats;

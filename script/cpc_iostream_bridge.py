@@ -15,7 +15,7 @@ stop_flag = False
 
 def client_read(client, endpoint, event):
     global stop_flag
-    size, _ = endpoint.get_option(libcpc_wrapper.Option.CPC_OPTION_MAX_WRITE_SIZE)
+    size = endpoint.get_option(libcpc_wrapper.Option.CPC_OPTION_MAX_WRITE_SIZE)
     verboseprint("Write size: {}".format(size))
     while not stop_flag:
         try:

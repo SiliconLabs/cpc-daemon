@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Main
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -185,6 +184,10 @@ int main(int argc, char *argv[])
   PRINT_INFO("Git commit: %s / branch: %s", GIT_SHA1, GIT_REFSPEC);
   PRINT_INFO("Sources hash: %s", SOURCES_HASH);
 
+  if (geteuid() == 0) {
+    WARN("Running CPCd as 'root' is not recommended. Proceed at your own risk.");
+  }
+
   config_init(argc, argv);
 
 #if !defined(ENABLE_ENCRYPTION)
@@ -252,18 +255,14 @@ __attribute__((noreturn)) static void exit_daemon(void)
   driver_kill_signal();
   pthread_join(driver_thread, NULL);
 
+#if defined(ENABLE_ENCRYPTION)
+  if (config.use_encryption && security_thread != 0) {
+    security_kill_signal();
+    pthread_join(security_thread, NULL);
+  }
+#endif
   server_core_kill_signal();
   pthread_join(server_core_thread, NULL);
-
-  if (config.use_encryption && security_thread != 0) {
-    int ret = pthread_tryjoin_np(security_thread, NULL);
-    if (ret == EBUSY) {
-#if defined(ENABLE_ENCRYPTION)
-      security_kill_signal();
-      pthread_join(security_thread, NULL);
-#endif
-    }
-  }
 
   PRINT_INFO("Daemon exiting with status %s", (exit_status == 0) ? "EXIT_SUCCESS" : "EXIT_FAILURE");
 
@@ -301,6 +300,9 @@ __attribute__((noreturn)) void signal_crash(void)
   if (pthread_self() == main_thread) {
     exit_daemon();
   } else {
+    if (pthread_self() == security_thread) {
+      security_thread = 0;
+    }
     write(main_crash_eventfd, &event_value, sizeof(event_value));
   }
 
@@ -318,6 +320,9 @@ __attribute__((noreturn)) void software_graceful_exit(void)
   if (pthread_self() == main_thread) {
     exit_daemon();
   } else {
+    if (pthread_self() == security_thread) {
+      security_thread = 0;
+    }
     write(main_graceful_exit_eventfd, &event_value, sizeof(event_value));
   }
 

@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - UART Validation Mode
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -156,6 +155,7 @@ bool uart_validation_reset_requested(sl_cpc_system_status_t status)
 static void test_1_rx_tx(void)
 {
   PRINT_INFO("Running UART validation test #1 - RX/TX");
+  PRINT_INFO("Please disconnect CTS/RTS pins when using a wired UART interface");
 
   open_uart_port_subtest(false);
 
@@ -164,6 +164,7 @@ static void test_1_rx_tx(void)
 
   PRINT_INFO("Validating Host TX/RX <-> Secondary RX/TX...");
   reset_software_subtest();
+  PRINT_INFO("SUCCESS : Host TX/RX is connected to Secondary RX/TX");
 }
 
 static void test_2_rts_cts(void)
@@ -175,6 +176,7 @@ static void test_2_rts_cts(void)
   PRINT_INFO("Validating Host TX/RX <-> Secondary RX/TX...");
   reset_software_subtest();
   get_secondary_cpc_version_subtest();
+  PRINT_INFO("SUCCESS : Host TX/RX is connected to Secondary RX/TX");
 
   PRINT_INFO("Validating Host CTS <-> Secondary RTS...");
   enable_uframe_processing_subtest(true);
@@ -198,16 +200,17 @@ static void open_uart_port_subtest(bool flowcontrol)
 {
   TRACE_UART_VALIDATION("Opening UART port");
   int fd_socket_driver_core;
+  int fd_socket_driver_core_notify;
   if (config.bus == UART) {
     // Bypass configuration for flow control: set to true to determine that RTS/CTS pins are not connected properly
-    driver_thread = driver_uart_init(&fd_socket_driver_core, config.uart_file, config.uart_baudrate, flowcontrol);
+    driver_thread = driver_uart_init(&fd_socket_driver_core, &fd_socket_driver_core_notify, config.uart_file, config.uart_baudrate, flowcontrol);
   } else {
     BUG("Invalid bus_type, should be UART, see cpcd.conf");
   }
 
   // Disable reset sequence because we want to do it ourselves
   config.reset_sequence = false;
-  server_core_thread = server_core_init(fd_socket_driver_core, SERVER_CORE_MODE_NORMAL);
+  server_core_thread = server_core_init(fd_socket_driver_core, fd_socket_driver_core_notify, SERVER_CORE_MODE_NORMAL);
 }
 
 static void reset_external_subtest(void)
@@ -244,7 +247,6 @@ static void reset_software_subtest(void)
   while (1) {
     if (reset_software_received) {
       TRACE_UART_VALIDATION("Received software reset ack");
-      PRINT_INFO("SUCCESS : Host TX/RX is connected to Secondary RX/TX");
       break;
     }
 

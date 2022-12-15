@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol (CPC) - UART XMODEM driver
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -83,13 +82,15 @@ sl_status_t xmodem_send(const char* image_file, const char *dev_name, unsigned  
   /* Open the uart and memory map the firmware update file */
   {
     struct stat stat;
+    int ret_fstat;
 
     uart_fd = driver_uart_open(dev_name, bitrate, hardflow);
 
     image_file_fd = open(image_file, O_RDONLY | O_CLOEXEC);
     FATAL_SYSCALL_ON(image_file_fd < 0);
 
-    fstat(image_file_fd, &stat);
+    ret_fstat = fstat(image_file_fd, &stat);
+    FATAL_SYSCALL_ON(ret_fstat < 0);
 
     mmapped_image_file_len = (size_t) stat.st_size;
 
@@ -100,8 +101,9 @@ sl_status_t xmodem_send(const char* image_file, const char *dev_name, unsigned  
   /* Wait for the "C" character meaning the secondary is ready for XMODEM-CRC transfer */
   {
     {
+      TRACE_XMODEM("Connecting to bootloader...");
       if (!wait_for_bootloader_string(uart_fd, BTL_MENU_PROMPT)) {
-        TRACE_XMODEM("Failed to connect to bootloader");
+        TRACE_XMODEM("Failed to connect to bootloader.");
         return SL_STATUS_FAIL;
       }
     }
@@ -109,6 +111,7 @@ sl_status_t xmodem_send(const char* image_file, const char *dev_name, unsigned  
     /* The bootloader sends a menu with options. We have to send '1' in order to start a gbl file transfer */
     {
       const uint8_t upload_gbl = '1';
+      TRACE_XMODEM("Received bootloader menu, send \"1\" to start gbl file transfer.");
 
       ret = write(uart_fd, (const void *)&upload_gbl, sizeof(upload_gbl));
       FATAL_SYSCALL_ON(ret != sizeof(upload_gbl));
@@ -155,18 +158,20 @@ sl_status_t xmodem_send(const char* image_file, const char *dev_name, unsigned  
 
       switch (answer) {
         case XMODEM_CMD_NAK:
+          TRACE_XMODEM("Received XMODEM_CMD_NAK for frame number %d, retrying.", frame.seq);
           status = 'N';
           retransmit_count++;
           break;
 
         case XMODEM_CMD_ACK:
+          TRACE_XMODEM("Sent frame number %d successfully.", frame.seq);
           status = '.';
           proceed_to_next_frame = true;
           retransmit_count = 0;
           break;
 
         default:
-          FATAL("Error in file upload");
+          FATAL("Error in file upload, received 0x%X when sending frame number %d.", answer, frame.seq);
           break;
       }
 
@@ -179,10 +184,12 @@ sl_status_t xmodem_send(const char* image_file, const char *dev_name, unsigned  
       }
 
       if (retransmit_count > MAX_RETRANSMIT_ATTEMPTS) {
-        TRACE_XMODEM("Max retries, exiting");
+        TRACE_XMODEM("Max retries reached, exiting");
         return SL_STATUS_FAIL;
       }
     }
+    TRACE_XMODEM("Finished sending image file. Sent a total of %d Bytes.", (size_t)(image_file_data - mmapped_image_file_data));
+    TRACE_XMODEM("Transfer of file \"%s\" completed with %u retransmits.", image_file, retransmit_count);
   }
 
   trace_no_timestamp("\n");
@@ -190,7 +197,7 @@ sl_status_t xmodem_send(const char* image_file, const char *dev_name, unsigned  
   /* Complete the transfer by sending EOF symbol */
   {
     const uint8_t eof = XMODEM_CMD_EOT;
-
+    TRACE_XMODEM("Sending EOT symbol to complete image file transfer.");
     ret = write(uart_fd, &eof, sizeof(eof));
     FATAL_SYSCALL_ON(ret != sizeof(eof));
   }
@@ -200,6 +207,7 @@ sl_status_t xmodem_send(const char* image_file, const char *dev_name, unsigned  
       TRACE_XMODEM("Failed to receive upload confirmation from bootloader.");
       return SL_STATUS_FAIL;
     }
+    TRACE_XMODEM("Received upload confirmation from bootloader. Device restarting, waiting for bootloader menu...");
   }
 
   {
@@ -207,18 +215,20 @@ sl_status_t xmodem_send(const char* image_file, const char *dev_name, unsigned  
       TRACE_XMODEM("Failed to restart device after upgrade.");
       return SL_STATUS_FAIL;
     }
+    TRACE_XMODEM("Device restarted successfully.");
   }
 
   /* Send '2' in order to run the new image */
   {
     const uint8_t run_gbl = '2';
-
+    TRACE_XMODEM("Received bootloader menu, send \"2\" to run the new image file.");
     ret = write(uart_fd, (const void *)&run_gbl, sizeof(run_gbl));
     FATAL_SYSCALL_ON(ret != sizeof(run_gbl));
   }
 
   /* Cleanup */
   {
+    TRACE_XMODEM("Cleaning up...");
     ret = munmap(mmapped_image_file_data, mmapped_image_file_len);
     FATAL_SYSCALL_ON(ret != 0);
 

@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Security Endpoint
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -19,16 +18,11 @@
 #ifndef SECURITY_H
 #define SECURITY_H
 
+#include <stdint.h>
 #include <stdbool.h>
 
 #include "misc/sl_status.h"
-
-/***************************************************************************//**
- * Initialize the security endpoint
- ******************************************************************************/
-void security_init(void);
-
-void security_kill_signal(void);
+#include "server_core/core/core.h"
 
 typedef enum {
   SECURITY_COMMAND_NONE,
@@ -39,7 +33,7 @@ typedef enum {
   SECURITY_COMMAND_INITIALIZE_SESSION,
   SECURITY_COMMAND_RESET_SESSION,
   SECURITY_COMMAND_KILL_THREAD
-}sl_cpc_security_command_t;
+} sl_cpc_security_command_t;
 
 typedef enum {
   SECURITY_STATE_NOT_READY,
@@ -48,6 +42,16 @@ typedef enum {
   SECURITY_STATE_RESETTING,
   SECURITY_STATE_INITIALIZED,
 } sl_cpc_security_state_t;
+
+typedef void (*sl_cpc_security_on_state_change_t)(sl_cpc_security_state_t old,
+                                                  sl_cpc_security_state_t new);
+
+/***************************************************************************//**
+ * Initialize the security endpoint
+ ******************************************************************************/
+void security_init(void);
+
+void security_kill_signal(void);
 
 /***************************************************************************//**
  * Send a security command
@@ -61,30 +65,38 @@ sl_cpc_security_state_t security_get_state(void);
 
 void security_set_state(sl_cpc_security_state_t new_state);
 
+void security_register_state_change_callback(sl_cpc_security_on_state_change_t func);
+
 extern volatile bool security_session_initialized;
 
-sl_status_t security_encrypt(const uint8_t *header, const size_t header_len,
+sl_cpc_security_frame_t* security_encrypt_prepare_next_frame(sl_cpc_endpoint_t *ep);
+
+sl_status_t security_encrypt(sl_cpc_endpoint_t *ep, sl_cpc_security_frame_t *sec_frame,
+                             const uint8_t *header, const size_t header_len,
                              const uint8_t *payload, const size_t payload_len,
                              uint8_t *output,
                              uint8_t *tag, const size_t tag_len);
 
-sl_status_t security_decrypt(const uint8_t *header, const size_t header_len,
+sl_status_t security_decrypt(sl_cpc_endpoint_t *ep,
+                             const uint8_t *header, const size_t header_len,
                              const uint8_t *payload, const size_t payload_len,
                              uint8_t *output,
                              const uint8_t *tag, const size_t tag_len);
 #if defined(UNIT_TESTING)
-sl_status_t security_encrypt_secondary(const uint8_t *header, const size_t header_len,
+sl_status_t security_encrypt_secondary(sl_cpc_endpoint_t *ep,
+                                       const uint8_t *header, const size_t header_len,
                                        const uint8_t *payload, const size_t payload_len,
                                        uint8_t *output,
                                        uint8_t *tag, const size_t tag_len);
 
-sl_status_t security_decrypt_secondary(const uint8_t *header, const size_t header_len,
+sl_status_t security_decrypt_secondary(sl_cpc_endpoint_t *ep,
+                                       const uint8_t *header, const size_t header_len,
                                        const uint8_t *payload, const size_t payload_len,
                                        uint8_t *output,
                                        const uint8_t *tag, const size_t tag_len);
 #endif
 
-void security_drop_incoming_packet(void);
+void security_xfer_rollback(sl_cpc_endpoint_t *ep);
 
 size_t security_encrypt_get_extra_buffer_size(void);
 

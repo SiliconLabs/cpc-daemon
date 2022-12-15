@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Emulation driver
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -31,9 +30,12 @@
  * Returns the file descriptor of the paired socket to the driver
  * to use in a select() call.
  */
-pthread_t driver_emul_init(int* fd_core_driver);
+pthread_t driver_emul_init(int* fd_core_driver, int *fd_notify_core);
 sl_status_t sli_cpc_drv_read_data(frame_t *handle, uint16_t *payload_rx_len);
 void sli_cpc_drv_emul_submit_pkt_for_rx(void *header_buf, void *payload_buf, uint16_t payload_buf_len);
 void sli_cpc_drv_emul_set_ep_state(uint8_t id, cpc_endpoint_state_t state);
+
+void sli_cpc_drv_emul_set_frame_counter(uint8_t id, uint32_t frame_counter, bool tx);
+uint32_t sli_cpc_drv_emul_get_frame_counter(uint8_t id, bool tx);
 
 #endif

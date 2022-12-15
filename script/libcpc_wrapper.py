@@ -22,6 +22,12 @@ class Option(Enum):
     CPC_OPTION_MAX_WRITE_SIZE = 5
 #end class
 
+class EndpointEventOption(Enum):
+  CPC_ENDPOINT_EVENT_OPTION_NONE = 0
+  CPC_ENDPOINT_EVENT_OPTION_BLOCKING = 1
+  CPC_ENDPOINT_EVENT_OPTION_READ_TIMEOUT = 2
+#end class
+
 class CPCTimeval(Structure):
     _fields_ = [('seconds', c_int),
                 ('microseconds', c_int)]
@@ -68,7 +74,7 @@ class Endpoint(Structure):
             raise Exception("Failed to close endpoint")
     #end def
 
-    # ssize_t cpc_read_endpoint(cpc_endpoint_t endpoint, void *buffer, size_t count, cpc_read_flags_t flags)
+    # ssize_t cpc_read_endpoint(cpc_endpoint_t endpoint, void *buffer, size_t count, cpc_endpoint_read_flags_t flags)
     def read(self, nonblock=False):
         count = 4087
         read_buffer = bytearray(count)
@@ -87,7 +93,7 @@ class Endpoint(Structure):
         return byte_array[:ret]
     #end def
 
-    # ssize_t cpc_write_endpoint(cpc_endpoint_t endpoint, const void *data, size_t data_length, cpc_write_flags_t flags)
+    # ssize_t cpc_write_endpoint(cpc_endpoint_t endpoint, const void *data, size_t data_length, cpc_endpoint_write_flags_t flags)
     def write(self, data, nonblock=False):
         data_length = len(data)
 
@@ -151,7 +157,172 @@ class Endpoint(Structure):
         else:
             return optval
     #end def
+
+    # int cpc_get_endpoint_read_timeout(cpc_endpoint_t endpoint, cpc_timeval_t * timeval);
+    @property
+    def read_timeout(self):
+        return self.get_option(Option.CPC_OPTION_RX_TIMEOUT)
+    #end def
+
+    # int cpc_set_endpoint_read_timeout(cpc_endpoint_t endpoint, cpc_timeval_t timeval);
+    @read_timeout.setter
+    def read_timeout(self, timeout):
+        self.set_option(Option.CPC_OPTION_RX_TIMEOUT, timeout)
+    #end def
+
+    # int cpc_get_endpoint_write_timeout(cpc_endpoint_t endpoint, cpc_timeval_t * timeval);
+    @property
+    def write_timeout(self):
+        return self.get_option(Option.CPC_OPTION_TX_TIMEOUT)
+    #end def
+
+    # int cpc_set_endpoint_write_timeout(cpc_endpoint_t endpoint, cpc_timeval_t timeval);
+    @write_timeout.setter
+    def write_timeout(self, timeout):
+        self.set_option(Option.CPC_OPTION_TX_TIMEOUT, timeout)
+    #end def
+
+    # int cpc_get_endpoint_blocking_mode(cpc_endpoint_t endpoint, bool * is_blocking);
+    @property
+    def blocking(self):
+        return self.get_option(Option.CPC_OPTION_BLOCKING)
+    #end def
+
+    # int cpc_set_endpoint_blocking(cpc_endpoint_t endpoint, bool blocking);
+    @blocking.setter
+    def blocking(self, blocking):
+        return self.set_option(Option.CPC_OPTION_BLOCKING, blocking)
+    #end def
+
+    # int cpc_get_endpoint_socket_size(cpc_endpoint_t endpoint, uint32_t* socket_size);
+    @property
+    def socket_size(self):
+        return self.get_option(Option.CPC_OPTION_SOCKET_SIZE)
+    #end def
+
+    # int cpc_set_endpoint_socket_size(cpc_endpoint_t endpoint, uint32_t socket_size);
+    @socket_size.setter
+    def socket_size(self, size):
+        return self.set_option(Option.CPC_OPTION_SOCKET_SIZE, size)
+    #end def
+
+    # int cpc_get_endpoint_max_write_size(cpc_endpoint_t endpoint, size_t* max_write_size);
+    @property
+    def max_write_size(self):
+        return self.get_option(Option.CPC_OPTION_MAX_WRITE_SIZE)
+    #end def
+
+    # int cpc_get_endpoint_encryption_state(cpc_endpoint_t endpoint, bool* is_encrypted);
+    @property
+    def encrypted(self):
+        return self.get_option(Option.CPC_OPTION_ENCRYPTED)
+    #end def
 #end class
+
+class Event(Enum):
+    ENDPOINT_UNKNOWN                        = 0
+    ENDPOINT_OPENED                         = 1
+    ENDPOINT_CLOSED                         = 2
+    ENDPOINT_CLOSING                        = 3
+    ENDPOINT_ERROR_DESTINATION_UNREACHABLE  = 4
+    ENDPOINT_ERROR_SECURITY_INCIDENT        = 5
+    ENDPOINT_ERROR_FAULT                    = 6
+#end class
+
+
+class EndpointEvent(Structure):
+
+    _fields_ = [("ptr", c_void_p)]
+
+    def __init__(self, cpc_handle):
+        self.cpc_handle = cpc_handle
+    #end def
+
+    # int cpc_deinit_endpoint_event(cpc_endpoint_event_handle_t *event_handle)
+    def close(self):
+        ret = self.cpc_handle.lib_cpc.cpc_deinit_endpoint_event(byref(self))
+        if ret != 0:
+            raise Exception("Failed to close endpoint")
+    #end def
+
+    # int cpc_read_endpoint_event(cpc_endpoint_event_handle_t event_handle, cpc_event_type_t *event_type, cpc_events_flags_t flags);
+    def read(self, nonblock=False):
+        flags = 0
+        if nonblock:
+            flags = (1 << 0)
+
+        ev = c_uint()
+        ret = self.cpc_handle.lib_cpc.cpc_read_endpoint_event(self, byref(ev), flags)
+        if ret < 0:
+            raise Exception("Failed to read endpoint event")
+
+        return Event(ev.value)
+    #end def
+
+    # int cpc_set_endpoint_event_option(cpc_endpoint_event_handle_t event_handle, cpc_endpoint_event_option_t option, const void *optval, size_t optlen);
+    def set_option(self, option, optval):
+        if option == EndpointEventOption.CPC_ENDPOINT_EVENT_OPTION_BLOCKING:
+            optval = c_bool(optval)
+        elif option == EndpointEventOption.CPC_ENDPOINT_EVENT_OPTION_READ_TIMEOUT:
+            if type(optval) is not CPCTimeval:
+                raise Exception("Invalid option type {}, expected CPCTimeval".format(type(optval)))
+        elif option == Option.CPC_OPTION_SOCKET_SIZE:
+            optval = c_int(optval)
+        else:
+            # best effort, convert it to int and let the library handle the failure
+            optval = c_int(optval)
+
+        opt = c_short(option.value)
+        size = c_size_t(sizeof(optval))
+        ret = self.cpc_handle.lib_cpc.cpc_set_endpoint_event_option(self, opt, byref(optval), size)
+        if ret != 0:
+            raise Exception("Failed to set option")
+    #end def
+
+    # int cpc_get_endpoint_event_option(cpc_endpoint_event_handle_t event_handle, cpc_endpoint_event_option_t option, void *optval, size_t *optlen);
+    def get_option(self, option):
+        if option == EndpointEventOption.CPC_ENDPOINT_EVENT_OPTION_BLOCKING:
+            optval = c_bool()
+        elif option == EndpointEventOption.CPC_ENDPOINT_EVENT_OPTION_READ_TIMEOUT:
+            optval = CPCTimeval(0)
+        else:
+            # best effort, try to pass an int and see how it goes
+            optval = c_int()
+
+        opt = c_short(option.value)
+        size = c_size_t(sizeof(optval))
+        input_size = size
+        ret = self.cpc_handle.lib_cpc.cpc_get_endpoint_event_option(self, opt, byref(optval), byref(size))
+        if ret != 0 or input_size != size:
+            raise Exception("Failed to get option")
+
+        if hasattr(optval, "value"):
+            return optval.value
+        else:
+            return optval
+    #end def
+
+    @property
+    def blocking(self):
+        return self.get_option(EndpointEventOption.CPC_ENDPOINT_EVENT_OPTION_BLOCKING)
+    #end def
+
+    @blocking.setter
+    def blocking(self, blocking):
+        self.set_option(EndpointEventOption.CPC_ENDPOINT_EVENT_OPTION_BLOCKING, blocking)
+    #end def
+
+    @property
+    def read_timeout(self):
+        return self.get_option(EndpointEventOption.CPC_ENDPOINT_EVENT_OPTION_READ_TIMEOUT)
+    #end def
+
+    @read_timeout.setter
+    def read_timeout(self, timeout):
+        self.get_option(EndpointEventOption.CPC_ENDPOINT_EVENT_OPTION_READ_TIMEOUT, timeout)
+    #end def
+#end class
+
 
 class CPC(Structure):
 
@@ -221,5 +392,33 @@ class CPC(Structure):
             raise Exception("Failed to get CPC endpoint state")
 
         return State(endp_state.value)
+    #end def
+
+    # int cpc_init_endpoint_event(cpc_handle_t handle, cpc_endpoint_event_handle_t *event_handle, uint8_t endpoint_id)
+    def open_endpoint_event(self, endpoint_id):
+        # convert enum value to integer to make it consumable by C API
+        if type(endpoint_id) == Endpoint.Id:
+            endpoint_id = endpoint_id.value
+
+        endp_id = c_ubyte(endpoint_id)
+
+        event = EndpointEvent(self)
+        ret = self.lib_cpc.cpc_init_endpoint_event(self, byref(event), endp_id)
+        if ret < 0:
+            raise Exception("Failed to open CPC endpoint event {}".format(endpoint_id))
+
+        return event
+    #end def
+
+    # const char* cpc_get_library_version();
+    def get_library_version(self):
+        self.lib_cpc.cpc_get_library_version.restype = c_char_p
+        return self.lib_cpc.cpc_get_library_version().decode("utf-8")
+    #end def
+
+    # const char* cpc_get_secondary_app_version(cpc_handle_t handle);
+    def get_secondary_app_version(self):
+        self.lib_cpc.cpc_get_secondary_app_version.restype = c_char_p
+        return self.lib_cpc.cpc_get_secondary_app_version(self).decode("utf-8")
     #end def
 #end class

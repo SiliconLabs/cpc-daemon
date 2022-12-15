@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Version Header
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -28,5 +27,6 @@
 #define PROJECT_VER_MINOR @PROJECT_VERSION_MINOR@
 #define PROJECT_VER_PATCH @PROJECT_VERSION_PATCH@
 #define PROJECT_VER_TWEAK @PROJECT_VERSION_TWEAK@
+#define PROJECT_MAX_VERSION_SIZE 16
 
 #endif //VERSION_H

@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Config Interface
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -15,10 +14,16 @@
  * sections of the MSLA applicable to Source Code.
  *
  ******************************************************************************/
+#define _GNU_SOURCE
 
 #include <fcntl.h>
+#include <sys/errno.h>
+#include <glob.h>
+#include <limits.h>
+#include <sys/resource.h>
 #include <sys/file.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <getopt.h>
 #include <stddef.h>
@@ -34,6 +39,7 @@
 #include "config.h"
 #include "logging.h"
 #include "version.h"
+#include "utils.h"
 
 /*******************************************************************************
  **********************  DATA TYPES   ******************************************
@@ -48,17 +54,19 @@ typedef struct {
  **********************  GLOBAL CONFIGURATION VALUES   *************************
  ******************************************************************************/
 config_t config = {
-  .file_path = DEFAULT_CONFIG_FILE_PATH,
+  .file_path = CPCD_CONFIG_FILE_PATH,
 
   .instance_name = DEFAULT_INSTANCE_NAME,
 
-  .socket_folder = DEFAULT_SOCKET_FOLDER,
+  .socket_folder = CPC_SOCKET_DIR,
 
   .operation_mode = MODE_NORMAL,
 
   .use_encryption = false,
 
-  .binding_key_file = NULL,
+  .binding_key_file = "~/.cpcd/binding.key",
+
+  .binding_key_override = false,
 
   .binding_method = NULL,
 
@@ -128,6 +136,8 @@ static void config_set_rlimit_nofile(void);
 static void config_validate_configuration(void);
 
 static void config_parse_config_file(void);
+
+static void config_expand_binding_key_location(void);
 
 /*******************************************************************************
  ****************************  IMPLEMENTATION   ********************************
@@ -252,6 +262,7 @@ static void config_print(void)
   CONFIG_PRINT_BOOL_TO_STR(config.use_encryption);
 
   CONFIG_PRINT_STR(config.binding_key_file);
+  CONFIG_PRINT_BOOL_TO_STR(config.binding_key_override);
 
   CONFIG_PRINT_STR(config.binding_method);
 
@@ -313,11 +324,50 @@ void config_init(int argc, char *argv[])
 
   config_parse_config_file();
 
+  config_expand_binding_key_location();
+
   config_validate_configuration();
 
   config_set_rlimit_nofile();
 
   config_print();
+}
+
+static void config_expand_binding_key_location(void)
+{
+  char binding_key_absolute_path[PATH_MAX];
+  FATAL_ON(config.binding_key_file == NULL);
+
+  // Look for a tilde
+  char *tilde = strchr(config.binding_key_file, '~');
+
+  if (tilde != NULL && tilde != &config.binding_key_file[0]) {
+    FATAL("Binding key file path contains a tilde (~) that is not a prefix");
+  } else if (tilde == &config.binding_key_file[0]) {
+    // Make sure there is something after the tilde
+    if (config.binding_key_file[1] == '\0') {
+      FATAL("Binding key file path is invalid");
+    }
+
+    // Look for another tilde
+    char *excess_tilde = strchr(&config.binding_key_file[1], '~');
+    if (excess_tilde != NULL) {
+      FATAL("Binding key file path contains a tilde (~) that is not a prefix");
+    }
+
+    // Expand home directory
+    glob_t home_dir;
+
+    int ret = glob("~", GLOB_TILDE, NULL, &home_dir);
+    FATAL_SYSCALL_ON(ret != 0);
+
+    strcpy(binding_key_absolute_path, home_dir.gl_pathv[0]);
+    strcat(binding_key_absolute_path, &config.binding_key_file[1]);
+
+    config.binding_key_file = strdup(binding_key_absolute_path);
+
+    globfree(&home_dir);
+  }
 }
 
 static void print_cli_args(int argc, char *argv[])
@@ -331,7 +381,7 @@ static void print_cli_args(int argc, char *argv[])
     }
   }
 
-  cli_args = calloc(cli_args_size, sizeof(char));
+  cli_args = zalloc(cli_args_size);
   FATAL_SYSCALL_ON(cli_args == NULL);
 
   for (int i = 0; i < argc; i++) {
@@ -445,7 +495,8 @@ static void config_parse_cli_arg(int argc, char *argv[])
         }
         break;
       case 'k':
-        config.binding_key_file = optarg;
+        config.binding_key_override = true;
+        config.binding_key_file = strdup(optarg);
         FATAL_ON(config.binding_key_file == NULL);
         break;
       case 'f':
@@ -496,10 +547,10 @@ static void config_restart_cpcd_without_args(argv_exclude_t *argv_exclude_list, 
       if (argv_opt_list[j].name) {
         if (strcmp(argv_exclude_list[i].name, argv_opt_list[j].name) == 0) {
           const size_t name_len = strlen(argv_exclude_list[i].name) + strlen("--") + 1;
-          argv_exclude_list[i].name = calloc(name_len, sizeof(char));
+          argv_exclude_list[i].name = zalloc(name_len);
           BUG_ON(snprintf(argv_exclude_list[i].name, name_len, "--%s", argv_opt_list[j].name) < 0);
           const size_t val_len = sizeof(char) + strlen("-") + 1;
-          argv_exclude_list[i].val = calloc(val_len, sizeof(char));
+          argv_exclude_list[i].val = zalloc(val_len);
           BUG_ON(snprintf(argv_exclude_list[i].val, val_len, "-%s", (char[2]){ (char)argv_opt_list[j].val, '\0' }) < 0);
           argv_exclude_list[i].has_arg = argv_opt_list[j].has_arg == required_argument;
           break;
@@ -509,7 +560,7 @@ static void config_restart_cpcd_without_args(argv_exclude_t *argv_exclude_list, 
   }
 
   // Create new argv from argv_g
-  argv = calloc((size_t)argc_g, sizeof(char *));
+  argv = zalloc((size_t)argc_g * sizeof(char *));
   FATAL_SYSCALL_ON(argv == NULL);
   int argv_idx = 0;
   for (int i = 0; i < argc_g; i++) {
@@ -525,7 +576,7 @@ static void config_restart_cpcd_without_args(argv_exclude_t *argv_exclude_list, 
       }
 
       if (!exclude_arg) {
-        argv[argv_idx] = calloc(strlen(argv_g[i]) + 1, sizeof(char));
+        argv[argv_idx] = zalloc(strlen(argv_g[i]) + 1);
         strcpy(argv[argv_idx++], argv_g[i]);
       }
     }
@@ -774,9 +825,9 @@ static void config_parse_config_file(void)
       }
 #endif
     } else if (0 == strcmp(name, "binding_key_file")) {
-      if (config.binding_key_file == NULL) {
+      if (config.binding_key_override == false) {
         config.binding_key_file = strdup(val);
-        FATAL_ON(config.binding_key_file == NULL);
+        FATAL_SYSCALL_ON(config.binding_key_file == NULL);
       }
     } else {
       FATAL("Config file error : key \"%s\" not recognized", name);
@@ -878,8 +929,8 @@ static void config_validate_configuration(void)
   prevent_instance_collision(config.instance_name);
 
   if (config.operation_mode == MODE_FIRMWARE_UPDATE) {
-    if ( access(config.fu_file, F_OK | R_OK) != 0 ) {
-      FATAL("Firmware update file %s is not accessible.", config.fu_file);
+    if (access(config.fu_file, F_OK | R_OK) != 0) {
+      FATAL("Firmware update file (%s) : %s", config.fu_file, strerror(errno));
     }
     /* TODO : Test for proper file extension and/or whether it is a valid image file for the bootloader */
   }
@@ -892,22 +943,33 @@ static void config_validate_configuration(void)
     // ECDH Mode binding writes the key
     if (config.operation_mode != MODE_BINDING_ECDH) {
       if (access(config.binding_key_file, F_OK | R_OK) != 0) {
-        FATAL("Cannot access binding key file with read permissions \'%s\'.", config.binding_key_file);
+        FATAL("Binding key file (%s) : %s", config.binding_key_file, strerror(errno));
       }
     }
   }
 
   if (config.operation_mode == MODE_BINDING_ECDH) {
     if (access(config.binding_key_file, F_OK) == 0 ) {
-      FATAL("Binding key file already exist at provided location. Cannot overwrite it.\'%s\'.", config.binding_key_file);
+      FATAL("Binding key file (%s) : Already exists", config.binding_key_file);
     }
 
-    char* config_binding_key_folder = strdup(config.binding_key_file);
-    config_binding_key_folder = dirname(config_binding_key_folder);
+    char *binding_key_file_copy = strdup(config.binding_key_file);
+    FATAL_SYSCALL_ON(binding_key_file_copy == NULL);
+    char *binding_key_folder = dirname(binding_key_file_copy);
 
-    if (access(config_binding_key_folder, W_OK) != 0 ) {
-      FATAL("Binding key file cannot be written at provided location. Invalid permissions.");
+    if (strcmp(".", binding_key_folder) != 0) {
+      PRINT_INFO("Creating binding key folder %s", binding_key_folder);
+      int ret = recursive_mkdir(binding_key_folder, strlen(binding_key_folder), 0700);
+      if (ret != 0) {
+        FATAL("Failed to create binding key folder %m, %s", binding_key_folder);
+      }
+
+      if (access(binding_key_folder, W_OK) != 0 ) {
+        FATAL("Binding key folder (%s) : %s", binding_key_folder, strerror(errno));
+      }
     }
+
+    free(binding_key_file_copy);
   }
 
   if (config.fu_restart_daemon && (config.operation_mode != MODE_FIRMWARE_UPDATE)) {

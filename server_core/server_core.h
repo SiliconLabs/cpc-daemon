@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Server core
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -33,10 +32,14 @@ typedef enum {
 
 uint32_t server_core_get_secondary_rx_capability(void);
 
-pthread_t server_core_init(int fd_socket_driver_core, server_core_mode_t mode);
+pthread_t server_core_init(int fd_socket_driver_core, int fd_socket_driver_core_notify, server_core_mode_t mode);
 
 void server_core_kill_signal(void);
 
+void server_core_notify_security_ready(void);
+
 bool server_core_reset_sequence_in_progress(void);
+
+char* server_core_get_secondary_app_version(void);
 
 #endif //SERVER_CORE_H

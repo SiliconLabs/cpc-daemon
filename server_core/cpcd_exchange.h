@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Daemon Exchange Structure
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -22,6 +21,8 @@
 #include "lib/sl_cpc.h"
 #include "misc/sl_status.h"
 
+/* NOTE: New exchange types must be added to the end of the enum to prevent
+ *       an incompatibility between older library versions */
 SL_ENUM_GENERIC(cpcd_exchange_type_t, uint8_t)
 {
   EXCHANGE_ENDPOINT_STATUS_QUERY,
@@ -29,7 +30,12 @@ SL_ENUM_GENERIC(cpcd_exchange_type_t, uint8_t)
   EXCHANGE_MAX_WRITE_SIZE_QUERY,
   EXCHANGE_VERSION_QUERY,
   EXCHANGE_CLOSE_ENDPOINT_QUERY,
-  EXCHANGE_SET_PID_QUERY
+  EXCHANGE_SET_PID_QUERY,
+  EXCHANGE_ENDPOINT_ENCRYPTION_QUERY,
+  EXCHANGE_SECONDARY_APP_VERSION_STRING_QUERY,
+  EXCHANGE_SECONDARY_APP_VERSION_SIZE_QUERY,
+  EXCHANGE_OPEN_ENDPOINT_EVENT_SOCKET_QUERY,
+  EXCHANGE_NORMAL_OPERATION_MODE_QUERY
 };
 
 typedef struct {

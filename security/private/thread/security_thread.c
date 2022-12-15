@@ -1,10 +1,9 @@
 /***************************************************************************//**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Security Endpoint
- * @version 3.2.0
  *******************************************************************************
  * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2022 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * The licensor of this software is Silicon Laboratories Inc. Your use of this
@@ -16,23 +15,25 @@
  *
  ******************************************************************************/
 
+#include <errno.h>
 #include <stdbool.h>
 
 #include "misc/config.h"
 #include "misc/logging.h"
+#include "misc/sleep.h"
 #include "server_core/server/server_ready_sync.h"
 #include "security/private/thread/security_thread.h"
 #include "security/private/thread/command_synchronizer.h"
 #include "security/private/keys/keys.h"
 #include "security/private/protocol/protocol.h"
 #include "security/security.h"
+#include "sl_cpc.h"
 
 /* Library handles */
 static cpc_handle_t lib_handle;
 
 cpc_endpoint_t security_ep;
 
-bool need_reconnect = false;
 bool security_initialized = false;
 
 #define SECURITY_READ_TIMEOUT_SEC 10
@@ -83,27 +84,18 @@ void* security_thread_func(void* param)
         break;
 
       case SECURITY_COMMAND_PLAIN_TEXT_BINDING:
-        TRACE_SECURITY("Processing security plain text binding event");
+        PRINT_INFO("Plain text binding in progress..");
         security_exchange_plain_text_binding_key(security_get_binding_key());
-        if (need_reconnect) {
-          security_reconnect();
-        }
         break;
 
       case SECURITY_COMMAND_ECDH_BINDING:
-        TRACE_SECURITY("Processing ECDH binding event");
+        PRINT_INFO("ECDH binding in progress..");
         security_exchange_ecdh_binding_key();
-        if (need_reconnect) {
-          security_reconnect();
-        }
         break;
 
       case SECURITY_COMMAND_UNBIND:
-        TRACE_SECURITY("Processing unbind event");
+        PRINT_INFO("Unbind in progress..");
         security_request_unbind();
-        if (need_reconnect) {
-          security_reconnect();
-        }
         break;
 
       case SECURITY_COMMAND_INITIALIZE_SESSION:
@@ -117,6 +109,12 @@ void* security_thread_func(void* param)
         break;
 
       case SECURITY_COMMAND_KILL_THREAD:
+        if (security_initialized) {
+          ret = cpc_close_endpoint(&security_ep);
+          FATAL_ON(ret < 0);
+          security_initialized = false;
+        }
+        security_set_state(SECURITY_STATE_NOT_READY);
         pthread_exit(0);
         break;
 
@@ -132,15 +130,23 @@ void* security_thread_func(void* param)
 
 static void security_open_security_endpoint(void)
 {
+  int max_retries = 5;
   cpc_timeval_t timeout;
   int ret;
 
   timeout.seconds      = SECURITY_READ_TIMEOUT_SEC;
   timeout.microseconds = 0;
 
-  ret = cpc_open_endpoint(lib_handle, &security_ep, SL_CPC_ENDPOINT_SECURITY, 1);
+  do {
+    ret = cpc_open_endpoint(lib_handle, &security_ep, SL_CPC_ENDPOINT_SECURITY, 1);
+    if (ret == -EAGAIN) {
+      max_retries--;
+      sleep_s(1);
+    }
+  } while (ret == -EAGAIN && max_retries > 0);
+
   if (ret < 0) {
-    FATAL("Failed to open the security endpoint. Make sure encryption is enabled on the remote.");
+    FATAL("Failed to open the security endpoint (%d). Make sure encryption is enabled on the remote.", ret);
   }
 
   ret = cpc_set_endpoint_option(security_ep, CPC_OPTION_RX_TIMEOUT, &timeout, sizeof(timeout));
@@ -158,6 +164,4 @@ static void security_reconnect(void)
   FATAL_ON(ret == -1);
 
   security_open_security_endpoint();
-
-  need_reconnect = false;
 }
