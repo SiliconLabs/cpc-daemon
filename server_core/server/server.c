@@ -32,6 +32,7 @@
 #include "misc/config.h"
 #include "misc/utils.h"
 #include "misc/sl_slist.h"
+#include "security/security.h"
 #include "server_core/server/server.h"
 #include "server_core/server/server_internal.h"
 #include "server_core/server/server_ready_sync.h"
@@ -411,7 +412,7 @@ static void server_process_epoll_fd_ctrl_data_socket(epoll_private_data_t *priva
 
       pending_connection->endpoint_id = interface_buffer->endpoint_number;
       pending_connection->fd_ctrl_data_socket = fd_ctrl_data_socket;
-      sl_slist_push(&pending_connections, &pending_connection->node);
+      sl_slist_push_back(&pending_connections, &pending_connection->node);
     }
     break;
 
@@ -453,6 +454,44 @@ static void server_process_epoll_fd_ctrl_data_socket(epoll_private_data_t *priva
   free(buffer);
 }
 
+#if defined(ENABLE_ENCRYPTION)
+static pending_connection_list_item_t* server_reorder_pending_connections(void)
+{
+  pending_connection_list_item_t *pending_connection;
+  pending_connection = SL_SLIST_ENTRY(pending_connections, pending_connection_list_item_t, node);
+  sl_cpc_security_state_t security_state = security_get_state();
+
+  if (config.use_encryption && security_state != SECURITY_STATE_DISABLED) {
+    if (security_state != SECURITY_STATE_INITIALIZED) {
+      uint8_t head_endpoint_id = pending_connection->endpoint_id;
+
+      if (head_endpoint_id != SL_CPC_ENDPOINT_SECURITY) {
+        sl_slist_node_t *node;
+
+        TRACE_SERVER("Delaying opening of endpoint #%d as security is not initialized yet",
+                     head_endpoint_id);
+
+        do {
+          node = sl_slist_pop(&pending_connections);
+          sl_slist_push_back(&pending_connections, node);
+
+          pending_connection = SL_SLIST_ENTRY(pending_connections,
+                                              pending_connection_list_item_t,
+                                              node);
+        } while (pending_connection->endpoint_id != SL_CPC_ENDPOINT_SECURITY
+                 && pending_connection->endpoint_id != head_endpoint_id);
+
+        if (pending_connection->endpoint_id == head_endpoint_id) {
+          pending_connection = NULL;
+        }
+      }
+    }
+  }
+
+  return pending_connection;
+}
+#endif
+
 void server_process_pending_connections(void)
 {
   pending_connection_list_item_t *pending_connection;
@@ -463,6 +502,15 @@ void server_process_pending_connections(void)
       TRACE_SERVER("Endpoint #%d is currently closing, waiting before opening", pending_connection->endpoint_id);
       return;
     }
+
+#if defined(ENABLE_ENCRYPTION)
+    pending_connection = server_reorder_pending_connections();
+    if (pending_connection == NULL) {
+      TRACE_SERVER("Delaying processing of pending connections, waiting on security");
+      return;
+    }
+#endif
+
     sl_cpc_system_cmd_property_get(property_get_single_endpoint_state_and_reply_to_pending_open_callback,
                                    (sl_cpc_property_id_t)(PROP_ENDPOINT_STATE_0 + pending_connection->endpoint_id),
                                    5,

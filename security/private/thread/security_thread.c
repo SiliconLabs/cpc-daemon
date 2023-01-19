@@ -16,10 +16,12 @@
  *
  ******************************************************************************/
 
+#include <errno.h>
 #include <stdbool.h>
 
 #include "misc/config.h"
 #include "misc/logging.h"
+#include "misc/sleep.h"
 #include "server_core/server/server_ready_sync.h"
 #include "security/private/thread/security_thread.h"
 #include "security/private/thread/command_synchronizer.h"
@@ -132,15 +134,23 @@ void* security_thread_func(void* param)
 
 static void security_open_security_endpoint(void)
 {
+  int max_retries = 5;
   cpc_timeval_t timeout;
   int ret;
 
   timeout.seconds      = SECURITY_READ_TIMEOUT_SEC;
   timeout.microseconds = 0;
 
-  ret = cpc_open_endpoint(lib_handle, &security_ep, SL_CPC_ENDPOINT_SECURITY, 1);
+  do {
+    ret = cpc_open_endpoint(lib_handle, &security_ep, SL_CPC_ENDPOINT_SECURITY, 1);
+    if (ret == -1 && errno == EAGAIN) {
+      max_retries--;
+      sleep_s(1);
+    }
+  } while (ret == -1 && errno == EAGAIN && max_retries > 0);
+
   if (ret < 0) {
-    FATAL("Failed to open the security endpoint. Make sure encryption is enabled on the remote.");
+    FATAL("Failed to open the security endpoint (%d). Make sure encryption is enabled on the remote.", ret);
   }
 
   ret = cpc_set_endpoint_option(security_ep, CPC_OPTION_RX_TIMEOUT, &timeout, sizeof(timeout));
