@@ -102,7 +102,8 @@ config_t config = {
   .fu_connect_to_bootloader = false,
   .fu_enter_bootloader = false,
   .fu_file = NULL,
-  .fu_restart_daemon = false,
+
+  .restart_cpcd = false,
 
   .board_controller_ip_addr = NULL,
 
@@ -295,7 +296,7 @@ static void config_print(void)
   CONFIG_PRINT_BOOL_TO_STR(config.fu_connect_to_bootloader);
   CONFIG_PRINT_BOOL_TO_STR(config.fu_enter_bootloader);
   CONFIG_PRINT_STR(config.fu_file);
-  CONFIG_PRINT_BOOL_TO_STR(config.fu_restart_daemon);
+  CONFIG_PRINT_BOOL_TO_STR(config.restart_cpcd);
 
   CONFIG_PRINT_STR(config.board_controller_ip_addr);
 
@@ -508,7 +509,7 @@ static void config_parse_cli_arg(int argc, char *argv[])
         }
         break;
       case 'r':
-        config.fu_restart_daemon = true;
+        config.restart_cpcd = true;
         break;
       case 't':
         config.uart_validation_test_option = optarg;
@@ -585,10 +586,17 @@ static void config_restart_cpcd_without_args(argv_exclude_t *argv_exclude_list, 
   config_restart_cpcd(argv);
 }
 
+void config_exit_cpcd(int status)
+{
+  PRINT_INFO("Exiting CPCd...");
+  sleep_ms(CPCD_REBOOT_TIME_MS / 2); // Wait for logs to be flushed
+  exit(status);
+}
+
 void config_restart_cpcd(char **argv)
 {
   PRINT_INFO("Restarting CPCd...");
-  sleep_s(1); // Wait for logs to be flushed
+  sleep_ms(CPCD_REBOOT_TIME_MS / 2); // Wait for logs to be flushed
   execv("/proc/self/exe", argv);
 }
 
@@ -598,6 +606,16 @@ void config_restart_cpcd_without_fw_update_args(void)
     { .name = ARGV_OPT_RESTART_CPCD },
     { .name = ARGV_OPT_FIRMWARE_UPDATE },
     { .name = ARGV_OPT_CONNECT_TO_BOOTLOADER },
+  };
+
+  config_restart_cpcd_without_args(argv_exclude_list, sizeof(argv_exclude_list));
+}
+
+void config_restart_cpcd_without_bind_arg(void)
+{
+  argv_exclude_t argv_exclude_list[] = {
+    { .name = ARGV_OPT_RESTART_CPCD },
+    { .name = ARGV_OPT_BIND },
   };
 
   config_restart_cpcd_without_args(argv_exclude_list, sizeof(argv_exclude_list));
@@ -935,24 +953,19 @@ static void config_validate_configuration(void)
     /* TODO : Test for proper file extension and/or whether it is a valid image file for the bootloader */
   }
 
+  if (config.use_encryption) {
+#if !defined(ENABLE_ENCRYPTION)
+    FATAL("Use of encryption was requested, but the daemon was not compiled with -DENABLE_ENCRYPTION");
+#endif
+  }
+
   if (config.use_encryption && config.operation_mode != MODE_BINDING_UNBIND) {
     if (config.binding_key_file == NULL) {
       FATAL("No binding key file provided needed for security. Provide BINDING_KEY_FILE in the configuration file or use the --key argument. ");
     }
-
-    // ECDH Mode binding writes the key
-    if (config.operation_mode != MODE_BINDING_ECDH) {
-      if (access(config.binding_key_file, F_OK | R_OK) != 0) {
-        FATAL("Binding key file (%s) : %s", config.binding_key_file, strerror(errno));
-      }
-    }
   }
 
   if (config.operation_mode == MODE_BINDING_ECDH) {
-    if (access(config.binding_key_file, F_OK) == 0 ) {
-      FATAL("Binding key file (%s) : Already exists", config.binding_key_file);
-    }
-
     char *binding_key_file_copy = strdup(config.binding_key_file);
     FATAL_SYSCALL_ON(binding_key_file_copy == NULL);
     char *binding_key_folder = dirname(binding_key_file_copy);
@@ -972,8 +985,15 @@ static void config_validate_configuration(void)
     free(binding_key_file_copy);
   }
 
-  if (config.fu_restart_daemon && (config.operation_mode != MODE_FIRMWARE_UPDATE)) {
-    FATAL("--restart-cpcd only supported with --firmware-update");
+  if (config.restart_cpcd) {
+    switch (config.operation_mode) {
+      case MODE_FIRMWARE_UPDATE:
+      case MODE_BINDING_ECDH:
+      case MODE_BINDING_PLAIN_TEXT:
+        break;
+      default:
+        FATAL("--restart-cpcd only supported with --firmware-update or --bind");
+    }
   }
 
   if (config.fu_connect_to_bootloader && config.operation_mode != MODE_FIRMWARE_UPDATE) {
@@ -1048,7 +1068,7 @@ static void config_print_help(FILE *stream, int exit_code)
   fprintf(stream, "  cpcd -p/--secondary-versions : get all secondary versions (protocol, cpc, app) and exit.\n");
   fprintf(stream, "  cpcd -a/--app-version <version> : specify the application version to match.\n");
   fprintf(stream, "  cpcd -f/--firmware-update <file> : specify the .gbl file to update the secondary's firmware with.\n");
-  fprintf(stream, "  cpcd -r/--restart-cpcd : restart the daemon. Only supported with --firmware-update.\n");
+  fprintf(stream, "  cpcd -r/--restart-cpcd : restart the daemon. Only supported with --firmware-update or --bind.\n");
   fprintf(stream, "  cpcd -e/--enter-bootloader : restart the secondary device in bootloader and exit.\n");
   fprintf(stream, "  cpcd -l/--connect-to-bootloader : connect directly to bootloader. Only supported with --firmware-update.\n");
   fprintf(stream, "  cpcd -b/--bind <method> : bind to the secondary using the provided key in the config file or the --key argument. Currently supported methods: ecdh or plain-text.\n");

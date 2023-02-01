@@ -21,6 +21,7 @@
 #include "misc/logging.h"
 #include "misc/sl_status.h"
 #include "misc/sleep.h"
+#include "misc/config.h"
 #include "server_core/server_core.h"
 #include "server_core/system_endpoint/system.h"
 #include "security/private/thread/security_thread.h"
@@ -163,113 +164,94 @@ void security_request_unbind(void)
 
   PRINT_INFO("Unbind successful, you may restart the daemon without the --unbind argument");
 
-  // We're done
-  sleep_s(1); // Wait for logs to be flushed
-  exit(0);
+  config_exit_cpcd(EXIT_SUCCESS);
 }
 
-void security_exchange_ecdh_binding_key(void)
+static void security_request_binding(sl_cpc_binding_request_t binding_method)
 {
   sl_status_t status;
   sl_cpc_security_protocol_cmd_t response;
 
-  TRACE_SECURITY("Sending ECDH binding request");
-  status = security_send_binding_request(ECDH_BINDING_REQUEST, &response);
+  TRACE_SECURITY("Sending binding request");
+  status = security_send_binding_request(binding_method, &response);
+
   if (status != SL_STATUS_OK) {
-    FATAL("Failed to request ECDH binding with the secondary. Status = 0x%x", status);
+    FATAL("Failed to request binding with the secondary. Status = 0x%x", status);
   }
 
+  // Get the response
   memcpy(&status, &response.payload, sizeof(status));
   if (status != SL_STATUS_OK) {
     if (status == SL_STATUS_ALREADY_INITIALIZED) {
-      FATAL("Secondary is already bound. If you want to re-bind, you need to unbind first");
+      if (config.restart_cpcd) {
+        PRINT_INFO("Secondary is already bound.");
+        config_restart_cpcd_without_bind_arg();
+      } else {
+        FATAL("Secondary is already bound. If you want to re-bind, you need to unbind first");
+      }
     } else {
-      FATAL("Secondary does not support ECDH key binding. Status = 0x%x", status);
+      FATAL("Secondary does not support %s key binding. Status = 0x%x", binding_method == PLAIN_TEXT_KEY_SHARE_BINDING_REQUEST ? "plain text" : "ecdh", status);
     }
   }
-
-  TRACE_SECURITY("Sending public key");
-  status = security_send_public_key(security_keys_get_ecdh_public_key(), &response);
-  if (status != SL_STATUS_OK) {
-    FATAL("Failed to send public key. Status = 0x%x", status);
-  }
-  TRACE_SECURITY("Successfully sent public key and received public key from remote");
-
-  FATAL_ON(response.len != (sizeof(status) + PUBLIC_KEY_LENGTH_BYTES));
-  memcpy(&status, response.payload, sizeof(status));
-
-  if (status == SL_STATUS_ALREADY_INITIALIZED) {
-    FATAL("Failed to bind, secondary is already binded. Unbind first");
-  }
-
-  if (status == SL_STATUS_INVALID_MODE) {
-    FATAL("Failed to bind, secondary is not configured for ECDH binding");
-  }
-
-  if (status == SL_STATUS_NOT_SUPPORTED) {
-    FATAL("Secondary doesn't support this operation. If it has a Secure Element (SE), "
-          "please make sure SE firmware is up to date.");
-  }
-
-  if (status != SL_STATUS_OK) {
-    FATAL("ECDH exchange failed. Status = 0x%x", status);
-  }
-
-  security_keys_generate_shared_key(response.payload + sizeof(sl_status_t));
-
-  TRACE_SECURITY("Successfully completed ECDH exchange");
-
-  PRINT_INFO("Binding successful, you may restart the daemon without the --bind argument");
-
-  // We're done
-  sleep_s(1); // Wait for logs to be flushed
-  exit(0);
 }
 
-void security_exchange_plain_text_binding_key(uint8_t* const binding_key)
+void security_exchange_keys(sl_cpc_binding_request_t binding_method)
 {
   sl_status_t status;
   sl_cpc_security_protocol_cmd_t response;
 
-  TRACE_SECURITY("Sending plain text binding request");
-  status = security_send_binding_request(PLAIN_TEXT_KEY_SHARE_BINDING_REQUEST, &response);
-  if (status != SL_STATUS_OK) {
-    FATAL("Failed to request plain text binding with the secondary. Status = 0x%x", status);
+  security_request_binding(binding_method);
+
+  if (binding_method == ECDH_BINDING_REQUEST) {
+    TRACE_SECURITY("Sending public key");
+    status = security_send_public_key(security_keys_get_ecdh_public_key(), &response);
+    if (status != SL_STATUS_OK) {
+      FATAL("Failed to send public key. Status = 0x%x", status);
+    }
+    TRACE_SECURITY("Successfully sent public key and received public key from remote");
+
+    FATAL_ON(response.len != (sizeof(status) + PUBLIC_KEY_LENGTH_BYTES));
+    memcpy(&status, response.payload, sizeof(status));
+
+    if (status == SL_STATUS_INVALID_MODE) {
+      FATAL("Failed to bind, secondary is not configured for ECDH binding");
+    } else if (status == SL_STATUS_NOT_SUPPORTED) {
+      FATAL("Secondary doesn't support this operation. If it has a Secure Element (SE), "
+            "please make sure SE firmware is up to date.");
+    } else if (status != SL_STATUS_OK) {
+      FATAL("ECDH exchange failed. Status = 0x%x", status);
+    }
+
+    security_keys_generate_shared_key(response.payload + sizeof(sl_status_t));
+    TRACE_SECURITY("Successfully completed ECDH exchange");
+  } else if (binding_method == PLAIN_TEXT_KEY_SHARE_BINDING_REQUEST) {
+    TRACE_SECURITY("Sending plain text key");
+    status = security_send_plain_text_key(security_get_binding_key(), &response);
+    if (status != SL_STATUS_OK) {
+      FATAL("Failed to send plain text key. Status = 0x%x", status);
+    }
+
+    memcpy(&status, &response.payload, sizeof(status));
+
+    if (status == SL_STATUS_INVALID_MODE) {
+      FATAL("Failed to bind, secondary is not configured for plain text binding");
+    } else if (status != SL_STATUS_OK) {
+      FATAL("Failed to bind using plain text key. Status = 0x%x", status);
+    }
+
+    TRACE_SECURITY("Successfully sent plain text key");
+  } else {
+    BUG("Invalid binding_method");
   }
 
-  memcpy(&status, &response.payload, sizeof(status));
-  if (status != SL_STATUS_OK) {
-    FATAL("Secondary does not support plain text binding. Status = 0x%x", status);
+  PRINT_INFO("Binding successful");
+
+  if (config.restart_cpcd) {
+    config_restart_cpcd_without_bind_arg();
+  } else {
+    PRINT_INFO("You may restart the daemon without the --bind argument");
+    config_exit_cpcd(EXIT_SUCCESS);
   }
-
-  TRACE_SECURITY("Sending plain text key");
-  status = security_send_plain_text_key(binding_key, &response);
-  if (status != SL_STATUS_OK) {
-    FATAL("Failed to send plain text key. Status = 0x%x", status);
-  }
-
-  memcpy(&status, &response.payload, sizeof(status));
-
-  //TODO:
-  if (status == SL_STATUS_ALREADY_EXISTS) {
-    FATAL("Failed to bind, secondary is already binded. Unbind first");
-  }
-
-  if (status == SL_STATUS_INVALID_MODE) {
-    FATAL("Failed to bind, secondary is not configured for plain text binding");
-  }
-
-  if (status != SL_STATUS_OK) {
-    FATAL("Failed to bind using plain text key. Status = 0x%x", status);
-  }
-
-  TRACE_SECURITY("Successfully sent plain text key");
-
-  PRINT_INFO("Binding successful, you may restart the daemon without the --bind argument");
-
-  // We're done, the secondary is binded with our key
-  sleep_s(1); // Wait for logs to be flushed
-  exit(0);
 }
 
 void security_initialize_session(void)

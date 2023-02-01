@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 
 project(cpcd
-  VERSION "4.2.0.0"
+  VERSION "4.2.1.0"
   LANGUAGES C)
 set(CPC_LIBRARY_API_VERSION "3")
 set(CPC_PROTOCOL_VERSION "3")
@@ -78,6 +78,7 @@ endif()
 add_library(cpc SHARED)
 target_stds(cpc C 99 POSIX 2008)
 target_link_libraries(cpc PRIVATE Interface::Warnings)
+target_sources(cpc PRIVATE misc/sleep.c)
 target_sources(cpc PRIVATE lib/sl_cpc.c)
 
 if(COMPILE_LTTNG)
@@ -98,6 +99,13 @@ if(NOT DEFINED CPCD_CONFIG_FILE_PATH)
 endif()
 add_definitions(-DCPCD_CONFIG_FILE_PATH="${CPCD_CONFIG_FILE_PATH}")
 message(STATUS "CPCD_CONFIG_FILE_PATH=${CPCD_CONFIG_FILE_PATH}")
+
+# CPCd minimum reboot time
+if(NOT DEFINED CPCD_REBOOT_TIME_MS)
+  set(CPCD_REBOOT_TIME_MS 2000)
+endif()
+add_definitions(-DCPCD_REBOOT_TIME_MS=${CPCD_REBOOT_TIME_MS})
+message(STATUS "CPCD_REBOOT_TIME_MS=${CPCD_REBOOT_TIME_MS}")
 
 # CPC Socket directory
 if(NOT DEFINED CPC_SOCKET_DIR)
@@ -521,9 +529,6 @@ elseif(TARGET_GROUP STREQUAL blackbox_test_nonce_overflow)
 
     # Run the tests
     add_subdirectory(test/blackbox)
-
-elseif(TARGET_GROUP STREQUAL libcpc_wrapper_test)
-	add_library(cpc_wrapper SHARED test/libcpc_wrapper/sl_cpc_mock.c)
 else()
     message(FATAL_ERROR "Given TARGET_GROUP unknown specify when running cmake.. i.g: -DTARGET_GROUP=release")
 endif()

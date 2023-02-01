@@ -24,4 +24,6 @@ void security_post_command(sl_cpc_security_command_t command);
 
 sl_cpc_security_command_t security_wait_for_command(void);
 
+void security_flush_pending_commands(void);
+
 #endif //SECURITY_COMMAND_SYNCHRONIZER_H

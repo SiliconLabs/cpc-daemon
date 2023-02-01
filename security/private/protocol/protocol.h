@@ -81,9 +81,7 @@ sl_status_t security_send_unbind_request(sl_cpc_security_protocol_cmd_t *respons
 
 sl_status_t security_send_session_init_request(uint8_t *random1, sl_cpc_security_protocol_cmd_t *response);
 
-void security_exchange_plain_text_binding_key(uint8_t* const binding_key);
-
-void security_exchange_ecdh_binding_key(void);
+void security_exchange_keys(sl_cpc_binding_request_t binding_method);
 
 void security_request_unbind(void);
 

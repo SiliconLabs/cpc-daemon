@@ -38,6 +38,7 @@
 #include "sl_cpc.h"
 #include "version.h"
 #include "misc/utils.h"
+#include "misc/sleep.h"
 #include "server_core/cpcd_exchange.h"
 #include "server_core/cpcd_event.h"
 
@@ -83,7 +84,7 @@ static void lib_trace(sli_cpc_handle_t* lib_handle, FILE *__restrict __stream, c
 
   /* get time string */
   {
-    long ms;
+    long us;
     time_t s;
     struct timespec spec;
     struct tm* tm_info;
@@ -92,16 +93,16 @@ static void lib_trace(sli_cpc_handle_t* lib_handle, FILE *__restrict __stream, c
 
     s = spec.tv_sec;
 
-    ms = spec.tv_nsec / 1000000;
-    if (ms > 999) {
+    us = spec.tv_nsec / 1000;
+    if (us > 999999) {
       s++;
-      ms = 0;
+      us = 0;
     }
 
     if (ret != -1) {
       tm_info = localtime(&s);
       size_t r = strftime(time_string, sizeof(time_string), "%H:%M:%S", tm_info);
-      sprintf(&time_string[r], ":%03ld", ms);
+      sprintf(&time_string[r], ":%06ld", us);
     } else {
       strncpy(time_string, "time error", sizeof(time_string));
     }
@@ -727,12 +728,17 @@ int cpc_restart(cpc_handle_t *handle)
   // Attemps a connection
   tmp_ret = cpc_init(handle, lib_handle_copy->instance_name, lib_handle_copy->enable_tracing, saved_reset_callback);
   if (tmp_ret != 0) {
-    // Restore the handle copy on failure
-    handle->ptr = (void *)lib_handle_copy;
+    TRACE_LIB_ERROR(lib_handle_copy, tmp_ret, "Failed cpc_init, attempting again in %d milliseconds", CPCD_REBOOT_TIME_MS);
+    sleep_ms(CPCD_REBOOT_TIME_MS);  // Wait for the minimum time it takes for CPCd to reboot
 
-    TRACE_LIB_ERROR(lib_handle_copy, tmp_ret, "cpc_init(%p) failed", handle);
-    SET_CPC_RET(tmp_ret);
-    RETURN_CPC_RET;
+    tmp_ret = cpc_init(handle, lib_handle_copy->instance_name, lib_handle_copy->enable_tracing, saved_reset_callback);
+    if (tmp_ret != 0) {
+      // Restore the handle copy on failure
+      handle->ptr = (void *)lib_handle_copy;
+      TRACE_LIB_ERROR(lib_handle_copy, tmp_ret, "cpc_init(%p) failed", handle);
+      SET_CPC_RET(tmp_ret);
+      RETURN_CPC_RET;
+    }
   }
 
   // On success we can free the lib_handle_copy

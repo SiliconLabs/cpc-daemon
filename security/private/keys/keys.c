@@ -91,6 +91,8 @@ unsigned char ecdh_exchange_buffer[PUBLIC_KEY_LENGTH_BYTES];
 
 static void * (*const volatile force_memset)(void *, int, size_t) = memset;
 static void security_keys_init_ecdh(void);
+static FILE* security_create_key_file(const char *filename);
+static FILE* security_open_or_create_plaintext_binding_key_file(const char *filename);
 
 static void security_nonce_init(nonce_t *nonce)
 {
@@ -328,6 +330,22 @@ static void security_keys_init_ecdh(void)
   }
 }
 
+static FILE* security_create_key_file(const char *filename)
+{
+  FILE *fd;
+
+  fd = fopen(filename, "w");
+  if (fd == NULL) {
+    FATAL("Failed to open key file in write mode. errno:%m");
+  }
+
+  if (chmod(filename, 0600) != 0) {
+    FATAL("Failed to set key permissions. errno:%m");
+  }
+
+  return fd;
+}
+
 void security_keys_generate_shared_key(uint8_t *remote_public_key)
 {
   int ret;
@@ -367,14 +385,8 @@ void security_keys_generate_shared_key(uint8_t *remote_public_key)
   // Hash and extract first 16 bytes as binding key
   ret = mbedtls_sha256(sha256_input, PUBLIC_KEY_LENGTH_BYTES, sha256_output, 0);
 
-  fd = fopen(config.binding_key_file, "w");
-  if (fd == NULL) {
-    FATAL("Failed to open key file in write mode. errno:%m");
-  }
-
-  if (chmod(config.binding_key_file, 0600) != 0) {
-    FATAL("Failed to set key permissions. errno:%m");
-  }
+  fd = security_create_key_file(config.binding_key_file);
+  FATAL_ON(fd == NULL);
 
   // Store the binding key by truncating the first bytes from the sha256 output
   for (int i = 0; i < BINDING_KEY_LENGTH_BYTES; i++) {
@@ -475,6 +487,42 @@ void security_compute_session_key_and_id(uint8_t * random1,
   security_set_state(SECURITY_STATE_INITIALIZED);
 }
 
+static FILE* security_open_or_create_plaintext_binding_key_file(const char *filename)
+{
+  unsigned char key[BINDING_KEY_LENGTH_BYTES];
+  FILE *file = fopen(filename, "r");
+  int ret;
+
+  if (file) {
+    return file;
+  }
+
+  WARN("plaintext binding key file doesn't exist at '%s'. One will be generated "
+       "for you but it's recommended to create a key manually and then pass it "
+       "to cpcd. Refer to documentation for a how-to.",
+       filename);
+
+  ret = mbedtls_ctr_drbg_random(&rng_context, key, sizeof(key));
+  FATAL_ON(ret != 0);
+
+  file = security_create_key_file(filename);
+  FATAL_ON(file == NULL);
+
+  for (size_t i = 0; i < sizeof(key); i++) {
+    ret = fprintf(file, "%.2x", key[i]);
+    if (ret != 2) {
+      fclose(file);
+      FATAL("Incomplete write when generating plaintext binding key file");
+    }
+  }
+
+  // reopen the file as read-only
+  file = freopen(NULL, "r", file);
+  FATAL_SYSCALL_ON(file == NULL);
+
+  return file;
+}
+
 void security_load_binding_key_from_file(void)
 {
   FILE* binding_key_file;
@@ -484,9 +532,7 @@ void security_load_binding_key_from_file(void)
   ssize_t ret;
   size_t i;
 
-  /* The presence and read access of binding_key_file has already been checked
-   * in the function 'config_validate_configuration' */
-  binding_key_file = fopen(config.binding_key_file, "r");
+  binding_key_file = security_open_or_create_plaintext_binding_key_file(config.binding_key_file);
   FATAL_ON(binding_key_file == NULL);
 
   ret = getline(&line, &len, binding_key_file);

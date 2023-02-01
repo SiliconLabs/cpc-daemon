@@ -319,8 +319,7 @@ static void server_process_epoll_fd_event_connection_socket(epoll_private_data_t
   }
 
   endpoints[endpoint_number].open_event_connections++;
-  //PRINT_INFO("Endpoint event socket #%d: Client connected. %d connections", endpoint_number, endpoints[endpoint_number].open_connections);
-  PRINT_INFO("Endpoint event socket #%d: Client connected", endpoint_number);
+  PRINT_INFO("Endpoint event socket #%d: Client connected (%d). %d connections", endpoint_number, new_data_socket, endpoints[endpoint_number].open_event_connections);
 }
 
 static void server_process_epoll_fd_ctrl_connection_socket(epoll_private_data_t *private_data)
@@ -1258,11 +1257,8 @@ static void server_handle_client_closed_ctrl_connection(int fd_data_socket)
 
 static void server_handle_client_closed_event_connection(int fd_data_socket, uint8_t endpoint_number)
 {
-  int ret;
   event_socket_private_data_list_item_t* item;
   event_socket_private_data_list_item_t* next_item;
-
-  PRINT_INFO("Client disconnected from event socket");
 
   BUG_ON(endpoints[endpoint_number].open_event_connections == 0);
 
@@ -1311,49 +1307,7 @@ static void server_handle_client_closed_event_connection(int fd_data_socket, uin
   }
 
   endpoints[endpoint_number].open_event_connections--;
-
-  /* Close the connection socket */
-  if (endpoints[endpoint_number].open_event_connections == 0) {
-    int fd_connection_socket = endpoints[endpoint_number].event_connection_socket_epoll_private_data.file_descriptor;
-
-    if (fd_connection_socket > 0) {
-      /* Unregister the connection socket file descriptor from epoll watch list */
-      epoll_unregister(&endpoints[endpoint_number].event_connection_socket_epoll_private_data);
-
-      /* Close the connection socket */
-      ret = shutdown(fd_connection_socket, SHUT_RDWR);
-      FATAL_SYSCALL_ON(ret < 0);
-
-      ret = close(fd_connection_socket);
-      FATAL_SYSCALL_ON(ret < 0);
-    }
-
-    /* Clean its lingering file system socket file */
-    {
-      /* The connection socket was named and bound to a file system name. Shutting() it down
-       * and closing() it doesn't 'delete' its file, it has to be manually unlinked */
-      char endpoint_event_path[sizeof_member(struct sockaddr_un, sun_path)];
-
-      /* Create the endpoint path */
-      {
-        int nchars;
-        const size_t size = sizeof(endpoint_event_path);
-
-        nchars = snprintf(endpoint_event_path, size, "%s/cpcd/%s/ep%d.event.cpcd.sock", config.socket_folder, config.instance_name, endpoint_number);
-
-        /* Make sure the path fitted entirely in the struct's static buffer */
-        FATAL_ON(nchars < 0 || (size_t) nchars >= size);
-      }
-
-      ret = unlink(endpoint_event_path);
-      FATAL_SYSCALL_ON(ret < 0 && errno != ENOENT);
-    }
-
-    /* Set the connection socket file descriptor to -1 to signify that the endpoint is closed */
-    endpoints[endpoint_number].event_connection_socket_epoll_private_data.file_descriptor = -1;
-
-    TRACE_SERVER("Closed event connection socket for ep#%u", endpoint_number);
-  }
+  PRINT_INFO("Endpoint event socket #%u: Client disconnected (%d). %d connections", endpoint_number, fd_data_socket, endpoints[endpoint_number].open_event_connections);
 }
 
 void server_set_endpoint_encryption(uint8_t endpoint_id, bool encryption_enabled)
@@ -1835,7 +1789,7 @@ static void server_send_event(int socket_fd, cpc_event_type_t event_type, uint8_
 
   ssize_t ret = send(socket_fd, event, sizeof(cpcd_event_buffer_t) + payload_length, MSG_DONTWAIT);
 
-  if (ret < 0 && (errno == EPIPE || errno == ECONNRESET)) {
+  if (ret < 0 && (errno == EPIPE || errno == ECONNRESET || errno == ECONNREFUSED)) {
     // Do nothing on a closed socket server_handle_client_closed_event_connection will be called by an epoll event
   } else if (ret < 0 && errno == EWOULDBLOCK) {
     WARN("Client event socket is full, closing the socket..");

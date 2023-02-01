@@ -20,6 +20,7 @@ class Option(Enum):
     CPC_OPTION_TX_TIMEOUT = 3
     CPC_OPTION_SOCKET_SIZE = 4
     CPC_OPTION_MAX_WRITE_SIZE = 5
+    CPC_OPTION_ENCRYPTED = 6
 #end class
 
 class EndpointEventOption(Enum):
@@ -39,6 +40,10 @@ class CPCTimeval(Structure):
         """
         self.microseconds = int((secs % 1.0) * 1e6)
         self.seconds = int(secs)
+
+    def __str__(self):
+        return f"<CPCTimeval (secs={self.seconds}, usecs={self.microseconds}>"
+
 #end class
 
 class Endpoint(Structure):
@@ -141,6 +146,8 @@ class Endpoint(Structure):
             optval = c_int()
         elif option == Option.CPC_OPTION_MAX_WRITE_SIZE:
             optval = c_int()
+        elif option == Option.CPC_OPTION_ENCRYPTED:
+            optval = c_bool()
         else:
             # best effort, try to pass an int and see how it goes
             optval = c_int()
@@ -150,7 +157,7 @@ class Endpoint(Structure):
         input_size = size
         ret = self.cpc_handle.lib_cpc.cpc_get_endpoint_option(self, opt, byref(optval), byref(size))
         if ret != 0 or input_size != size:
-            raise Exception("Failed to get option")
+            raise Exception(f"Failed to get option: ret={ret}, in_size={input_size}, out_size={size}")
 
         if hasattr(optval, "value"):
             return optval.value
@@ -276,7 +283,7 @@ class EndpointEvent(Structure):
         size = c_size_t(sizeof(optval))
         ret = self.cpc_handle.lib_cpc.cpc_set_endpoint_event_option(self, opt, byref(optval), size)
         if ret != 0:
-            raise Exception("Failed to set option")
+            raise Exception(f"Failed to set event option: ret={ret}")
     #end def
 
     # int cpc_get_endpoint_event_option(cpc_endpoint_event_handle_t event_handle, cpc_endpoint_event_option_t option, void *optval, size_t *optlen);
@@ -294,7 +301,7 @@ class EndpointEvent(Structure):
         input_size = size
         ret = self.cpc_handle.lib_cpc.cpc_get_endpoint_event_option(self, opt, byref(optval), byref(size))
         if ret != 0 or input_size != size:
-            raise Exception("Failed to get option")
+            raise Exception(f"Failed to get event option: ret={ret}, in_size={input_size}, out_size={size}")
 
         if hasattr(optval, "value"):
             return optval.value
@@ -319,7 +326,7 @@ class EndpointEvent(Structure):
 
     @read_timeout.setter
     def read_timeout(self, timeout):
-        self.get_option(EndpointEventOption.CPC_ENDPOINT_EVENT_OPTION_READ_TIMEOUT, timeout)
+        self.set_option(EndpointEventOption.CPC_ENDPOINT_EVENT_OPTION_READ_TIMEOUT, timeout)
     #end def
 #end class
 

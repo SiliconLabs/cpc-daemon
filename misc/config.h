@@ -87,7 +87,8 @@ typedef struct __attribute__((packed)) {
   bool fu_connect_to_bootloader;
   bool fu_enter_bootloader;
   const char *fu_file;
-  bool fu_restart_daemon;
+
+  bool restart_cpcd;
 
   const char *board_controller_ip_addr;
 
@@ -109,7 +110,9 @@ typedef struct __attribute__((packed)) {
 extern config_t config;
 
 void config_init(int argc, char *argv[]);
+void config_exit_cpcd(int status);
 void config_restart_cpcd(char **argv);
 void config_restart_cpcd_without_fw_update_args(void);
+void config_restart_cpcd_without_bind_arg(void);
 
 #endif //CONFIG_H

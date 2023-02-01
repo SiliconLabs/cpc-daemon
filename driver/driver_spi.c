@@ -89,7 +89,7 @@ static void driver_spi_cleanup(void)
 
   TRACE_DRIVER("SPI driver thread cancelled");
 
-  pthread_exit(0);
+  pthread_exit(NULL);
 }
 
 pthread_t driver_spi_init(int *fd_to_core,

@@ -101,6 +101,9 @@ void run_firmware_update(void)
         if (server_core_secondary_bootloader_type != SL_CPC_BOOTLOADER_EMBER_APPLICATION
             && server_core_secondary_bootloader_type != SL_CPC_BOOTLOADER_EMBER_STANDALONE
             && server_core_secondary_bootloader_type != SL_CPC_BOOTLOADER_GECKO) {
+          if (server_core_secondary_bootloader_type == SL_CPC_BOOTLOADER_NONE) {
+            FATAL("Secondary has no Bootloader");
+          }
           WARN("Unsupported bootloader type, update might fail unexpectedly");
         }
       }
@@ -110,13 +113,12 @@ void run_firmware_update(void)
         reboot_secondary_by_cpc(SERVER_CORE_MODE_FIRMWARE_BOOTLOADER);
         PRINT_INFO("Secondary is in bootloader");
       } else {
-        if (config.fu_restart_daemon) {
+        if (config.restart_cpcd) {
           PRINT_INFO("Firmware up to date, restarting daemon");
           config_restart_cpcd_without_fw_update_args();
         } else {
           PRINT_INFO("Firmware up to date, exiting daemon");
-          sleep_s(2);
-          exit(EXIT_SUCCESS);
+          config_exit_cpcd(EXIT_SUCCESS);
         }
       }
     }
@@ -125,25 +127,21 @@ void run_firmware_update(void)
   // If fu_enter_bootloader is true, exit
   // without transferring the firmware.
   if (config.fu_enter_bootloader) {
-    sleep_s(2);
-    exit(EXIT_SUCCESS);
+    config_exit_cpcd(EXIT_SUCCESS);
   }
 
   status = transfer_firmware();
 
   if (status == SL_STATUS_OK) {
-    if (config.fu_restart_daemon) {
-      PRINT_INFO("Firmware upgrade successful, restarting daemon");
+    PRINT_INFO("Firmware upgrade successful");
+    if (config.restart_cpcd) {
       config_restart_cpcd_without_fw_update_args();
     } else {
-      PRINT_INFO("Firmware upgrade successful, exiting daemon");
-      sleep_s(2);
-      exit(EXIT_SUCCESS);
+      config_exit_cpcd(EXIT_SUCCESS);
     }
   } else {
-    PRINT_INFO("Firmware upgrade failed, exiting daemon");
-    sleep_s(2);
-    exit(EXIT_FAILURE);
+    PRINT_INFO("Firmware upgrade failed");
+    config_exit_cpcd(EXIT_FAILURE);
   }
 }
 
