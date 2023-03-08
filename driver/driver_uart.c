@@ -165,7 +165,7 @@ static void* driver_uart_cleanup(void *param)
   close(fd_core_notify);
   close(fd_stop_drv);
 
-  pthread_exit(0);
+  pthread_exit(NULL);
   return NULL;
 }
 

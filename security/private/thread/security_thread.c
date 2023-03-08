@@ -48,13 +48,13 @@ void* security_thread_func(void* param)
 
   FATAL_ON(config.operation_mode == MODE_BINDING_UNKNOWN);
 
+  security_keys_init();
+
   /* The server can take time to be up; try to to load the key first
    * to crash early if its bad. */
   if (config.operation_mode != MODE_BINDING_ECDH && config.operation_mode != MODE_BINDING_UNBIND) {
     security_load_binding_key_from_file();
   }
-
-  security_keys_init();
 
   /* Block until the server is up and running */
   server_ready_wait();
@@ -85,12 +85,12 @@ void* security_thread_func(void* param)
 
       case SECURITY_COMMAND_PLAIN_TEXT_BINDING:
         PRINT_INFO("Plain text binding in progress..");
-        security_exchange_plain_text_binding_key(security_get_binding_key());
+        security_exchange_keys(PLAIN_TEXT_KEY_SHARE_BINDING_REQUEST);
         break;
 
       case SECURITY_COMMAND_ECDH_BINDING:
         PRINT_INFO("ECDH binding in progress..");
-        security_exchange_ecdh_binding_key();
+        security_exchange_keys(ECDH_BINDING_REQUEST);
         break;
 
       case SECURITY_COMMAND_UNBIND:
@@ -115,7 +115,7 @@ void* security_thread_func(void* param)
           security_initialized = false;
         }
         security_set_state(SECURITY_STATE_NOT_READY);
-        pthread_exit(0);
+        pthread_exit(NULL);
         break;
 
       default:

@@ -69,6 +69,7 @@ static int export (unsigned int gpio_pin)
     }
   }
 
+  FATAL_SYSCALL_ON(ret < 0);
   return ret;
 }
 
@@ -144,9 +145,9 @@ int gpio_init(gpio_sysfs_t *gpio, const char *gpio_chip, unsigned int gpio_pin, 
   unexport(gpio_pin);
 
   gpio->value_fd = export (gpio_pin);
-  FATAL_ON(gpio->value_fd < 0);
-
   gpio->irq_fd = get_fd(gpio_pin);
+  FATAL_SYSCALL_ON(gpio->irq_fd < 0);
+
   gpio->pin = gpio_pin;
 
   FATAL_ON(set_direction(gpio, direction) < 0);

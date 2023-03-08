@@ -93,3 +93,16 @@ sl_cpc_security_command_t security_wait_for_command(void)
 
   return command;
 }
+
+void security_flush_pending_commands(void)
+{
+  sl_cpc_security_command_t pending_command;
+
+  pthread_mutex_lock(&command_binary_synchronizer.command_in_progress_mutex);
+  pending_command = command_binary_synchronizer.command_type;
+  pthread_mutex_unlock(&command_binary_synchronizer.command_in_progress_mutex);
+
+  if (pending_command != SECURITY_COMMAND_NONE) {
+    security_wait_for_command();
+  }
+}

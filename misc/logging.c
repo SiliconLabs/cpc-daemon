@@ -529,7 +529,7 @@ void logging_kill(void)
  * This internal functions assumes a buffer large enough */
 static size_t get_time_string(char* time_string, size_t time_string_size)
 {
-  long ms;
+  long us;
   time_t s;
   struct timespec spec;
   struct tm* tm_info;
@@ -538,16 +538,16 @@ static size_t get_time_string(char* time_string, size_t time_string_size)
 
   s = spec.tv_sec;
 
-  ms = spec.tv_nsec / 1000000;
-  if (ms > 999) {
+  us = spec.tv_nsec / 1000;
+  if (us > 999999) {
     s++;
-    ms = 0;
+    us = 0;
   }
 
   if (ret != ((time_t)-1)) {
     tm_info = localtime(&s);
     nchar = strftime(time_string, time_string_size, "%H:%M:%S", tm_info);
-    nchar += (size_t) snprintf(&time_string[nchar], time_string_size - nchar, ":%03ld", ms);
+    nchar += (size_t) snprintf(&time_string[nchar], time_string_size - nchar, ":%06ld", us);
   } else {
     nchar = (size_t) snprintf(time_string, time_string_size, "time error");
   }

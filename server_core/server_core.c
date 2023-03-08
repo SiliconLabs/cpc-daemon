@@ -525,8 +525,12 @@ static void property_get_secondary_bootloader_info(sl_cpc_system_command_handle_
 
     PRINT_INFO("Secondary bootloader: %s",
                sl_cpc_system_bootloader_type_to_str((sl_cpc_bootloader_t)server_core_secondary_bootloader_type));
+  } else if ((status == SL_STATUS_OK || status == SL_STATUS_IN_PROGRESS) && property_id == PROP_LAST_STATUS) {
+    WARN("Secondary doesn't implement bootloader information");
+    server_core_secondary_bootloader_type = SL_CPC_BOOTLOADER_UNKNOWN;
   } else {
     WARN("Cannot get secondary bootloader information");
+    server_core_secondary_bootloader_type = SL_CPC_BOOTLOADER_UNKNOWN;
   }
 
   bootloader_info_received_or_not_available = true;
@@ -844,8 +848,7 @@ static void process_reset_sequence(bool firmware_reset_mode)
         }
 
         if (config.print_secondary_versions_and_exit) {
-          sleep_s(2);
-          exit(EXIT_SUCCESS);
+          config_exit_cpcd(EXIT_SUCCESS);
         }
 
         if (!firmware_reset_mode) {
@@ -931,7 +934,7 @@ static void server_core_cleanup(epoll_private_data_t *private_data)
 
   sl_cpc_system_cleanup();
 
-  pthread_exit(0);
+  pthread_exit(NULL);
 }
 
 #if !defined(UNIT_TESTING)

@@ -26,10 +26,12 @@
 
 #include "misc/logging.h"
 #include "misc/utils.h"
+#include "misc/config.h"
 #include "server_core/system_endpoint/system_callbacks.h"
 #include "server_core/server/server.h"
 #include "server_core/core/core.h"
 #include "server_core/server_core.h"
+#include "security/security.h"
 #include "misc/utils.h"
 
 /***************************************************************************//**
@@ -694,6 +696,14 @@ static void on_final_property_is(sl_cpc_system_command_handle_t * command_handle
 
   // Make sure only certain properties are allowed as u-frame (non-encrypted)
   if (is_uframe) {
+    // Should not allow unecrypted responses when security isn't disabled to
+    // protect from brute-force attacks.
+#if defined(ENABLE_ENCRYPTION)
+    sl_cpc_security_state_t security_state = security_get_state();
+    if (config.use_encryption && security_state == SECURITY_STATE_INITIALIZED) {
+      FATAL("Received on_final property_is %x as a u-frame when security was enabled.", property_cmd->property_id);
+    } else
+#endif // ENABLE_ENCRYPTION
     if (property_cmd->property_id != PROP_RX_CAPABILITY
         && property_cmd->property_id != PROP_CAPABILITIES
         && property_cmd->property_id != PROP_BUS_SPEED_VALUE
@@ -701,7 +711,8 @@ static void on_final_property_is(sl_cpc_system_command_handle_t * command_handle
         && property_cmd->property_id != PROP_BOOTLOADER_INFO
         && property_cmd->property_id != PROP_SECONDARY_CPC_VERSION
         && property_cmd->property_id != PROP_SECONDARY_APP_VERSION
-        && property_cmd->property_id != PROP_BOOTLOADER_REBOOT_MODE) {
+        && property_cmd->property_id != PROP_BOOTLOADER_REBOOT_MODE
+        && property_cmd->property_id != PROP_LAST_STATUS) {
       FATAL("Received on_final property_is %x as a u-frame", property_cmd->property_id);
     }
   }

@@ -75,13 +75,13 @@ core_debug_counters_t secondary_core_debug_counters;
  ***************************  LOCAL VARIABLES   ********************************
  ******************************************************************************/
 
-static int               driver_sock_fd;
-static int               driver_sock_notify_fd;
-static int               stats_timer_fd;
-static sl_cpc_endpoint_t core_endpoints[SL_CPC_ENDPOINT_MAX_COUNT];
-static sl_slist_node_t   *transmit_queue = NULL;
-static sl_slist_node_t   *pending_on_security_ready_queue = NULL;
-static sl_slist_node_t   *pending_on_tx_complete = NULL;
+static epoll_private_data_t driver_sock_private_data;
+static epoll_private_data_t driver_sock_notify_private_data;
+static int                  stats_timer_fd;
+static sl_cpc_endpoint_t    core_endpoints[SL_CPC_ENDPOINT_MAX_COUNT];
+static sl_slist_node_t      *transmit_queue = NULL;
+static sl_slist_node_t      *pending_on_security_ready_queue = NULL;
+static sl_slist_node_t      *pending_on_tx_complete = NULL;
 
 #if defined(ENABLE_ENCRYPTION)
 static bool security_session_last_packet_acked = false;
@@ -285,9 +285,6 @@ static void core_on_security_state_change(sl_cpc_security_state_t old, sl_cpc_se
 
 void core_init(int driver_fd, int driver_notify_fd)
 {
-  driver_sock_fd = driver_fd;
-  driver_sock_notify_fd = driver_notify_fd;
-
   /* Init all endpoints */
   size_t i = 0;
   for (i = 0; i < SL_CPC_ENDPOINT_MAX_COUNT; i++) {
@@ -319,24 +316,20 @@ void core_init(int driver_fd, int driver_notify_fd)
   {
     /* Setup the driver data socket */
     {
-      static epoll_private_data_t private_data;
+      driver_sock_private_data.callback = core_process_rx_driver;
+      driver_sock_private_data.file_descriptor = driver_fd;
+      driver_sock_private_data.endpoint_number = 0; /* Irrelevant here */
 
-      private_data.callback = core_process_rx_driver;
-      private_data.file_descriptor = driver_fd;
-      private_data.endpoint_number = 0; /* Irrelevant here */
-
-      epoll_register(&private_data);
+      epoll_register(&driver_sock_private_data);
     }
 
     /* Setup the driver notification socket */
     {
-      static epoll_private_data_t private_data_notification;
+      driver_sock_notify_private_data.callback = core_process_rx_driver_notification;
+      driver_sock_notify_private_data.file_descriptor = driver_notify_fd;
+      driver_sock_notify_private_data.endpoint_number = 0; /* Irrelevant here */
 
-      private_data_notification.callback = core_process_rx_driver_notification;
-      private_data_notification.file_descriptor = driver_notify_fd;
-      private_data_notification.endpoint_number = 0; /* Irrelevant here */
-
-      epoll_register(&private_data_notification);
+      epoll_register(&driver_sock_notify_private_data);
     }
   }
 
@@ -462,13 +455,19 @@ static void core_process_rx_driver_notification(epoll_private_data_t *event_priv
 
   struct timespec tx_complete_timestamp;
 
-  ssize_t ret = recv(driver_sock_notify_fd, &tx_complete_timestamp, sizeof(tx_complete_timestamp), MSG_DONTWAIT);
-  if (ret == 0) {
+  BUG_ON(driver_sock_notify_private_data.file_descriptor < 1);
+  ssize_t ret = recv(driver_sock_notify_private_data.file_descriptor, &tx_complete_timestamp, sizeof(tx_complete_timestamp), MSG_DONTWAIT);
+
+  /* Socket closed */
+  if (ret == 0 || (ret < 0 && errno == ECONNRESET)) {
     TRACE_CORE("Driver closed the notification socket");
-    int ret_close = close(event_private_data->file_descriptor);
+    epoll_unregister(&driver_sock_notify_private_data);
+    int ret_close = close(driver_sock_notify_private_data.file_descriptor);
     FATAL_SYSCALL_ON(ret_close != 0);
+    driver_sock_notify_private_data.file_descriptor = -1;
     return;
   }
+
   FATAL_SYSCALL_ON(ret < 0);
 
   // Get first queued frame for transmission
@@ -1694,7 +1693,7 @@ static bool core_process_tx_queue(void)
 
     frame->pending_tx_complete = true;
 
-    tx_complete_item = (sl_cpc_transmit_queue_item_t*) malloc(sizeof(sl_cpc_transmit_queue_item_t));
+    tx_complete_item = (sl_cpc_transmit_queue_item_t*) zalloc(sizeof(sl_cpc_transmit_queue_item_t));
     FATAL_SYSCALL_ON(tx_complete_item == NULL);
     tx_complete_item->handle = frame;
 
@@ -2002,7 +2001,23 @@ static void core_process_ep_timeout(epoll_private_data_t *event_private_data)
 static void core_push_frame_to_driver(const void *frame, size_t frame_len)
 {
   TRACE_FRAME("Core : Pushed frame to driver : ", frame, frame_len);
-  ssize_t ret = send(driver_sock_fd, frame, frame_len, 0);
+
+  if (driver_sock_private_data.file_descriptor < 1) {
+    TRACE_CORE("Core already closed the data socket");
+    return;
+  }
+
+  ssize_t ret = send(driver_sock_private_data.file_descriptor, frame, frame_len, 0);
+
+  /* Socket closed */
+  if (ret < 0 && errno == ECONNRESET) {
+    TRACE_CORE("Driver closed the data socket");
+    epoll_unregister(&driver_sock_private_data);
+    int ret_close = close(driver_sock_private_data.file_descriptor);
+    FATAL_SYSCALL_ON(ret_close != 0);
+    driver_sock_private_data.file_descriptor = -1;
+    return;
+  }
 
   FATAL_SYSCALL_ON(ret < 0);
 
@@ -2026,20 +2041,28 @@ static bool core_pull_frame_from_driver(frame_t** frame_buf, size_t* frame_buf_l
 
   /* Poll the socket to get the next pending datagram size */
   {
-    ssize_t retval = recv(driver_sock_fd, NULL, 0, MSG_PEEK | MSG_TRUNC | MSG_DONTWAIT);
-    FATAL_SYSCALL_ON(retval < 0);
-    datagram_length = (size_t)retval;
-
-    /* Socket closed */
-    if (retval == 0) {
-      TRACE_CORE("Driver closed the data socket");
-      int ret_close = close(driver_sock_fd);
-      FATAL_SYSCALL_ON(ret_close != 0);
+    if (driver_sock_private_data.file_descriptor < 1) {
+      TRACE_CORE("Core already closed the data socket");
       return false;
     }
 
+    ssize_t retval = recv(driver_sock_private_data.file_descriptor, NULL, 0, MSG_PEEK | MSG_TRUNC | MSG_DONTWAIT);
+
+    /* Socket closed */
+    if (retval == 0 || (retval < 0 && errno == ECONNRESET)) {
+      TRACE_CORE("Driver closed the data socket");
+      epoll_unregister(&driver_sock_private_data);
+      int ret_close = close(driver_sock_private_data.file_descriptor);
+      FATAL_SYSCALL_ON(ret_close != 0);
+      driver_sock_private_data.file_descriptor = -1;
+      return false;
+    }
+
+    FATAL_SYSCALL_ON(retval < 0);
+
     /* The socket had no data. This function is intended to be called
      * when we know the socket has data. */
+    datagram_length = (size_t)retval;
     BUG_ON(datagram_length == 0);
 
     /* The length of the frame should be at minimum a header length */
@@ -2054,7 +2077,7 @@ static bool core_pull_frame_from_driver(frame_t** frame_buf, size_t* frame_buf_l
 
   /* Fetch the datagram from the driver socket */
   {
-    ssize_t ret =  recv(driver_sock_fd, *frame_buf, (size_t)datagram_length, 0);
+    ssize_t ret = recv(driver_sock_private_data.file_descriptor, *frame_buf, (size_t)datagram_length, 0);
 
     FATAL_SYSCALL_ON(ret < 0);
 

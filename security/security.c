@@ -23,6 +23,7 @@
 #include "misc/logging.h"
 #include "server_core/server/server_ready_sync.h"
 #include "security/private/keys/keys.h"
+#include "security/private/thread/command_synchronizer.h"
 #include "security/private/thread/security_thread.h"
 
 extern pthread_t security_thread;
@@ -51,6 +52,11 @@ void security_init(void)
 void security_kill_signal(void)
 {
   security_post_command(SECURITY_COMMAND_KILL_THREAD);
+}
+
+void security_unblock_post_command(void)
+{
+  security_flush_pending_commands();
 }
 
 sl_status_t security_encrypt(sl_cpc_endpoint_t *ep, sl_cpc_security_frame_t *sec_frame,

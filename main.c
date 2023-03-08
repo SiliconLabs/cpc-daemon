@@ -302,11 +302,14 @@ __attribute__((noreturn)) void signal_crash(void)
   } else {
     if (pthread_self() == security_thread) {
       security_thread = 0;
+#if defined(ENABLE_ENCRYPTION)
+      security_unblock_post_command();
+#endif
     }
     write(main_crash_eventfd, &event_value, sizeof(event_value));
   }
 
-  pthread_exit(0);
+  pthread_exit(NULL);
 }
 
 __attribute__((noreturn)) void software_graceful_exit(void)
@@ -326,5 +329,5 @@ __attribute__((noreturn)) void software_graceful_exit(void)
     write(main_graceful_exit_eventfd, &event_value, sizeof(event_value));
   }
 
-  pthread_exit(0);
+  pthread_exit(NULL);
 }

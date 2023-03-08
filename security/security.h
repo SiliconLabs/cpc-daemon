@@ -54,6 +54,11 @@ void security_init(void);
 void security_kill_signal(void);
 
 /***************************************************************************//**
+ * Unblock thread blocked on security_post_command
+ ******************************************************************************/
+void security_unblock_post_command(void);
+
+/***************************************************************************//**
  * Send a security command
  ******************************************************************************/
 void security_post_command(sl_cpc_security_command_t event);
