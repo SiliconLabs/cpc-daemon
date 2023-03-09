@@ -116,7 +116,7 @@ takes as argument `plain-text` or `ecdh`.
 ```
 # Bind primary and secondary. The binding key will be generated where
 # "binding_key_file" points to in the config file
-$ ./cpcd -c cpcd.conf ---bind ecdh
+$ ./cpcd -c cpcd.conf --bind ecdh
 
 # Alternatively, the key file can be specified on the command line
 $ ./cpcd -c cpcd.conf --bind ecdh --key binding.key
