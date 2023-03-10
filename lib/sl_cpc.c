@@ -1396,7 +1396,7 @@ const char* cpc_get_secondary_app_version(cpc_handle_t handle)
     return secondary_app_version;
   }
 
-  secondary_app_version_len = strlen(lib_handle->secondary_app_version);
+  secondary_app_version_len = strlen(lib_handle->secondary_app_version) + 1;
   secondary_app_version = zalloc(secondary_app_version_len);
   if (secondary_app_version == NULL) {
     TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", secondary_app_version_len);
@@ -1405,6 +1405,22 @@ const char* cpc_get_secondary_app_version(cpc_handle_t handle)
   }
 
   return secondary_app_version;
+}
+
+/***************************************************************************//**
+ * Free the secondary application version
+ ******************************************************************************/
+int cpc_free_secondary_app_version(char *secondary_app_version)
+{
+  INIT_CPC_RET(int);
+
+  if (secondary_app_version == NULL) {
+    SET_CPC_RET(-EINVAL);
+  } else {
+    free(secondary_app_version);
+  }
+
+  RETURN_CPC_RET;
 }
 
 /***************************************************************************//**

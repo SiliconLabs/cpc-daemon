@@ -35,7 +35,7 @@ pub fn init(
     reset_callback: std::option::Option<unsafe extern "C" fn()>,
 ) -> Result<cpc_handle, std::os::raw::c_int> {
     let mut cpc = sl_cpc::cpc_handle_t {
-        ptr: 0 as *mut ::std::os::raw::c_void,
+        ptr: 0 as *mut std::os::raw::c_void,
     };
 
     let err = unsafe {
@@ -44,7 +44,7 @@ pub fn init(
             std::ffi::CString::new(instance_name)
                 .unwrap()
                 .as_bytes_with_nul()
-                .as_ptr() as *const u8,
+                .as_ptr() as *const std::os::raw::c_char,
             enable_tracing,
             reset_callback,
         )
@@ -73,7 +73,7 @@ pub fn open_endpoint(
     tx_window_size: u8,
 ) -> Result<cpc_endpoint, std::os::raw::c_int> {
     let mut endpoint = sl_cpc::cpc_endpoint_t {
-        ptr: 0 as *mut ::std::os::raw::c_void,
+        ptr: 0 as *mut std::os::raw::c_void,
     };
 
     let fd = unsafe {
@@ -208,22 +208,39 @@ pub fn get_endpoint_option(
     }
 }
 
-pub fn get_library_version() -> Result<String, std::str::Utf8Error> {
-    let c_string = unsafe { std::ffi::CStr::from_ptr(sl_cpc::cpc_get_library_version()) };
-
-    match c_string.to_str() {
-        Ok(str) => Ok(str.to_owned()),
-        Err(err) => Err(err),
+pub fn get_library_version() -> Option<String> {
+    unsafe {
+        let ptr = sl_cpc::cpc_get_library_version();
+        if ptr == std::ptr::null() {
+            None
+        } else {
+            match std::ffi::CStr::from_ptr(ptr).to_str() {
+                Ok(str) => Some(str.to_string()),
+                Err(_) => None,
+            }
+        }
     }
 }
 
-pub fn get_secondary_app_version(cpc: &cpc_handle) -> Result<String, std::str::Utf8Error> {
-    let c_string =
-        unsafe { std::ffi::CStr::from_ptr(sl_cpc::cpc_get_secondary_app_version(cpc.cpc)) };
-
-    match c_string.to_str() {
-        Ok(str) => Ok(str.to_owned()),
-        Err(err) => Err(err),
+pub fn get_secondary_app_version(cpc: &cpc_handle) -> Option<String> {
+    unsafe {
+        let ptr = sl_cpc::cpc_get_secondary_app_version(cpc.cpc);
+        if ptr == std::ptr::null() {
+            None
+        } else {
+            match std::ffi::CStr::from_ptr(ptr).to_str() {
+                Ok(str) => {
+                    let copy = str.to_owned();
+                    if sl_cpc::cpc_free_secondary_app_version(ptr as *mut std::os::raw::c_char) < 0
+                    {
+                        None
+                    } else {
+                        Some(copy)
+                    }
+                }
+                Err(_) => None,
+            }
+        }
     }
 }
 
@@ -387,7 +404,7 @@ pub fn init_endpoint_event(
     id: u8,
 ) -> Result<cpc_endpoint_event, std::os::raw::c_int> {
     let mut event = sl_cpc::cpc_endpoint_event_handle_t {
-        ptr: 0 as *mut ::std::os::raw::c_void,
+        ptr: 0 as *mut std::os::raw::c_void,
     };
 
     let fd = unsafe {

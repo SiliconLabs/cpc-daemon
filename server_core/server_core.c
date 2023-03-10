@@ -445,7 +445,7 @@ static void on_unsolicited_status(sl_cpc_system_status_t status)
 
 char* server_core_get_secondary_app_version(void)
 {
-#if defined(UNIT_TESTING)
+#if defined(UNIT_TESTING) || defined(TARGET_TESTING)
   return "UNDEFINED";
 #else
   BUG_ON(server_core_secondary_app_version == NULL);

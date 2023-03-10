@@ -480,14 +480,23 @@ const char* cpc_get_library_version(void);
 /***************************************************************************//**
  * @brief Get the version of secondary application
  *
- * @param[in]  handle          CPC library handle
+ * @param[in]  handle                         CPC library handle
  *
  * @return On error, NULL is returned.
- *         On success, a character pointer pointing to a copy of the version string is returned.
- *         The ownership of this copy now belongs to the caller, therefore free() must be
- *         used for deallocation purposes.
+ *         On success, an owned copy of the string is returned.
+ *         This copy can be freed using cpc_free_secondary_app_version(copy).
  ******************************************************************************/
 const char* cpc_get_secondary_app_version(cpc_handle_t handle);
+
+/***************************************************************************//**
+ * @brief Free the version of secondary application
+ *
+ * @param[in]  secondary_app_version          Secondary app version
+ *
+ * @return On error, -EINVAL is returned.
+ *         On success, 0 is returned.
+ ******************************************************************************/
+int cpc_free_secondary_app_version(char *secondary_app_version);
 
 /***************************************************************************//**
  * @brief Set the timeout for the endpoint read operations

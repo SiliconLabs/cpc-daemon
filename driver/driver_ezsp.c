@@ -76,9 +76,7 @@ static void driver_ezsp_spi_open(const char   *device,
                                  const char *cs_gpio_chip,
                                  unsigned int cs_gpio_pin,
                                  const char *irq_gpio_chip,
-                                 unsigned int irq_gpio_pin,
-                                 const char *wake_gpio_chip,
-                                 unsigned int wake_gpio_pin);
+                                 unsigned int irq_gpio_pin);
 
 sl_status_t send_firmware(const char   * image_file,
                           const char   *device,
@@ -88,9 +86,7 @@ sl_status_t send_firmware(const char   * image_file,
                           const char *cs_gpio_chip,
                           unsigned int cs_gpio_pin,
                           const char *irq_gpio_chip,
-                          unsigned int irq_gpio_pin,
-                          const char *wake_gpio_chip,
-                          unsigned int wake_gpio_pin)
+                          unsigned int irq_gpio_pin)
 {
   struct stat stat;
   int ret = 0;
@@ -122,9 +118,7 @@ sl_status_t send_firmware(const char   * image_file,
                        cs_gpio_chip,
                        cs_gpio_pin,
                        irq_gpio_chip,
-                       irq_gpio_pin,
-                       wake_gpio_chip,
-                       wake_gpio_pin);
+                       irq_gpio_pin);
 
   // load file from fs and prepare first frame
   image_file_fd = open(image_file, O_RDONLY | O_CLOEXEC);
@@ -261,9 +255,7 @@ static void driver_ezsp_spi_open(const char   *device,
                                  const char *cs_gpio_chip,
                                  unsigned int cs_gpio_pin,
                                  const char *irq_gpio_chip,
-                                 unsigned int irq_gpio_pin,
-                                 const char *wake_gpio_chip,
-                                 unsigned int wake_gpio_pin)
+                                 unsigned int irq_gpio_pin)
 {
   int ret = 0;
   int fd;
@@ -297,10 +289,6 @@ static void driver_ezsp_spi_open(const char   *device,
   // Setup CS gpio
   FATAL_ON(gpio_init(&spi_dev.cs_gpio, cs_gpio_chip, cs_gpio_pin, OUT, NO_EDGE) < 0);
   FATAL_ON(gpio_write(&spi_dev.cs_gpio, 1) < 0);
-
-  // Setup WAKE gpio
-  FATAL_ON(gpio_init(&spi_dev.wake_gpio, wake_gpio_chip, wake_gpio_pin, OUT, NO_EDGE) < 0);
-  FATAL_ON(gpio_write(&spi_dev.wake_gpio, 1) < 0);
 
   // Setup IRQ gpio
   FATAL_ON(gpio_init(&spi_dev.irq_gpio, irq_gpio_chip, irq_gpio_pin, IN, FALLING) < 0);
