@@ -63,9 +63,7 @@ void run_binding_mode(void)
                                       config.spi_cs_chip,
                                       config.spi_cs_pin,
                                       config.spi_irq_chip,
-                                      config.spi_irq_pin,
-                                      config.fu_wake_chip,
-                                      config.fu_spi_wake_pin);
+                                      config.spi_irq_pin);
     } else {
       BUG();
     }

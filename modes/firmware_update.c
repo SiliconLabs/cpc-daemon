@@ -165,9 +165,7 @@ static sl_status_t transfer_firmware(void)
                            config.spi_cs_chip,
                            config.spi_cs_pin,
                            config.spi_irq_chip,
-                           config.spi_irq_pin,
-                           config.fu_wake_chip,
-                           config.fu_spi_wake_pin);
+                           config.spi_irq_pin);
   } else {
     BUG();
   }
@@ -199,9 +197,7 @@ static void reboot_secondary_by_cpc(server_core_mode_t mode)
                                     config.spi_cs_chip,
                                     config.spi_cs_pin,
                                     config.spi_irq_chip,
-                                    config.spi_irq_pin,
-                                    config.fu_wake_chip,
-                                    config.fu_spi_wake_pin);
+                                    config.spi_irq_pin);
   } else {
     BUG();
   }

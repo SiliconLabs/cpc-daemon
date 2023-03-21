@@ -72,9 +72,7 @@ static void driver_spi_open(const char *device,
                             const char *cs_gpio_chip,
                             unsigned int cs_gpio_pin,
                             const char *irq_gpio_chip,
-                            unsigned int irq_gpio_pin,
-                            const char * wake_gpio_chip,
-                            unsigned int wake_gpio_pin);
+                            unsigned int irq_gpio_pin);
 
 static void driver_spi_cleanup(void)
 {
@@ -101,9 +99,7 @@ pthread_t driver_spi_init(int *fd_to_core,
                           const char *cs_gpio_chip,
                           unsigned int cs_gpio_pin,
                           const char *irq_gpio_chip,
-                          unsigned int irq_gpio_pin,
-                          const char *wake_gpio_chip,
-                          unsigned int wake_gpio_pin)
+                          unsigned int irq_gpio_pin)
 {
   int fd_sockets[2];
   int fd_sockets_notify[2];
@@ -116,9 +112,7 @@ pthread_t driver_spi_init(int *fd_to_core,
                   cs_gpio_chip,
                   cs_gpio_pin,
                   irq_gpio_chip,
-                  irq_gpio_pin,
-                  wake_gpio_chip,
-                  wake_gpio_pin);
+                  irq_gpio_pin);
 
   ret = socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd_sockets);
   FATAL_SYSCALL_ON(ret < 0);
@@ -283,9 +277,7 @@ static void driver_spi_open(const char *device,
                             const char *cs_gpio_chip,
                             unsigned int cs_gpio_pin,
                             const char *irq_gpio_chip,
-                            unsigned int irq_gpio_pin,
-                            const char *wake_gpio_chip,
-                            unsigned int wake_gpio_pin)
+                            unsigned int irq_gpio_pin)
 {
   int ret = 0;
   int fd;
@@ -322,10 +314,6 @@ static void driver_spi_open(const char *device,
 
   // Setup IRQ gpio
   FATAL_ON(gpio_init(&spi_dev.irq_gpio, irq_gpio_chip, irq_gpio_pin, IN, FALLING) < 0);
-
-  // Setup WAKE gpio
-  FATAL_ON(gpio_init(&spi_dev.wake_gpio, wake_gpio_chip, wake_gpio_pin, OUT, NO_EDGE) < 0);
-  FATAL_ON(gpio_write(&spi_dev.wake_gpio, 1u) < 0);
 }
 
 static void driver_spi_process_irq(void)

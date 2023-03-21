@@ -4,8 +4,8 @@ pub mod common;
 #[serial_test::serial]
 fn test_cpc_lib_version() {
     match libcpc::get_library_version() {
-        Ok(version) => assert!(!version.is_empty()),
-        Err(err) => assert!(false, "{err}"),
+        Some(version) => assert!(!version.is_empty()),
+        None => assert!(false),
     }
 }
 
@@ -15,8 +15,8 @@ fn test_cpc_secondary_version() {
     let mut cpc_handle = common::cpc_init();
 
     match libcpc::get_secondary_app_version(&cpc_handle) {
-        Ok(version) => assert!(!version.is_empty()),
-        Err(err) => assert!(false, "{err}"),
+        Some(version) => assert!(!version.is_empty()),
+        None => assert!(false),
     }
 
     common::cpc_deinit_internal(&mut cpc_handle);

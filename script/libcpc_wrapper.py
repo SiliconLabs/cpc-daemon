@@ -425,7 +425,13 @@ class CPC(Structure):
 
     # const char* cpc_get_secondary_app_version(cpc_handle_t handle);
     def get_secondary_app_version(self):
-        self.lib_cpc.cpc_get_secondary_app_version.restype = c_char_p
-        return self.lib_cpc.cpc_get_secondary_app_version(self).decode("utf-8")
+        self.lib_cpc.cpc_get_secondary_app_version.restype = c_void_p
+        ptr = self.lib_cpc.cpc_get_secondary_app_version(self)
+        if ptr is None:
+            raise Exception("Failed to get secondary app version")
+        copy = c_char_p(ptr).value.decode("utf-8")
+        if self.lib_cpc.cpc_free_secondary_app_version(ptr) < 0:
+            raise Exception("Failed to free secondary app version")
+        return copy
     #end def
 #end class

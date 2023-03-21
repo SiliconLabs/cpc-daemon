@@ -85,13 +85,7 @@ pub fn cpc_open_endpoint(
 
                 return (command_ep, command_ep_event);
             }
-            Err(err) => {
-                if now.elapsed().as_secs() > 1 {
-                    assert!(false, "{err}");
-                } else {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-            }
+            Err(err) => assert!(now.elapsed().as_secs() < 1, "{err}"),
         };
     }
 }

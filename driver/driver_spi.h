@@ -45,7 +45,5 @@ pthread_t driver_spi_init(int *fd_to_core,
                           const char *cs_gpio_chip,
                           unsigned int cs_gpio_pin,
                           const char *irq_gpio_chip,
-                          unsigned int irq_gpio_pin,
-                          const char *wake_gpio_chip,
-                          unsigned int wake_gpio_pin);
+                          unsigned int irq_gpio_pin);
 #endif//DRIVER_SPI_H
