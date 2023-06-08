@@ -18,7 +18,8 @@
 #include <pthread.h>
 #include <stdbool.h>
 
-#include "misc/logging.h"
+#include "cpcd/logging.h"
+
 #include "server_core/server/server_ready_sync.h"
 
 static struct {

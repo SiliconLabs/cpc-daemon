@@ -1,6 +1,8 @@
+#!/usr/bin/env python3
+
 import socket
 import threading
-import libcpc_wrapper
+import libcpc
 import sys
 import signal
 import time
@@ -15,7 +17,7 @@ stop_flag = False
 
 def client_read(client, endpoint, event):
     global stop_flag
-    size = endpoint.get_option(libcpc_wrapper.Option.CPC_OPTION_MAX_WRITE_SIZE)
+    size = endpoint.get_option(libcpc.Option.CPC_OPTION_MAX_WRITE_SIZE)
     verboseprint("Write size: {}".format(size))
     while not stop_flag:
         try:
@@ -114,13 +116,13 @@ if __name__ == '__main__':
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind((socket.gethostname(), args.port_number))
+    server.bind(("0.0.0.0", args.port_number))
     server.listen(1)
 
     verboseprint("Listen OK")
 
     try:
-        cpc = libcpc_wrapper.CPC(args.lib_name, args.instance_name, verbose, reset_callback)
+        cpc = libcpc.CPC(args.lib_name, args.instance_name, verbose, reset_callback)
         verboseprint("CPC Init success")
     except:
         verboseprint("CPC Init fail")
@@ -138,7 +140,7 @@ if __name__ == '__main__':
             verboseprint("Client accept")
 
             try:
-                endpoint = cpc.open_endpoint(libcpc_wrapper.Endpoint.Id.CLI)
+                endpoint = cpc.open_endpoint(libcpc.Endpoint.Id.CLI)
                 verboseprint("CPC CLI Endpoint success")
                 break
             except Exception as e:

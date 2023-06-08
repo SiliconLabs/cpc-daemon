@@ -22,7 +22,9 @@
 #include <pthread.h>
 
 #include <stdbool.h>
-#include "misc/sl_status.h"
+
+#include "cpcd/sl_status.h"
+
 #include "server_core/core/core.h"
 
 /*

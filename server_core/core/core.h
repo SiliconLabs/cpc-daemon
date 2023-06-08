@@ -15,16 +15,18 @@
  *
  ******************************************************************************/
 
-#ifndef CPC_PROTOCOL_H
-#define CPC_PROTOCOL_H
+#ifndef CORE_PRIVATE_H
+#define CORE_PRIVATE_H
 
 #include <time.h>
 
-#include "sl_cpc.h"
+#include "cpcd/core.h"
+#include "cpcd/exchange.h"
+#include "cpcd/security.h"
+#include "cpcd/sl_slist.h"
 
+#include "sl_cpc.h"
 #include "hdlc.h"
-#include "misc/sl_slist.h"
-#include "server_core/cpcd_exchange.h"
 
 #define SL_CPC_OPEN_ENDPOINT_FLAG_IFRAME_DISABLE    0x01 << 0   // I-frame is enabled by default; This flag MUST be set to disable the i-frame support by the endpoint
 #define SL_CPC_OPEN_ENDPOINT_FLAG_UFRAME_ENABLE     0x01 << 1   // U-frame is disabled by default; This flag MUST be set to enable u-frame support by the endpoint
@@ -42,12 +44,7 @@
 #define SL_CPC_MIN_RE_TRANSMIT_TIMEOUT_MINIMUM_VARIATION_MS  5
 
 #define TRANSMIT_WINDOW_MIN_SIZE  1u
-#define TRANSMIT_WINDOW_MAX_SIZE  1u
-
-#define SL_CPC_VERSION_MAJOR 1u
-#define SL_CPC_VERSION_MINOR 1u
-
-#define SL_CPC_ENDPOINT_MAX_COUNT  256
+#define TRANSMIT_WINDOW_MAX_SIZE  7u
 
 void core_init(int driver_fd, int driver_notify_fd);
 
@@ -94,7 +91,7 @@ SL_ENUM(sl_cpc_endpoint_option_t){
   SL_CPC_ENDPOINT_ON_FINAL_ARG,
 };
 
-void core_process_endpoint_change(uint8_t endpoint_number, cpc_endpoint_state_t ep_state, bool encryption);
+void core_process_endpoint_change(uint8_t endpoint_number, cpc_endpoint_state_t ep_state, bool encryption, uint8_t tx_window_size);
 
 bool core_ep_is_closing(uint8_t ep_id);
 
@@ -106,49 +103,6 @@ void core_set_endpoint_option(uint8_t endpoint_number,
 // -----------------------------------------------------------------------------
 // Data Types
 
-typedef void (*sl_cpc_on_final_t)(uint8_t endpoint_id, void *arg, void *answer, uint32_t answer_lenght);
-
-typedef struct {
-  void *on_fnct_arg;
-  sl_cpc_on_final_t on_final;
-} sl_cpc_poll_final_t;
-
-typedef void (*sl_cpc_on_data_reception_t)(uint8_t endpoint_id, const void* data, size_t data_len);
-
-/*
- * Internal state for the endpoints. Will be filled by cpc_register_endpoint()
- */
-typedef struct endpoint {
-  uint8_t id;
-  uint8_t flags;
-  uint8_t seq;
-  uint8_t ack;
-  uint8_t configured_tx_window_size;
-  uint8_t current_tx_window_space;
-  uint8_t frames_count_re_transmit_queue;
-  uint8_t packet_re_transmit_count;
-  long    re_transmit_timeout_ms;
-  void*   re_transmit_timer_private_data;
-  cpc_endpoint_state_t state;
-  sl_slist_node_t *re_transmit_queue;
-  sl_slist_node_t *holding_list;
-  sl_cpc_on_data_reception_t on_uframe_data_reception;
-  sl_cpc_on_data_reception_t on_iframe_data_reception;
-  sl_cpc_poll_final_t poll_final;
-  struct timespec last_iframe_sent_timestamp;
-  long smoothed_rtt;
-  long rtt_variation;
-#if defined(ENABLE_ENCRYPTION)
-  bool encrypted;
-  uint32_t frame_counter_tx;
-  uint32_t frame_counter_rx;
-#endif
-}sl_cpc_endpoint_t;
-
-typedef struct {
-  uint32_t frame_counter;
-} sl_cpc_security_frame_t;
-
 typedef struct {
   void *hdlc_header;
   const void *data;
@@ -156,14 +110,13 @@ typedef struct {
   uint8_t fcs[2];
   uint8_t control;
   uint8_t address;
+  uint8_t ref_cnt;
+  uint8_t re_transmit_count;
   sl_cpc_endpoint_t *endpoint;
 #if defined(ENABLE_ENCRYPTION)
   bool security_session_last_packet;
   sl_cpc_security_frame_t *security_info;
 #endif
-  uint8_t pending_ack;
-  bool acked;
-  bool pending_tx_complete;
 } sl_cpc_buffer_handle_t;
 
 typedef struct {
@@ -171,9 +124,20 @@ typedef struct {
   sl_cpc_buffer_handle_t *handle;
 } sl_cpc_transmit_queue_item_t;
 
+/* 1-byte aligned
+ *  0                   1                   2                   3
+ *  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |  header[7]  |                                                 |
+ * +-+-+-+-+-+-+-+                                                 :
+ * |                            payload                            |
+ * :                                                               :
+ * |                                                               |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ */
 typedef struct {
   uint8_t  header[SLI_CPC_HDLC_HEADER_RAW_SIZE];
   uint8_t  payload[];     // last two bytes are little endian 16bits
-}frame_t;
+} frame_t;
 
-#endif
+#endif // CORE_PRIVATE_H

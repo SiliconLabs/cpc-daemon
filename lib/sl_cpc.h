@@ -90,7 +90,7 @@ extern "C"
  *
  *  static cpc_handle_t cpc_handle;
  *  static cpc_endpoint_t endpoint_0;
- *  static volatile bool secondary_reset = false;
+ *  static volatile sig_atomic_t secondary_reset = false;
  *
  *  // if the secondary resets unexpectedly, the daemon will send a SIGUSR1 to the client
  *  // application. This callback will execute in the context of the signal handler.
@@ -226,7 +226,9 @@ SL_ENUM(sl_cpc_service_endpoint_id_t){
   SL_CPC_ENDPOINT_15_4 = 12,                   ///< 802.15.4 endpoint
   SL_CPC_ENDPOINT_CLI = 13,                    ///< Ascii based CLI for stacks / applications
   SL_CPC_ENDPOINT_BLUETOOTH_RCP = 14,          ///< Bluetooth RCP endpoint
-  SL_CPC_ENDPOINT_ACP = 15                     ///< ACP endpoint
+  SL_CPC_ENDPOINT_ACP = 15,                    ///< ACP endpoint
+  SL_CPC_ENDPOINT_SE = 16,                     ///< Secure Engine endpoint
+  SL_CPC_ENDPOINT_NVM3 = 17,                   ///< NVM3 endpoint
 };
 
 /// @brief Enumeration representing user endpoint.
@@ -274,9 +276,6 @@ typedef struct {
   int seconds;      ///< Number of seconds
   int microseconds; ///< Number of microseconds
 } cpc_timeval_t;
-
-/// @brief Struct representing a CPC asynchronous event flag.
-typedef uint8_t cpc_events_flags_t;
 
 /***************************************************************************//**
  * @brief Callback to notify the application that the secondary has crashed/reset itself.

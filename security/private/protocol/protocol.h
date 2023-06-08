@@ -18,8 +18,9 @@
 #ifndef SECURITY_PROTOCOL_H
 #define SECURITY_PROTOCOL_H
 
+#include "cpcd/sl_status.h"
+
 #include "security/private/keys/keys.h"
-#include "misc/sl_status.h"
 #include "lib/sl_cpc.h"
 
 #define SLI_SECURITY_PROTOCOL_HEADER_LENGTH (sizeof(uint16_t) + sizeof(sl_cpc_security_id_t))

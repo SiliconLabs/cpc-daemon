@@ -20,19 +20,19 @@
 #include <sys/timerfd.h>
 #include <unistd.h>
 
+#include "cpcd/config.h"
+#include "cpcd/logging.h"
+#include "cpcd/server_core.h"
+#include "cpcd/utils.h"
+
 #include "server_core/core/hdlc.h"
 #include "sl_cpc.h"
 #include "system.h"
 
-#include "misc/logging.h"
-#include "misc/utils.h"
-#include "misc/config.h"
 #include "server_core/system_endpoint/system_callbacks.h"
 #include "server_core/server/server.h"
 #include "server_core/core/core.h"
-#include "server_core/server_core.h"
 #include "security/security.h"
-#include "misc/utils.h"
 
 /***************************************************************************//**
  * How long to wait before attempting another command that requires an unnumbered ack
@@ -552,7 +552,7 @@ void sl_cpc_system_cmd_property_get(sl_cpc_system_property_get_set_cmd_callback_
 
   write_command(command_handle);
 
-  TRACE_SYSTEM("property-get (id #%u) sent with property #%u", CMD_SYSTEM_PROP_VALUE_GET, property_id);
+  TRACE_SYSTEM("property-get (id #%u) sent with property 0x%x", CMD_SYSTEM_PROP_VALUE_GET, property_id);
 }
 
 /***************************************************************************//**
@@ -651,9 +651,11 @@ void sl_cpc_system_cmd_property_set(sl_cpc_system_property_get_set_cmd_callback_
  *   The SECONDARY will send back a no-op in response to the one sent by the PRIMARY.
  ******************************************************************************/
 static void on_final_noop(sl_cpc_system_command_handle_t *command_handle,
-                          sl_cpc_system_cmd_t *reply)
+                          sl_cpc_system_cmd_t *system_cmd,
+                          const uint8_t *system_cmd_payload,
+                          size_t system_cmd_payload_length)
 {
-  (void) reply;
+  (void)system_cmd, (void)system_cmd_payload, (void)system_cmd_payload_length;
 
   TRACE_SYSTEM("on_final_noop()");
 
@@ -667,15 +669,20 @@ static void on_final_noop(sl_cpc_system_command_handle_t *command_handle,
  *   The SECONDARY will send back a reset in response to the one sent by the PRIMARY.
  ******************************************************************************/
 static void on_final_reset(sl_cpc_system_command_handle_t * command_handle,
-                           sl_cpc_system_cmd_t * reply)
+                           const uint8_t *system_cmd_payload,
+                           size_t system_cmd_payload_length)
 {
   TRACE_SYSTEM("on_final_reset()");
 
   ignore_reset_reason = false;
 
   // Deal with endianness of the returned status since its a 32bit value.
-  sl_cpc_system_status_t reset_status_le = *((sl_cpc_system_status_t *)(reply->payload));
-  sl_cpc_system_status_t reset_status_cpu = le32_to_cpu(reset_status_le);
+  sl_cpc_system_status_t reset_status_le, reset_status_cpu;
+
+  reset_status_le = 0;
+  memcpy(&reset_status_le, system_cmd_payload,
+         min(system_cmd_payload_length, sizeof(reset_status_le)));
+  reset_status_cpu = le32_to_cpu(reset_status_le);
 
   ((sl_cpc_system_reset_cmd_callback_t)command_handle->on_final)(command_handle,
                                                                  command_handle->error_status,
@@ -688,11 +695,20 @@ static void on_final_reset(sl_cpc_system_command_handle_t * command_handle,
  *   The SECONDARY emits a property-is in response to a property-get/set.
  ******************************************************************************/
 static void on_final_property_is(sl_cpc_system_command_handle_t * command_handle,
-                                 sl_cpc_system_cmd_t * reply,
+                                 sl_cpc_system_cmd_t *system_cmd,
+                                 const uint8_t *system_cmd_payload,
+                                 size_t system_cmd_payload_length,
                                  bool is_uframe)
 {
-  sl_cpc_system_property_cmd_t *property_cmd = (sl_cpc_system_property_cmd_t*)reply->payload;
   sl_cpc_system_property_get_set_cmd_callback_t callback = (sl_cpc_system_property_get_set_cmd_callback_t)command_handle->on_final;
+
+  sl_cpc_system_property_cmd_t system_property_cmd;
+  const uint8_t *system_property_cmd_payload;
+
+  memset(&system_property_cmd, 0, sizeof(system_property_cmd));
+  memcpy(&system_property_cmd, system_cmd_payload,
+         min(system_cmd_payload_length, sizeof(system_property_cmd)));
+  system_property_cmd_payload = system_cmd_payload + sizeof(system_property_cmd);
 
   // Make sure only certain properties are allowed as u-frame (non-encrypted)
   if (is_uframe) {
@@ -701,31 +717,36 @@ static void on_final_property_is(sl_cpc_system_command_handle_t * command_handle
 #if defined(ENABLE_ENCRYPTION)
     sl_cpc_security_state_t security_state = security_get_state();
     if (config.use_encryption && security_state == SECURITY_STATE_INITIALIZED) {
-      FATAL("Received on_final property_is %x as a u-frame when security was enabled.", property_cmd->property_id);
-    } else
+      FATAL("Received on_final property_is %x as a u-frame when security was enabled.", system_property_cmd.property_id);
+    }
 #endif // ENABLE_ENCRYPTION
-    if (property_cmd->property_id != PROP_RX_CAPABILITY
-        && property_cmd->property_id != PROP_CAPABILITIES
-        && property_cmd->property_id != PROP_BUS_SPEED_VALUE
-        && property_cmd->property_id != PROP_PROTOCOL_VERSION
-        && property_cmd->property_id != PROP_BOOTLOADER_INFO
-        && property_cmd->property_id != PROP_SECONDARY_CPC_VERSION
-        && property_cmd->property_id != PROP_SECONDARY_APP_VERSION
-        && property_cmd->property_id != PROP_BOOTLOADER_REBOOT_MODE
-        && property_cmd->property_id != PROP_LAST_STATUS) {
-      FATAL("Received on_final property_is %x as a u-frame", property_cmd->property_id);
+    switch (system_property_cmd.property_id) {
+      case PROP_RX_CAPABILITY:
+      case PROP_CAPABILITIES:
+      case PROP_BUS_BITRATE_VALUE:
+      case PROP_BUS_MAX_BITRATE_VALUE:
+      case PROP_PROTOCOL_VERSION:
+      case PROP_BOOTLOADER_INFO:
+      case PROP_SECONDARY_CPC_VERSION:
+      case PROP_SECONDARY_APP_VERSION:
+      case PROP_BOOTLOADER_REBOOT_MODE:
+      case PROP_LAST_STATUS:
+        break;
+      default:
+        FATAL("Received on_final property_is %x as a u-frame", system_property_cmd.property_id);
+        break;
     }
   }
 
   /* Deal with endianness of the returned property-id since its a 32bit value. */
-  sl_cpc_property_id_t property_id_le = property_cmd->property_id;
+  sl_cpc_property_id_t property_id_le = system_property_cmd.property_id;
   sl_cpc_property_id_t property_id_cpu = le32_to_cpu(property_id_le);
 
-  size_t value_length = reply->length - sizeof(sl_cpc_system_property_cmd_t);
+  size_t value_length = system_cmd->length - sizeof(sl_cpc_system_property_cmd_t);
 
   callback(command_handle,
            property_id_cpu,
-           property_cmd->payload,
+           (uint8_t *)system_property_cmd_payload, /* discard const qualifier */
            value_length,
            command_handle->error_status);
 }
@@ -739,18 +760,25 @@ static void on_reply(uint8_t endpoint_id,
                      uint32_t answer_lenght)
 {
   sl_cpc_system_command_handle_t *command_handle;
-  sl_cpc_system_cmd_t *reply = (sl_cpc_system_cmd_t *)answer;
   size_t frame_type = (size_t)arg;
+  const uint8_t *frame_payload;
+  sl_cpc_system_cmd_t system_cmd;
+  const uint8_t *system_cmd_payload;
+  size_t system_cmd_payload_length;
 
-  (void)answer_lenght;
+  frame_payload = (const uint8_t *)answer;
+
+  memcpy(&system_cmd, frame_payload, sizeof(system_cmd));
+  system_cmd_payload = frame_payload + sizeof(system_cmd);
+  system_cmd_payload_length = answer_lenght - sizeof(system_cmd);
 
   BUG_ON(endpoint_id != 0);
-  FATAL_ON(reply->length != answer_lenght - sizeof(sl_cpc_system_cmd_t));
+  FATAL_ON(system_cmd.length != system_cmd_payload_length);
 
   /* Go through the list of pending requests to find the one for which this reply applies */
   SL_SLIST_FOR_EACH_ENTRY(commands, command_handle, sl_cpc_system_command_handle_t, node_commands) {
-    if (command_handle->command_seq == reply->command_seq) {
-      TRACE_SYSTEM("Processing command seq#%d of type %d", reply->command_seq, frame_type);
+    if (command_handle->command_seq == system_cmd.command_seq) {
+      TRACE_SYSTEM("Processing command seq#%d of type %d", system_cmd.command_seq, frame_type);
 
       /* Stop and close the retransmit timer */
       if (frame_type == SLI_CPC_HDLC_FRAME_TYPE_UNNUMBERED
@@ -764,12 +792,12 @@ static void on_reply(uint8_t endpoint_id,
       /* Call the appropriate callback */
       if (frame_type == SLI_CPC_HDLC_FRAME_TYPE_UNNUMBERED) {
         BUG_ON(command_handle->is_uframe == false);
-        switch (reply->command_id) {
+        switch (system_cmd.command_id) {
           case CMD_SYSTEM_RESET:
-            on_final_reset(command_handle, reply);
+            on_final_reset(command_handle, system_cmd_payload, system_cmd_payload_length);
             break;
           case CMD_SYSTEM_PROP_VALUE_IS:
-            on_final_property_is(command_handle, reply, true);
+            on_final_property_is(command_handle, &system_cmd, system_cmd_payload, system_cmd_payload_length, true);
             break;
           default:
             FATAL("system endpoint command id not recognized for u-frame");
@@ -777,13 +805,13 @@ static void on_reply(uint8_t endpoint_id,
         }
       } else if (frame_type == SLI_CPC_HDLC_FRAME_TYPE_INFORMATION) {
         BUG_ON(command_handle->is_uframe == true);
-        switch (reply->command_id) {
+        switch (system_cmd.command_id) {
           case CMD_SYSTEM_NOOP:
-            on_final_noop(command_handle, reply);
+            on_final_noop(command_handle, &system_cmd, system_cmd_payload, system_cmd_payload_length);
             break;
 
           case CMD_SYSTEM_PROP_VALUE_IS:
-            on_final_property_is(command_handle, reply, false);
+            on_final_property_is(command_handle, &system_cmd, system_cmd_payload, system_cmd_payload_length, false);
             break;
 
           case CMD_SYSTEM_PROP_VALUE_GET:
@@ -817,9 +845,21 @@ static void on_uframe_receive(uint8_t endpoint_id, const void* data, size_t data
 
   TRACE_SYSTEM("Unsolicited uframe received");
 
+#if defined(TARGET_TESTING)
+  PRINT_INFO("STATUS_OK\n");
+#endif
+
+  if (data_len < sizeof(sl_cpc_system_cmd_t)) {
+    WARN("System endpoint received a uframe with not enough bytes to properly parse");
+    return;
+  }
+
   sl_cpc_system_cmd_t *reply = (sl_cpc_system_cmd_t *)data;
 
-  FATAL_ON(reply->length != data_len - sizeof(sl_cpc_system_cmd_t));
+  if (reply->length != data_len - sizeof(sl_cpc_system_cmd_t)) {
+    WARN("Invalid system endpoint command length, ignoring frame");
+    return;
+  }
 
   if (reply->command_id == CMD_SYSTEM_PROP_VALUE_IS) {
     sl_cpc_system_property_cmd_t *property = (sl_cpc_system_property_cmd_t*) reply->payload;

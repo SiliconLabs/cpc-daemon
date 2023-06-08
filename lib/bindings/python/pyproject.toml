@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "libcpc"
+version = "0.0.1"
+authors = [
+  { name="Silicon Labs Inc." },
+]
+description = "libcpc Python's bindings to connect to CPC daemon. Libcpc is not provided in this package."
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: Other/Proprietary License",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/SiliconLabs/cpc-daemon"
+"Bug Tracker" = "https://github.com/SiliconLabs/cpc-daemon/issues"

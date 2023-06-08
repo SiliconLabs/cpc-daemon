@@ -28,17 +28,18 @@
 #include <errno.h>
 #include <signal.h>
 
-#include "misc/config.h"
-#include "misc/logging.h"
-#include "misc/sleep.h"
-#include "misc/utils.h"
-#include "modes/uart_validation.h"
-#include "server_core.h"
+#include "cpcd/config.h"
+#include "cpcd/logging.h"
+#include "cpcd/modes.h"
+#include "cpcd/security.h"
+#include "cpcd/server_core.h"
+#include "cpcd/sleep.h"
+#include "cpcd/utils.h"
+
 #include "server_core/epoll/epoll.h"
 #include "server_core/server/server.h"
 #include "server_core/core/core.h"
 #include "server_core/system_endpoint/system.h"
-#include "security/security.h"
 #include "version.h"
 #include "driver/driver_kill.h"
 
@@ -54,12 +55,19 @@ static bool reset_ack = false;
 static bool secondary_cpc_version_received = false;
 static bool secondary_app_version_received_or_not_available = false;
 static bool bootloader_info_received_or_not_available = false;
-static bool secondary_bus_speed_received = false;
-static bool failed_to_receive_secondary_bus_speed = false;
-static bool reset_reason_received = false;
+static bool secondary_bus_bitrate_received = false;
+static bool failed_to_receive_secondary_bus_bitrate = false;
+static bool secondary_bus_max_bitrate_received = false;
+static bool failed_to_receive_secondary_bus_max_bitrate = false;
 static bool capabilities_received = false;
 static bool rx_capability_received = false;
 static bool protocol_version_received = false;
+
+#if defined(UNIT_TESTING)
+static bool reset_reason_received = true;
+#else
+static bool reset_reason_received = false;
+#endif // UNIT_TESTING
 
 static server_core_mode_t server_core_mode = SERVER_CORE_MODE_NORMAL;
 
@@ -79,7 +87,8 @@ static enum {
   WAIT_FOR_SECONDARY_CPC_VERSION,
   WAIT_FOR_SECONDARY_APP_VERSION,
   WAIT_FOR_PROTOCOL_VERSION,
-  WAIT_FOR_SECONDARY_BUS_SPEED,
+  WAIT_FOR_SECONDARY_BUS_BITRATE,
+  WAIT_FOR_SECONDARY_BUS_MAX_BITRATE,
   RESET_SEQUENCE_DONE
 } reset_sequence_state = SET_NORMAL_REBOOT_MODE;
 
@@ -148,6 +157,11 @@ static void cleanup_socket_folder(const char *folder)
     }
   }
   closedir(dir);
+}
+
+bool server_core_max_bitrate_received(void)
+{
+  return secondary_bus_max_bitrate_received;
 }
 
 uint32_t server_core_get_secondary_rx_capability(void)
@@ -502,6 +516,8 @@ static void property_get_rx_capability_callback(sl_cpc_system_command_handle_t *
   TRACE_RESET("Received RX capability of %u bytes", *((uint16_t *)property_value));
   rx_capability = *((uint16_t *)property_value);
   rx_capability_received = true;
+
+  PRINT_INFO("RX capability is %u bytes", rx_capability);
 }
 
 static void property_get_secondary_bootloader_info(sl_cpc_system_command_handle_t *handle,
@@ -586,32 +602,72 @@ static void property_get_secondary_app_version_callback(sl_cpc_system_command_ha
   secondary_app_version_received_or_not_available = true;
 }
 
-static void property_get_secondary_bus_speed_callback(sl_cpc_system_command_handle_t *handle,
-                                                      sl_cpc_property_id_t property_id,
-                                                      void* property_value,
-                                                      size_t property_length,
-                                                      sl_status_t status)
+static void property_get_secondary_bus_bitrate_callback(sl_cpc_system_command_handle_t *handle,
+                                                        sl_cpc_property_id_t property_id,
+                                                        void* property_value,
+                                                        size_t property_length,
+                                                        sl_status_t status)
 {
   (void) handle;
-  uint32_t bus_speed = 0;
+  uint32_t bus_bitrate = 0;
 
-  if ((status == SL_STATUS_OK || status == SL_STATUS_IN_PROGRESS) && property_id == PROP_BUS_SPEED_VALUE) {
+  if ((status == SL_STATUS_OK || status == SL_STATUS_IN_PROGRESS) && property_id == PROP_BUS_BITRATE_VALUE) {
     FATAL_ON(property_value == NULL);
     FATAL_ON(property_length != sizeof(uint32_t));
 
-    memcpy(&bus_speed, property_value, sizeof(uint32_t));
+    memcpy(&bus_bitrate, property_value, sizeof(uint32_t));
 
-    PRINT_INFO("Secondary bus speed is %d", bus_speed);
+    PRINT_INFO("Secondary bus bitrate is %d", bus_bitrate);
 
-    if (config.bus == UART && bus_speed != config.uart_baudrate) {
+    if (config.bus == UART && bus_bitrate != config.uart_baudrate) {
       FATAL("Baudrate mismatch (%d) on the daemon versus (%d) on the secondary",
-            config.uart_baudrate, bus_speed);
+            config.uart_baudrate, bus_bitrate);
     }
 
-    secondary_bus_speed_received = true;
+    secondary_bus_bitrate_received = true;
   } else {
-    WARN("Could not obtain the secondary's bus speed");
-    failed_to_receive_secondary_bus_speed = true;
+    WARN("Could not obtain the secondary's bus bitrate");
+    failed_to_receive_secondary_bus_bitrate = true;
+  }
+}
+
+static void property_get_secondary_bus_max_bitrate_callback(sl_cpc_system_command_handle_t *handle,
+                                                            sl_cpc_property_id_t property_id,
+                                                            void* property_value,
+                                                            size_t property_length,
+                                                            sl_status_t status)
+{
+  (void) handle;
+  uint32_t max_bus_bitrate = 0;
+
+  if ((status == SL_STATUS_OK || status == SL_STATUS_IN_PROGRESS) && property_id == PROP_BUS_MAX_BITRATE_VALUE) {
+    FATAL_ON(property_value == NULL);
+    FATAL_ON(property_length != sizeof(uint32_t));
+
+    memcpy(&max_bus_bitrate, property_value, sizeof(uint32_t));
+
+    if (config.bus == SPI) {
+      PRINT_INFO("Secondary max bus bitrate is %d", max_bus_bitrate);
+
+      // If the spi bitrate is not specific in the config file, use the max bitrate returned by the secondary
+      if (config.spi_bitrate == 0) {
+        config.spi_bitrate = max_bus_bitrate;
+      } else {
+        if (config.spi_bitrate > max_bus_bitrate) {
+          config.spi_bitrate = max_bus_bitrate;
+          WARN("The SPI bitrate specified in the config file is greater than the maximum suported bitrate returned by the secondary. Falling back to the value returned by the secondary");
+        } else {
+          PRINT_INFO("SPI bitrate from the config file is lesser than the maximum value returned by the secondary. For performance reason, consider raising it.", config.spi_bitrate);
+        }
+      }
+
+      PRINT_INFO("The negotiated SPI bitrate will be %d", config.spi_bitrate);
+    }
+
+    secondary_bus_max_bitrate_received = true;
+  } else {
+    WARN("Could not obtain the secondary's bus bitrate");
+    failed_to_receive_secondary_bus_max_bitrate = true;
   }
 }
 
@@ -820,17 +876,29 @@ static void process_reset_sequence(bool firmware_reset_mode)
       if (secondary_cpc_version_received) {
         TRACE_RESET("Obtained Secondary CPC version");
 
-        reset_sequence_state = WAIT_FOR_SECONDARY_BUS_SPEED;
-        sl_cpc_system_cmd_property_get(property_get_secondary_bus_speed_callback,
-                                       PROP_BUS_SPEED_VALUE,
+        reset_sequence_state = WAIT_FOR_SECONDARY_BUS_BITRATE;
+        sl_cpc_system_cmd_property_get(property_get_secondary_bus_bitrate_callback,
+                                       PROP_BUS_BITRATE_VALUE,
                                        5,       /* 5 retries */
                                        100000,  /* 100ms between retries*/
                                        true);
       }
       break;
 
-    case WAIT_FOR_SECONDARY_BUS_SPEED:
-      if (secondary_bus_speed_received || failed_to_receive_secondary_bus_speed) {
+    case WAIT_FOR_SECONDARY_BUS_BITRATE:
+      if (secondary_bus_bitrate_received || failed_to_receive_secondary_bus_bitrate) {
+        reset_sequence_state = WAIT_FOR_SECONDARY_BUS_MAX_BITRATE;
+
+        sl_cpc_system_cmd_property_get(property_get_secondary_bus_max_bitrate_callback,
+                                       PROP_BUS_MAX_BITRATE_VALUE,
+                                       5,       /* 5 retries */
+                                       100000,  /* 100ms between retries*/
+                                       true);
+      }
+      break;
+
+    case WAIT_FOR_SECONDARY_BUS_MAX_BITRATE:
+      if (secondary_bus_max_bitrate_received || failed_to_receive_secondary_bus_max_bitrate) {
         reset_sequence_state = WAIT_FOR_SECONDARY_APP_VERSION;
 
         sl_cpc_system_cmd_property_get(property_get_secondary_app_version_callback,
@@ -985,4 +1053,9 @@ static void security_fetch_remote_security_state(epoll_private_data_t *private_d
 bool server_core_reset_sequence_in_progress(void)
 {
   return reset_sequence_state != RESET_SEQUENCE_DONE;
+}
+
+bool server_core_reset_is_received_reset_reason(void)
+{
+  return reset_reason_received;
 }

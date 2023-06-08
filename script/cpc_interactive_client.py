@@ -1,7 +1,7 @@
 #!/usr/bin/python
 
 import cmd, sys
-import libcpc_wrapper
+import libcpc
 import time
 from optparse import OptionParser
 
@@ -24,7 +24,7 @@ class CPCInteractiveClient(cmd.Cmd):
     super().__init__(completekey=completekey)
     lib_name = lib_name or "/usr/local/lib/libcpc.so"
     instance = instance or "cpcd_0"
-    self.cpc = libcpc_wrapper.CPC(lib_name, instance, True, None)
+    self.cpc = libcpc.CPC(lib_name, instance, True, None)
 
   def do_open_endpoint(self, arg):
     'Open endpoint by endpoint id: > open_endpoint 90'
@@ -84,7 +84,7 @@ class CPCInteractiveClient(cmd.Cmd):
       try:
         state = self.cpc.get_endpoint_state(int(ep))
 
-        if state == libcpc_wrapper.State.SL_CPC_STATE_CLOSED:
+        if state == libcpc.State.SL_CPC_STATE_CLOSED:
           print("Endpoint {} closed".format(ep))
           # delete endpoint from table
           CPCInteractiveClient.open_endpoints.pop(ep, None)

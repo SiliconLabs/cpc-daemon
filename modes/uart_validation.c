@@ -18,13 +18,14 @@
 #include <pthread.h>
 #include <unistd.h>
 
-#include "modes/uart_validation.h"
+#include "cpcd/config.h"
+#include "cpcd/logging.h"
+#include "cpcd/modes.h"
+#include "cpcd/server_core.h"
+#include "cpcd/sleep.h"
+
 #include "server_core/core/core.h"
-#include "server_core/server_core.h"
 #include "driver/driver_uart.h"
-#include "misc/config.h"
-#include "misc/logging.h"
-#include "misc/sleep.h"
 
 #define TIMEOUT_SECONDS         5
 #define TIME_BETWEEN_RETRIES_US 1000000

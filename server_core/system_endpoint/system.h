@@ -18,13 +18,14 @@
 #ifndef EP_SYSTEM_H
 #define EP_SYSTEM_H
 
-#include "server_core/epoll/epoll.h"
-#include "misc/sl_slist.h"
-#include "sl_cpc.h"
-#include "misc/sl_status.h"
-
 #include <stddef.h>
 #include <stdarg.h>
+
+#include "cpcd/sl_slist.h"
+#include "cpcd/sl_status.h"
+
+#include "server_core/epoll/epoll.h"
+#include "sl_cpc.h"
 
 #define CPC_EP_SYSTEM 0
 
@@ -61,7 +62,8 @@ SL_ENUM_GENERIC(sl_cpc_property_id_t, uint32_t)
   PROP_SECONDARY_APP_VERSION  = 0x04,
   PROP_RX_CAPABILITY          = 0x20,
   PROP_FC_VALIDATION_VALUE    = 0x30,
-  PROP_BUS_SPEED_VALUE        = 0x40,
+  PROP_BUS_BITRATE_VALUE      = 0x40,
+  PROP_BUS_MAX_BITRATE_VALUE  = 0x50,
   PROP_BOOTLOADER_INFO        = 0x200,
   PROP_BOOTLOADER_REBOOT_MODE = 0x202,
   PROP_SECURITY_STATE         = 0x301,
@@ -463,20 +465,42 @@ typedef struct {
 /***************************************************************************//**
  * System endpoint command type
  ******************************************************************************/
+/* 2-bytes aligned
+ *  0                   1                   2                   3
+ *  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |i|s|len|                                                       |
+ * +-+-+-+-+                                                       :
+ * |                            payload                            |
+ * :                                                               :
+ * |                                                               |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ */
 typedef struct {
   sl_cpc_system_cmd_id_t command_id;   ///< Identifier of the command.
   uint8_t                command_seq;  ///< Command sequence number
   uint16_t               length;       ///< Length of the payload in bytes.
   uint8_t                payload[];    ///< Command payload.
-}sl_cpc_system_cmd_t;
+} sl_cpc_system_cmd_t;
 
 /***************************************************************************//**
  * System endpoint property command type
  ******************************************************************************/
+/* 4-bytes aligned
+ *  0                   1                   2                   3
+ *  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |prop_id|                                                       |
+ * +-+-+-+-+                                                       :
+ * |                            payload                            |
+ * :                                                               :
+ * |                                                               |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ */
 typedef struct {
   sl_cpc_property_id_t property_id; ///< Identifier of the property.
   uint8_t              payload[];   ///< Property value.
-}sl_cpc_system_property_cmd_t;
+} sl_cpc_system_property_cmd_t;
 
 /***************************************************************************//**
  * System endpoint command handle type

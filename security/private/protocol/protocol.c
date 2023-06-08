@@ -18,11 +18,13 @@
 #include <unistd.h>
 #include <string.h>
 
-#include "misc/logging.h"
-#include "misc/sl_status.h"
-#include "misc/sleep.h"
-#include "misc/config.h"
-#include "server_core/server_core.h"
+#include "cpcd/config.h"
+#include "cpcd/core.h"
+#include "cpcd/logging.h"
+#include "cpcd/server_core.h"
+#include "cpcd/sl_status.h"
+#include "cpcd/sleep.h"
+
 #include "server_core/system_endpoint/system.h"
 #include "security/private/thread/security_thread.h"
 #include "security/private/protocol/protocol.h"

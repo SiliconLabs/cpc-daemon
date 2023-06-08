@@ -21,8 +21,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "misc/sl_status.h"
-#include "server_core/cpcd_exchange.h"
+#include "cpcd/sl_status.h"
 
 void server_init(void);
 

@@ -35,10 +35,11 @@
 #include <sys/timerfd.h>
 #include <linux/magic.h>
 
-#include "misc/logging.h"
+#include "cpcd/config.h"
+#include "cpcd/logging.h"
+#include "cpcd/utils.h"
+
 #include "server_core/epoll/epoll.h"
-#include "config.h"
-#include "utils.h"
 
 #ifndef UNIT_TESTING
 #include "driver/driver_uart.h"
@@ -168,8 +169,8 @@ static void file_logging_init(void)
   int ret;
   struct statfs statfs_buf;
 
-  ret = mkdir(config.traces_folder, 0700);
-  NO_LOGGING_FATAL_SYSCALL_ON(ret < 0 && errno != EEXIST);
+  ret = recursive_mkdir(config.traces_folder, strlen(config.traces_folder), S_IRWXU | S_IRWXG | S_ISVTX);
+  NO_LOGGING_FATAL_SYSCALL_ON(ret < 0);
 
   ret = statfs(config.traces_folder, &statfs_buf);
   NO_LOGGING_FATAL_SYSCALL_ON(ret < 0);

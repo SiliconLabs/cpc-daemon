@@ -18,13 +18,14 @@
 #include <string.h>
 #include <sys/socket.h>
 
-#include "misc/config.h"
+#include "cpcd/config.h"
+#include "cpcd/exchange.h"
+#include "cpcd/logging.h"
+
 #include "server_core/system_endpoint/system_callbacks.h"
 #include "server_core/core/core.h"
 #include "server_core/server/server.h"
-#include "misc/logging.h"
 #include "lib/sl_cpc.h"
-#include "server_core/cpcd_exchange.h"
 
 static int fd_ctrl_data_of_pending_open = 0;
 
@@ -102,7 +103,7 @@ void reply_to_closing_endpoint_on_secondary_callback(sl_cpc_system_command_handl
  ******************************************************************************/
 static void system_send_open_endpoint_ack(uint8_t endpoint_id, bool can_open)
 {
-  const size_t buffer_len = sizeof(cpcd_exchange_buffer_t) + sizeof(bool);
+  const size_t buffer_len = sizeof(cpcd_exchange_buffer_t) + sizeof(uint8_t) + sizeof(bool);
   cpcd_exchange_buffer_t *interface_buffer;
   uint8_t buffer[buffer_len];
 
@@ -111,7 +112,8 @@ static void system_send_open_endpoint_ack(uint8_t endpoint_id, bool can_open)
   // populate fields related to the query
   interface_buffer->type = EXCHANGE_OPEN_ENDPOINT_QUERY;
   interface_buffer->endpoint_number = endpoint_id;
-  memcpy(interface_buffer->payload, &can_open, sizeof(bool));
+  memset(interface_buffer->payload, 0, 1);
+  memcpy(&(interface_buffer->payload[1]), &can_open, sizeof(bool));
 
   ssize_t ret = send(fd_ctrl_data_of_pending_open, interface_buffer, buffer_len, 0);
   TRACE_SERVER("Replied to endpoint open query on ep#%d", endpoint_id);

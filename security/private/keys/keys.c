@@ -27,10 +27,11 @@
 #include "mbedtls/ecdh.h"
 #include "mbedtls/pk.h"
 
-#include "misc/config.h"
-#include "misc/logging.h"
-#include "misc/sl_status.h"
-#include "misc/utils.h"
+#include "cpcd/config.h"
+#include "cpcd/logging.h"
+#include "cpcd/sl_status.h"
+#include "cpcd/utils.h"
+
 #include "security/security.h"
 #include "security/private/keys/keys.h"
 #include "server_core/core/hdlc.h"
@@ -247,7 +248,6 @@ mbedtls_ctr_drbg_context* security_keys_get_rng_context(void)
 
 void security_keys_init(void)
 {
-  const int verbose = 0;
   int ret;
   const char app_custom[] = "CPCD custom";
 
@@ -255,10 +255,12 @@ void security_keys_init(void)
   FATAL_ON(MBEDTLS_VERSION_CHECK);
 
   /* Perform an initial self tests */
-  FATAL_ON(mbedtls_gcm_self_test(verbose) != 0);
-  FATAL_ON(mbedtls_ctr_drbg_self_test(verbose) != 0);
-  FATAL_ON(mbedtls_sha256_self_test(verbose) != 0);
-  FATAL_ON(mbedtls_entropy_self_test(verbose) != 0);
+#if defined(MBEDTLS_SELF_TEST)
+  FATAL_ON(mbedtls_gcm_self_test(0) != 0);
+  FATAL_ON(mbedtls_ctr_drbg_self_test(0) != 0);
+  FATAL_ON(mbedtls_sha256_self_test(0) != 0);
+  FATAL_ON(mbedtls_entropy_self_test(0) != 0);
+#endif
 
   mbedtls_gcm_init(&gcm_context);
   mbedtls_entropy_init(&entropy_context);

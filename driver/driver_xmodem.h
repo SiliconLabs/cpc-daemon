@@ -19,7 +19,8 @@
 #define DRIVER_XMODEM_H
 
 #include <stdbool.h>
-#include "misc/sl_status.h"
+
+#include "cpcd/sl_status.h"
 
 sl_status_t xmodem_send(const char   *image_file,
                         const char   *dev_name,

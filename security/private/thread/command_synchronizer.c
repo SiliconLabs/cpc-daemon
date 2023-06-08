@@ -17,8 +17,9 @@
 
 #include <pthread.h>
 
-#include "misc/logging.h"
-#include "misc/config.h"
+#include "cpcd/config.h"
+#include "cpcd/logging.h"
+
 #include "security/security.h"
 #include "security/private/thread/command_synchronizer.h"
 

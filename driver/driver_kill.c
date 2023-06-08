@@ -21,8 +21,9 @@
 
 #include <pthread.h>
 
+#include "cpcd/logging.h"
+
 #include "driver_kill.h"
-#include "misc/logging.h"
 
 static int kill_eventfd = -1;
 

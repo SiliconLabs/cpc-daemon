@@ -15,16 +15,17 @@
  *
  ******************************************************************************/
 
+#include <errno.h>
+#include <string.h>
+#include <sys/epoll.h>
+
+#include "cpcd/logging.h"
+#include "cpcd/sl_slist.h"
+#include "cpcd/utils.h"
+
 #include "epoll.h"
-#include "misc/logging.h"
-#include "misc/sl_slist.h"
-#include "misc/utils.h"
 #include "server_core/core/core.h"
 #include "server_core/server/server.h"
-
-#include <sys/epoll.h>
-#include <string.h>
-#include <errno.h>
 
 typedef struct {
   sl_slist_node_t node;

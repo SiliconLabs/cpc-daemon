@@ -21,8 +21,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "gpio.h"
-#include "logging.h"
+#include "cpcd/gpio.h"
+#include "cpcd/logging.h"
 
 static const char *tag = "gpiod";
 

@@ -24,8 +24,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#include "misc/board_controller.h"
-#include "misc/logging.h"
+#include "cpcd/board_controller.h"
+#include "cpcd/logging.h"
 
 void board_controller_get_config_vcom(const char *ip_address, unsigned int *baudrate, bool *flowcontrol)
 {

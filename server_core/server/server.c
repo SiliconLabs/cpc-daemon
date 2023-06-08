@@ -26,22 +26,22 @@
 #include <unistd.h>
 #include <signal.h>
 
-#include "misc/errno_codename.h"
-#include "misc/logging.h"
-#include "misc/config.h"
-#include "misc/utils.h"
-#include "misc/sl_slist.h"
-#include "security/security.h"
+#include "cpcd/config.h"
+#include "cpcd/event.h"
+#include "cpcd/exchange.h"
+#include "cpcd/logging.h"
+#include "cpcd/security.h"
+#include "cpcd/server_core.h"
+#include "cpcd/sl_slist.h"
+#include "cpcd/utils.h"
+
 #include "server_core/server/server.h"
 #include "server_core/server/server_internal.h"
 #include "server_core/server/server_ready_sync.h"
-#include "server_core/server_core.h"
 #include "server_core/system_endpoint/system_callbacks.h"
 #include "server_core/system_endpoint/system.h"
 #include "server_core/epoll/epoll.h"
 #include "server_core/core/core.h"
-#include "server_core/cpcd_exchange.h"
-#include "server_core/cpcd_event.h"
 #include "sl_cpc.h"
 #include "version.h"
 
@@ -52,6 +52,7 @@
 typedef struct {
   sl_slist_node_t node;
   uint8_t endpoint_id;
+  uint8_t tx_window_size;
   int fd_ctrl_data_socket;
 }pending_connection_list_item_t;
 
@@ -89,6 +90,7 @@ typedef struct {
 #if defined(ENABLE_ENCRYPTION)
   bool encrypted;
 #endif
+  uint8_t tx_window_size;
 }endpoint_control_block_t;
 
 /*******************************************************************************
@@ -124,6 +126,7 @@ static void server_process_epoll_fd_event_data_socket(epoll_private_data_t *priv
 static void server_process_epoll_fd_ep_connection_socket(epoll_private_data_t *private_data);
 static void server_process_epoll_fd_ep_data_socket(epoll_private_data_t *private_data);
 
+static void server_set_tx_window_size(uint8_t endpoint_id, uint8_t tx_window_size);
 static void server_open_endpoint_event_socket(uint8_t endpoint_number);
 static void server_handle_client_disconnected(uint8_t endpoint_number);
 static void server_handle_client_closed_ep_connection(int fd_data_socket, uint8_t endpoint_number);
@@ -344,7 +347,7 @@ static void server_process_epoll_fd_ctrl_connection_socket(epoll_private_data_t 
     ctrl_socket_private_data_list_item_t* new_item;
 
     /* Allocate resources for this new connection */
-    new_item = zalloc(sizeof *new_item);
+    new_item = zalloc(sizeof(*new_item));
     new_item->pid = -1;
 
     /* Register this new data socket to epoll set */
@@ -566,16 +569,17 @@ static void server_process_epoll_fd_ctrl_data_socket(epoll_private_data_t *priva
     case EXCHANGE_OPEN_ENDPOINT_QUERY:
       /* Client requested to open an endpoint socket*/
     {
-      TRACE_SERVER("Received an endpoint open query");
+      BUG_ON(buffer_len != sizeof(cpcd_exchange_buffer_t) + sizeof(uint8_t) + sizeof(bool));
 
-      BUG_ON(buffer_len != sizeof(cpcd_exchange_buffer_t) + sizeof(bool));
+      TRACE_SERVER("Received an open query for endpoint #%d", interface_buffer->endpoint_number);
 
       //Be careful when asked about opening the security endpoint...
       if (interface_buffer->endpoint_number == SL_CPC_ENDPOINT_SECURITY) {
         if (endpoints[SL_CPC_ENDPOINT_SECURITY].data_socket_epoll_private_data != NULL // Make sure only 1 client is connected (ie, the daemon' security thread)
             || config.use_encryption == false) {                                      // Make sure security is enabled
           // Reuse the same buffer to send a negative reply
-          *(bool*)(interface_buffer->payload) = false;
+          bool reply = false;
+          memcpy(&(interface_buffer->payload[1]), &reply, sizeof(bool));
 
           ssize_t ret = send(fd_ctrl_data_socket, interface_buffer, buffer_len, 0);
 
@@ -589,14 +593,31 @@ static void server_process_epoll_fd_ctrl_data_socket(epoll_private_data_t *priva
         }
       }
 
-      /* Add this connection to the pending connections list, we need to check the secondary if the endpoint is open */
-      /* This will be done in the server_process_pending_connections function */
-      pending_connection_list_item_t *pending_connection = zalloc(sizeof(pending_connection_list_item_t));
-      FATAL_ON(pending_connection == NULL);
+      pending_connection_list_item_t *entry;
+      bool found = false;
 
-      pending_connection->endpoint_id = interface_buffer->endpoint_number;
-      pending_connection->fd_ctrl_data_socket = fd_ctrl_data_socket;
-      sl_slist_push_back(&pending_connections, &pending_connection->node);
+      SL_SLIST_FOR_EACH_ENTRY(pending_connections, entry, pending_connection_list_item_t, node) {
+        if (entry->endpoint_id == interface_buffer->endpoint_number
+            && entry->fd_ctrl_data_socket == fd_ctrl_data_socket) {
+          TRACE_SERVER("Found an existing open endpoint query, skipping this one",
+                       interface_buffer->endpoint_number);
+          found = true;
+          break;
+        }
+      }
+
+      if (!found) {
+        // Add this connection to the pending connections list, we need
+        // to check the secondary if the endpoint is open. This will
+        // be done in the server_process_pending_connections function
+        pending_connection_list_item_t *pending_connection = zalloc(sizeof(pending_connection_list_item_t));
+        FATAL_ON(pending_connection == NULL);
+
+        pending_connection->endpoint_id = interface_buffer->endpoint_number;
+        pending_connection->tx_window_size = interface_buffer->payload[0];
+        pending_connection->fd_ctrl_data_socket = fd_ctrl_data_socket;
+        sl_slist_push_back(&pending_connections, &pending_connection->node);
+      }
     }
     break;
 
@@ -647,7 +668,8 @@ static void server_process_epoll_fd_ctrl_data_socket(epoll_private_data_t *priva
           }
         } else {
           /* Endpoint is about to be closed by a client */
-          int fd_data_socket = *(int *)interface_buffer->payload;
+          int fd_data_socket;
+          memcpy(&fd_data_socket, interface_buffer->payload, sizeof(fd_data_socket));
           bool fd_data_socket_closed = server_ep_find_close_socket_pair(fd_data_socket, -1, interface_buffer->endpoint_number);
 
           if (fd_data_socket_closed) {
@@ -688,14 +710,16 @@ static void server_process_epoll_fd_ctrl_data_socket(epoll_private_data_t *priva
     {
       bool can_connect = true;
       ctrl_socket_private_data_list_item_t* item;
-      pid_t library_pid =  *(pid_t*)interface_buffer->payload;
+      pid_t library_pid;
+
+      memcpy(&library_pid, interface_buffer->payload, sizeof(library_pid));
 
 #if !defined(UNIT_TESTING)
       SL_SLIST_FOR_EACH_ENTRY(ctrl_connections,
                               item,
                               ctrl_socket_private_data_list_item_t,
                               node){
-        if (library_pid ==  item->pid) {
+        if (library_pid == item->pid) {
           can_connect = false;
         }
       }
@@ -703,7 +727,7 @@ static void server_process_epoll_fd_ctrl_data_socket(epoll_private_data_t *priva
 
       // Set the control socket PID
       item = container_of(private_data, ctrl_socket_private_data_list_item_t, data_socket_epoll_private_data);
-      item->pid = *(pid_t*)interface_buffer->payload;
+      item->pid = library_pid;
 
       memcpy(interface_buffer->payload, &can_connect, sizeof(bool));
 
@@ -849,6 +873,12 @@ void server_process_pending_connections(void)
 #endif
       system_open_ep_step = SL_CPC_SYSTEM_OPEN_STEP_STATE_WAITING;
       sl_cpc_system_set_pending_connection(pending_connection->fd_ctrl_data_socket);
+
+      if (!server_is_endpoint_open(pending_connection->endpoint_id)) {
+        server_set_tx_window_size(pending_connection->endpoint_id,
+                                  pending_connection->tx_window_size);
+      }
+
       sl_cpc_system_cmd_property_get(property_get_single_endpoint_state_and_reply_to_pending_open_callback,
                                      (sl_cpc_property_id_t)(PROP_ENDPOINT_STATE_0 + pending_connection->endpoint_id),
                                      5,
@@ -973,8 +1003,10 @@ static void server_process_epoll_fd_ep_connection_socket(epoll_private_data_t *p
   encryption = endpoints[endpoint_number].encrypted;
 #endif
 
+  uint8_t tx_window_size = endpoints[endpoint_number].tx_window_size;
+
   /* Tell the core that this endpoint is open */
-  core_process_endpoint_change(endpoint_number, SL_CPC_STATE_OPEN, encryption);
+  core_process_endpoint_change(endpoint_number, SL_CPC_STATE_OPEN, encryption, tx_window_size);
   TRACE_SERVER("Told core to open ep#%u", endpoint_number);
 
   /* Acknowledge the user so that they can start using the endpoint */
@@ -989,7 +1021,7 @@ static void server_process_epoll_fd_ep_connection_socket(epoll_private_data_t *p
     /* Share the server endpoint data socket to the user. This allows us to
      * create a ctrl data/data socket pair when it's time to close the socket.
      * Which ultimately allows us to send a synchronized notification to the user. */
-    *((int *)buffer->payload) = new_data_socket;
+    memcpy(buffer->payload, &new_data_socket, sizeof(new_data_socket));
     FATAL_SYSCALL_ON(send(new_data_socket, buffer, buffer_len, 0) != (ssize_t)buffer_len);
     free(buffer);
   }
@@ -1095,11 +1127,8 @@ static void server_handle_client_closed_ep_connection(int fd_data_socket, uint8_
       /* Notify the client */
       server_handle_client_closed_ep_notify_close(item->data_socket_epoll_private_data.file_descriptor, endpoint_number);
 
-      /* Properly shutdown and close this socket on our side (it is on the client's side)*/
-      int ret = shutdown(fd_data_socket, SHUT_RDWR);
-      FATAL_SYSCALL_ON(ret < 0);
-
-      ret = close(fd_data_socket);
+      /* Properly close this socket on our side (it is on the client's side)*/
+      int ret = close(fd_data_socket);
       FATAL_SYSCALL_ON(ret < 0);
 
       /* Inform server and core that the endpoint lost a listener */
@@ -1182,7 +1211,7 @@ static bool server_handle_client_closed_ep_notify_close(int fd_data_socket, uint
 
         query_close->endpoint_number = endpoint_number;
         query_close->type = EXCHANGE_CLOSE_ENDPOINT_QUERY;
-        *((int *)query_close->payload) = fd_data_socket;
+        memcpy(query_close->payload, &fd_data_socket, sizeof(fd_data_socket));
 
         ret = send(item->fd_ctrl_data_socket, query_close, query_close_len, 0);
         if (ret == (ssize_t)query_close_len) {
@@ -1234,11 +1263,8 @@ static void server_handle_client_closed_ctrl_connection(int fd_data_socket)
       /* Remove the item from the list*/
       sl_slist_remove(&ctrl_connections, &item->node);
 
-      /* Properly shutdown and close this socket on our side (it is on the client's side)*/
-      int ret = shutdown(fd_data_socket, SHUT_RDWR);
-      FATAL_SYSCALL_ON(ret < 0);
-
-      ret = close(fd_data_socket);
+      /* Properly close this socket on our side (it is on the client's side)*/
+      int ret = close(fd_data_socket);
       FATAL_SYSCALL_ON(ret < 0);
 
       PRINT_INFO("Client disconnected");
@@ -1288,11 +1314,8 @@ static void server_handle_client_closed_event_connection(int fd_data_socket, uin
       /* Remove the item from the list*/
       sl_slist_remove(&endpoints[endpoint_number].event_data_socket_epoll_private_data, &item->node);
 
-      /* Properly shutdown and close this socket on our side (it is on the client's side)*/
-      int ret = shutdown(fd_data_socket, SHUT_RDWR);
-      FATAL_SYSCALL_ON(ret < 0);
-
-      ret = close(fd_data_socket);
+      /* Properly close this socket on our side (it is on the client's side)*/
+      int ret = close(fd_data_socket);
       FATAL_SYSCALL_ON(ret < 0);
 
       /* data connections items are malloced */
@@ -1321,6 +1344,11 @@ void server_set_endpoint_encryption(uint8_t endpoint_id, bool encryption_enabled
   (void)endpoint_id;
   (void)encryption_enabled;
 #endif
+}
+
+static void server_set_tx_window_size(uint8_t endpoint_id, uint8_t tx_window_size)
+{
+  endpoints[endpoint_id].tx_window_size = tx_window_size;
 }
 
 static void server_open_endpoint_event_socket(uint8_t endpoint_number)
@@ -1531,9 +1559,6 @@ void server_close_endpoint(uint8_t endpoint_number, bool error)
 
     /* Close the socket */
     {
-      ret = shutdown(item->data_socket_epoll_private_data.file_descriptor, SHUT_RDWR);
-      FATAL_SYSCALL_ON(ret < 0);
-
       ret = close(item->data_socket_epoll_private_data.file_descriptor);
       FATAL_SYSCALL_ON(ret < 0);
     }
@@ -1560,9 +1585,6 @@ void server_close_endpoint(uint8_t endpoint_number, bool error)
       epoll_unregister(&endpoints[endpoint_number].connection_socket_epoll_private_data);
 
       /* Close the connection socket */
-      ret = shutdown(fd_connection_socket, SHUT_RDWR);
-      FATAL_SYSCALL_ON(ret < 0);
-
       ret = close(fd_connection_socket);
       FATAL_SYSCALL_ON(ret < 0);
     }
@@ -1634,7 +1656,7 @@ sl_status_t server_push_data_to_endpoint(uint8_t endpoint_number, const uint8_t*
                       data_len,
                       MSG_DONTWAIT);
     if (wc < 0) {
-      TRACE_SERVER("send() failed with %s", ERRNO_CODENAME[errno]);
+      TRACE_SERVER("send() failed with %s", strerror(errno));
     }
 
     /* keep track of number of clients the data have been sent to */
@@ -1662,11 +1684,8 @@ sl_status_t server_push_data_to_endpoint(uint8_t endpoint_number, const uint8_t*
       /* Push close pair */
       server_ep_push_close_socket_pair(item->data_socket_epoll_private_data.file_descriptor, -1, endpoint_number);
 
-      /* Properly shutdown and close this socket on our side */
-      int ret = shutdown(item->data_socket_epoll_private_data.file_descriptor, SHUT_RDWR);
-      FATAL_SYSCALL_ON(ret < 0);
-
-      ret = close(item->data_socket_epoll_private_data.file_descriptor);
+      /* Properly close this socket on our side */
+      int ret = close(item->data_socket_epoll_private_data.file_descriptor);
       FATAL_SYSCALL_ON(ret < 0);
 
       /* Remove the item from the list*/
@@ -1735,7 +1754,7 @@ static int server_pull_data_from_data_socket(int fd_data_socket, uint8_t** buffe
   {
     rc = recv(fd_data_socket, buffer, (size_t)datagram_length, 0);
     if (rc < 0) {
-      TRACE_SERVER("recv() failed with %s", ERRNO_CODENAME[errno]);
+      TRACE_SERVER("recv() failed with %s", strerror(errno));
     }
 
     if (rc == 0 || (rc < 0 && errno == ECONNRESET)) {

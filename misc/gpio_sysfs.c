@@ -21,9 +21,9 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "gpio.h"
-#include "logging.h"
-#include "sleep.h"
+#include "cpcd/gpio.h"
+#include "cpcd/logging.h"
+#include "cpcd/sleep.h"
 
 static int get_fd(unsigned int gpio_pin);
 
@@ -48,28 +48,29 @@ static int export (unsigned int gpio_pin)
 {
   char buf[256];
   int ret;
+  uint32_t timeout;
 
   snprintf(buf, 256, "%d", gpio_pin);
   ret = simple_write("/sys/class/gpio/export", buf);
   FATAL_SYSCALL_ON(ret < 0);
 
-  for (int i = 0; i < 5; i++) {
-    // According to this post on stackexchange, this appears to be some sort of race condition bug.
-    // Adding a strategic delay immediately after the export operation solves the problem. On some
-    // occurrences, the 100ms delay was not enough, so handle the situation in a for loop to get
-    // better chances of success.
-    // https://raspberrypi.stackexchange.com/questions/23162/gpio-value-file-appears-with-wrong-permissions-momentarily
-    sleep_ms(100);
-
+  // According to this post on stackexchange, this appears to be some sort of race condition bug.
+  // Adding a strategic delay immediately after the export operation solves the problem. On some
+  // occurrences, the 100ms delay was not enough, so handle the situation in a for loop to get
+  // better chances of success.
+  // https://raspberrypi.stackexchange.com/questions/23162/gpio-value-file-appears-with-wrong-permissions-momentarily
+  timeout = 0;
+  for (;; ) {
     ret = get_fd(gpio_pin);
-    if (ret != -1) {
+    if (ret >= 0) {
       break;
-    } else {
-      FATAL_SYSCALL_ON(errno != EACCES);
     }
+    FATAL_SYSCALL_ON(errno != EACCES);
+    FATAL_ON(timeout > 1000);
+    sleep_ms(timeout + 100);
+    timeout += timeout + 100;
   }
 
-  FATAL_SYSCALL_ON(ret < 0);
   return ret;
 }
 

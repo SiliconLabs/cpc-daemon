@@ -18,14 +18,13 @@
 #ifndef SECURITY_KEYS_H
 #define SECURITY_KEYS_H
 
-#include "misc/sl_status.h"
-
-#include <mbedtls/ctr_drbg.h>
-
-#include <pthread.h>
-
 #include <stddef.h>
 #include <stdint.h>
+
+#include <mbedtls/ctr_drbg.h>
+#include <pthread.h>
+
+#include "cpcd/sl_status.h"
 
 #include "security/security.h"
 
