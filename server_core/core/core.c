@@ -238,8 +238,8 @@ static void core_compute_re_transmit_timeout(sl_cpc_endpoint_t *endpoint)
   struct timespec current_time;
   int64_t current_timestamp_ms;
   int64_t previous_timestamp_ms;
-  long round_trip_time_ms = 0;
-  long rto = 0;
+  uint32_t round_trip_time_ms = 0;
+  uint32_t rto = 0;
 
   const uint8_t k = 4; // This value is recommended by the Karn’s algorithm
 
@@ -250,15 +250,24 @@ static void core_compute_re_transmit_timeout(sl_cpc_endpoint_t *endpoint)
   current_timestamp_ms = (int64_t)(current_time.tv_sec) * 1000 + (int64_t)(current_time.tv_nsec / 1000000);
   previous_timestamp_ms = (int64_t)(endpoint->last_iframe_sent_timestamp.tv_sec) * 1000 + (int64_t)(endpoint->last_iframe_sent_timestamp.tv_nsec / 1000000);
 
-  if (current_timestamp_ms < previous_timestamp_ms) {
+  if (previous_timestamp_ms == 0) {
+    // Deal with the very unlikely scenario where the ACK is received before the tx_complete is executed
+    // Set the round trip time to a reasonable value
     round_trip_time_ms = 1;
   } else {
-    round_trip_time_ms = (long)(current_timestamp_ms - previous_timestamp_ms);
+    if (current_timestamp_ms < previous_timestamp_ms) {
+      round_trip_time_ms = 1;
+    } else {
+      int64_t tmp_rtt_ms = (current_timestamp_ms - previous_timestamp_ms);
+      FATAL_ON(tmp_rtt_ms < 0);
+      if (tmp_rtt_ms > SLI_CPC_MAX_ROUND_TRIP_TIME_MS) {
+        tmp_rtt_ms = SLI_CPC_MAX_ROUND_TRIP_TIME_MS;
+      }
+      round_trip_time_ms = (uint32_t) tmp_rtt_ms;
+    }
   }
 
-  TRACE_CORE("RTT on ep %d is %ldms", endpoint->id, round_trip_time_ms);
-
-  FATAL_ON(round_trip_time_ms < 0);
+  TRACE_CORE("RTT on ep %d is %lldms", endpoint->id, round_trip_time_ms);
 
   if (first_rtt_measurement) {
     endpoint->smoothed_rtt = round_trip_time_ms;
@@ -266,7 +275,7 @@ static void core_compute_re_transmit_timeout(sl_cpc_endpoint_t *endpoint)
     first_rtt_measurement = false;
   } else {
     // RTTVAR <- (1 - beta) * RTTVAR + beta * |SRTT - R'| where beta is 0.25
-    endpoint->rtt_variation = 3 * (endpoint->rtt_variation / 4) +  ABS(endpoint->smoothed_rtt - round_trip_time_ms) / 4;
+    endpoint->rtt_variation = 3 * (endpoint->rtt_variation / 4) +  (uint32_t) ABS((int32_t)endpoint->smoothed_rtt - (int32_t)round_trip_time_ms) / 4;
 
     // SRTT <- (1 - alpha) * SRTT + alpha * R' where alpha is 0.125
     endpoint->smoothed_rtt = 7 * (endpoint->smoothed_rtt / 8) + round_trip_time_ms / 8;
@@ -281,7 +290,7 @@ static void core_compute_re_transmit_timeout(sl_cpc_endpoint_t *endpoint)
 
   if (rto <= 0) {
     WARN("There was an issue during the re_transmit_timeout calculation for \
-          endpoint #(%d), RTO(%ld) <= 0, smoothed_rtt = %ld, rtt_variation = %ld",
+          endpoint #(%d), RTO(%u) <= 0, smoothed_rtt = %u, rtt_variation = %u",
          endpoint->id, rto, endpoint->smoothed_rtt, endpoint->rtt_variation);
     rto = SL_CPC_MIN_RE_TRANSMIT_TIMEOUT_MS;
   }
@@ -2021,7 +2030,8 @@ static void start_re_transmit_timer(sl_cpc_endpoint_t* endpoint, struct timespec
   FATAL_ON(fd_timer_private_data->file_descriptor < 0);
 
   struct itimerspec timeout_time = { .it_interval = { .tv_sec = 0, .tv_nsec = 0 },
-                                     .it_value    = { .tv_sec = ((offset_in_ms + endpoint->re_transmit_timeout_ms) / 1000), .tv_nsec = (((offset_in_ms + endpoint->re_transmit_timeout_ms) % 1000) * 1000000) } };
+                                     .it_value    = { .tv_sec = (signed)(((unsigned)offset_in_ms + endpoint->re_transmit_timeout_ms) / 1000),
+                                                      .tv_nsec = (signed)((((unsigned)offset_in_ms + endpoint->re_transmit_timeout_ms) % 1000) * 1000000) } };
 
   ret = timerfd_settime(fd_timer_private_data->file_descriptor,
                         0,

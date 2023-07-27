@@ -50,7 +50,7 @@ typedef struct endpoint {
   uint8_t configured_tx_window_size;
   uint8_t current_tx_window_space;
   uint8_t frames_count_re_transmit_queue;
-  long    re_transmit_timeout_ms;
+  uint32_t    re_transmit_timeout_ms;
   void*   re_transmit_timer_private_data;
   cpc_endpoint_state_t state;
   sl_slist_node_t *re_transmit_queue;
@@ -59,8 +59,8 @@ typedef struct endpoint {
   sl_cpc_on_data_reception_t on_iframe_data_reception;
   sl_cpc_poll_final_t poll_final;
   struct timespec last_iframe_sent_timestamp;
-  long smoothed_rtt;
-  long rtt_variation;
+  uint32_t smoothed_rtt;
+  uint32_t rtt_variation;
 #if defined(ENABLE_ENCRYPTION)
   bool encrypted;
   uint32_t frame_counter_tx;

@@ -50,7 +50,7 @@ void epoll_init(void)
 
 void epoll_register(epoll_private_data_t *private_data)
 {
-  struct epoll_event event = {};
+  struct epoll_event event;
   int ret;
 
   FATAL_ON(private_data == NULL);

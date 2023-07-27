@@ -720,7 +720,10 @@ void trace_frame(const char* string, const void* buffer, size_t len)
       log_string_length = 0;
     }
 
-    *(uint16_t*)(&log_string[log_string_length]) = byte_to_hex(frame[i]);
+    uint16_t hex_byte = byte_to_hex(frame[i]);
+    log_string[log_string_length] = (char)(hex_byte >> 8);
+    log_string[log_string_length + 1] = (char)hex_byte;
+
     log_string_length += sizeof(uint16_t);
     log_string[log_string_length++] = ':';
   }

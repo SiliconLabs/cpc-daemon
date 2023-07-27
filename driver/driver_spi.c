@@ -120,7 +120,7 @@ pthread_t driver_spi_init(int *fd_to_core,
 
   // Setup epoll
   {
-    struct epoll_event event = {};
+    struct epoll_event event;
 
     // Create the epoll set
     {

@@ -581,22 +581,29 @@ static void property_get_secondary_app_version_callback(sl_cpc_system_command_ha
 {
   (void) handle;
 
-  if ((status == SL_STATUS_OK || status == SL_STATUS_IN_PROGRESS) && property_id == PROP_SECONDARY_APP_VERSION) {
-    FATAL_ON(property_value == NULL);
-    FATAL_ON(property_length == 0);
+  if (status == SL_STATUS_OK || status == SL_STATUS_IN_PROGRESS) {
+    switch (property_id) {
+      case PROP_LAST_STATUS:
+        // Backwards compatibility for firmware upgrade
+        WARN("Cannot get Secondary APP version from obsolete firmware");
+        break;
+      case PROP_SECONDARY_APP_VERSION:
+        FATAL_ON(property_value == NULL);
+        FATAL_ON(property_length == 0);
+        BUG_ON(server_core_secondary_app_version);
 
-    const char *version = (const char *)property_value;
+        server_core_secondary_app_version = zalloc(property_length);
+        FATAL_SYSCALL_ON(server_core_secondary_app_version == NULL);
 
-    BUG_ON(server_core_secondary_app_version);
-
-    server_core_secondary_app_version = zalloc(property_length);
-    FATAL_SYSCALL_ON(server_core_secondary_app_version == NULL);
-
-    strncpy(server_core_secondary_app_version, version, property_length - 1);
-    server_core_secondary_app_version[property_length - 1] = '\0';
-    PRINT_INFO("Secondary APP v%s", server_core_secondary_app_version);
+        strncpy(server_core_secondary_app_version, property_value, property_length - 1);
+        server_core_secondary_app_version[property_length - 1] = '\0';
+        PRINT_INFO("Secondary APP v%s", server_core_secondary_app_version);
+        break;
+      default:
+        FATAL("Unexpected property_id (%d) during Secondary APP version request", property_id);
+    }
   } else {
-    WARN("Cannot get Secondary APP version (obsolete RCP firmware?)");
+    FATAL("Unable to get Secondary APP version");
   }
 
   secondary_app_version_received_or_not_available = true;
