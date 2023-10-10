@@ -23,7 +23,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "cpcd/endianess.h"
+#include "cpcd/endianness.h"
 
 #include "sl_cpc.h"
 
@@ -72,11 +72,6 @@ SL_ENUM(sl_cpc_reject_reason_t){
   HDLC_REJECT_ERROR
 };
 
-typedef union {
-  uint8_t bytes[2];
-  uint16_t uint16;
-}uint16_u;
-
 /***************************************************************************//**
  * Gets HDLC header flag value.
  *
@@ -110,12 +105,7 @@ static inline uint8_t hdlc_get_address(const uint8_t *header_buf)
  ******************************************************************************/
 static inline uint16_t hdlc_get_length(const uint8_t *header_buf)
 {
-  uint16_u u;
-
-  u.bytes[0] = header_buf[SLI_CPC_HDLC_LENGTH_POS];
-  u.bytes[1] = header_buf[SLI_CPC_HDLC_LENGTH_POS + 1];
-
-  return le16_to_cpu(u.uint16);
+  return u16_from_le(header_buf + SLI_CPC_HDLC_LENGTH_POS);
 }
 
 /***************************************************************************//**
@@ -139,12 +129,7 @@ static inline uint8_t hdlc_get_control(const uint8_t *header_buf)
  ******************************************************************************/
 static inline uint16_t hdlc_get_hcs(const uint8_t *header_buf)
 {
-  uint16_u u;
-
-  u.bytes[0] = header_buf[SLI_CPC_HDLC_HCS_POS];
-  u.bytes[1] = header_buf[SLI_CPC_HDLC_HCS_POS + 1];
-
-  return le16_to_cpu(u.uint16);
+  return u16_from_le(header_buf + SLI_CPC_HDLC_HCS_POS);
 }
 
 /***************************************************************************//**
@@ -156,12 +141,7 @@ static inline uint16_t hdlc_get_hcs(const uint8_t *header_buf)
  ******************************************************************************/
 static inline uint16_t hdlc_get_fcs(const uint8_t *payload_buf, uint16_t payload_length)
 {
-  uint16_u u;
-
-  u.bytes[0] = payload_buf[payload_length];
-  u.bytes[1] = payload_buf[payload_length + 1];
-
-  return le16_to_cpu(u.uint16);
+  return u16_from_le(payload_buf + payload_length);
 }
 
 /***************************************************************************//**

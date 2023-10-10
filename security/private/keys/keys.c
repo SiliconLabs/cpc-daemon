@@ -129,7 +129,7 @@ static void security_nonce_xfer_init(nonce_t *nonce, uint8_t endpoint_id, uint32
   }
 
   nonce->iv.endpoint_id = endpoint_id;
-  nonce->iv.frame_counter = cpu_to_le32(frame_counter);
+  u32_to_le(frame_counter, (uint8_t *)(&(nonce->iv.frame_counter)));
   TRACE_SECURITY("Locking nonce. Endpoint: %d, counter: 0x%x",
                  nonce->iv.endpoint_id, frame_counter);
 }

@@ -38,6 +38,7 @@
 #include "cpcd/config.h"
 #include "cpcd/logging.h"
 #include "cpcd/utils.h"
+#include "cpcd/endianness.h"
 
 #include "server_core/epoll/epoll.h"
 
@@ -646,22 +647,11 @@ void trace_no_timestamp(const char* string, ...)
   }
 }
 
-static uint16_t byte_to_hex(uint8_t byte)
+static inline void byte_to_hex(uint8_t byte, char str[2])
 {
-  static const char lut[16] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F' };
-
-  uint8_t low = byte & 0x0F;
-  uint8_t high = byte >> 4;
-
-  union {
-    uint16_t hex;
-    char nibble[2];
-  } hex_str;
-
-  hex_str.nibble[0] = lut[high];
-  hex_str.nibble[1] = lut[low];
-
-  return hex_str.hex;
+  static const char HEX[] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F' };
+  str[0] = HEX[byte >> 4];
+  str[1] = HEX[byte & 0x0F];
 }
 
 void trace_frame(const char* string, const void* buffer, size_t len)
@@ -720,11 +710,9 @@ void trace_frame(const char* string, const void* buffer, size_t len)
       log_string_length = 0;
     }
 
-    uint16_t hex_byte = byte_to_hex(frame[i]);
-    log_string[log_string_length] = (char)(hex_byte >> 8);
-    log_string[log_string_length + 1] = (char)hex_byte;
+    byte_to_hex(frame[i], log_string + log_string_length);
+    log_string_length += 2;
 
-    log_string_length += sizeof(uint16_t);
     log_string[log_string_length++] = ':';
   }
 

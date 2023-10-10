@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 
 project(cpcd
-  VERSION "4.3.1.0"
+  VERSION "4.3.2.0"
   LANGUAGES C)
 set(CPC_LIBRARY_API_VERSION "3")
 set(CPC_PROTOCOL_VERSION "4")
@@ -54,7 +54,7 @@ endif()
 
 find_path(Linux_INCLUDE_DIR "linux/version.h")
 if(NOT Linux_INCLUDE_DIR)
-  message(FATAL_ERROR "Linux headers not found")
+  message(WARNING "Linux headers not found")
 endif()
 
 set(GIT_SHA1 "Unknown")

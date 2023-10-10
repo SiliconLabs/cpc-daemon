@@ -476,7 +476,7 @@ typedef struct {
  * |                                                               |
  * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
  */
-typedef struct {
+typedef struct __attribute__((packed)) {
   sl_cpc_system_cmd_id_t command_id;   ///< Identifier of the command.
   uint8_t                command_seq;  ///< Command sequence number
   uint16_t               length;       ///< Length of the payload in bytes.
@@ -497,7 +497,7 @@ typedef struct {
  * |                                                               |
  * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
  */
-typedef struct {
+typedef struct __attribute__((packed)) {
   sl_cpc_property_id_t property_id; ///< Identifier of the property.
   uint8_t              payload[];   ///< Property value.
 } sl_cpc_system_property_cmd_t;

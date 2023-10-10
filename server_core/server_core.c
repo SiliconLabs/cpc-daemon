@@ -29,6 +29,7 @@
 #include <signal.h>
 
 #include "cpcd/config.h"
+#include "cpcd/endianness.h"
 #include "cpcd/logging.h"
 #include "cpcd/modes.h"
 #include "cpcd/security.h"
@@ -480,7 +481,7 @@ static void property_get_capabilities_callback(sl_cpc_system_command_handle_t *h
   FATAL_ON(status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS);
   FATAL_ON(property_value == NULL || property_length != sizeof(uint32_t));
 
-  capabilities = *((uint32_t *)property_value);
+  capabilities = u32_from_le((const uint8_t *)property_value);
 
   if (capabilities & CPC_CAPABILITIES_SECURITY_ENDPOINT_MASK) {
     TRACE_RESET("Received capability : Security endpoint");
@@ -514,7 +515,7 @@ static void property_get_rx_capability_callback(sl_cpc_system_command_handle_t *
   FATAL_ON(property_value == NULL || property_length != sizeof(uint16_t));
 
   TRACE_RESET("Received RX capability of %u bytes", *((uint16_t *)property_value));
-  rx_capability = *((uint16_t *)property_value);
+  rx_capability = u16_from_le((const uint8_t *)property_value);
   rx_capability_received = true;
 
   PRINT_INFO("RX capability is %u bytes", rx_capability);
@@ -536,7 +537,8 @@ static void property_get_secondary_bootloader_info(sl_cpc_system_command_handle_
     //  [0]: bootloader type
     //  [1]: version (unused for now)
     //  [2]: capability mask (unused for now)
-    server_core_secondary_bootloader_type = ((uint32_t*)property_value)[0];
+    server_core_secondary_bootloader_type = u32_from_le((const uint8_t *)property_value + 0);
+
     BUG_ON(server_core_secondary_bootloader_type >= SL_CPC_BOOTLOADER_UNKNOWN);
 
     PRINT_INFO("Secondary bootloader: %s",
@@ -558,16 +560,19 @@ static void property_get_secondary_cpc_version_callback(sl_cpc_system_command_ha
                                                         size_t property_length,
                                                         sl_status_t status)
 {
-  (void) handle;
-
   uint32_t version[3];
-  memcpy(version, property_value, 3 * sizeof(uint32_t));
+
+  (void) handle;
 
   if ( (property_id != PROP_SECONDARY_CPC_VERSION)
        || (status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS)
-       || (property_value == NULL || property_length != 3 * sizeof(uint32_t))) {
+       || (property_value == NULL || property_length != sizeof(version))) {
     FATAL("Cannot get Secondary CPC version (obsolete RCP firmware?)");
   }
+
+  version[0] = u32_from_le((const uint8_t *)property_value + 0);
+  version[1] = u32_from_le((const uint8_t *)property_value + 4);
+  version[2] = u32_from_le((const uint8_t *)property_value + 8);
 
   PRINT_INFO("Secondary CPC v%d.%d.%d", version[0], version[1], version[2]);
   secondary_cpc_version_received = true;
@@ -590,7 +595,7 @@ static void property_get_secondary_app_version_callback(sl_cpc_system_command_ha
       case PROP_SECONDARY_APP_VERSION:
         FATAL_ON(property_value == NULL);
         FATAL_ON(property_length == 0);
-        BUG_ON(server_core_secondary_app_version);
+        BUG_ON(server_core_secondary_app_version != NULL);
 
         server_core_secondary_app_version = zalloc(property_length);
         FATAL_SYSCALL_ON(server_core_secondary_app_version == NULL);
@@ -622,8 +627,7 @@ static void property_get_secondary_bus_bitrate_callback(sl_cpc_system_command_ha
     FATAL_ON(property_value == NULL);
     FATAL_ON(property_length != sizeof(uint32_t));
 
-    memcpy(&bus_bitrate, property_value, sizeof(uint32_t));
-
+    bus_bitrate = u32_from_le((const uint8_t *)property_value);
     PRINT_INFO("Secondary bus bitrate is %d", bus_bitrate);
 
     if (config.bus == UART && bus_bitrate != config.uart_baudrate) {
@@ -651,7 +655,7 @@ static void property_get_secondary_bus_max_bitrate_callback(sl_cpc_system_comman
     FATAL_ON(property_value == NULL);
     FATAL_ON(property_length != sizeof(uint32_t));
 
-    memcpy(&max_bus_bitrate, property_value, sizeof(uint32_t));
+    max_bus_bitrate = u32_from_le((const uint8_t *)property_value);
 
     if (config.bus == SPI) {
       PRINT_INFO("Secondary max bus bitrate is %d", max_bus_bitrate);
@@ -686,15 +690,13 @@ static void property_get_protocol_version_callback(sl_cpc_system_command_handle_
 {
   (void) handle;
 
-  uint8_t* version = (uint8_t*)property_value;
-
   if ((property_id != PROP_PROTOCOL_VERSION)
       || (status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS)
       || (property_value == NULL || property_length != sizeof(uint8_t))) {
     FATAL("Cannot get Secondary Protocol version (obsolete RCP firmware?)");
   }
 
-  server_core_secondary_protocol_version = *version;
+  server_core_secondary_protocol_version = *(const uint8_t *)property_value;
   PRINT_INFO("Secondary Protocol v%d", server_core_secondary_protocol_version);
 
   protocol_version_received = true;

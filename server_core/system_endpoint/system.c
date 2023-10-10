@@ -21,6 +21,7 @@
 #include <unistd.h>
 
 #include "cpcd/config.h"
+#include "cpcd/endianness.h"
 #include "cpcd/logging.h"
 #include "cpcd/server_core.h"
 #include "cpcd/utils.h"
@@ -315,7 +316,7 @@ void sl_cpc_system_cmd_noop(sl_cpc_system_noop_cmd_callback_t on_noop_reply,
 
     tx_command->command_id = CMD_SYSTEM_NOOP;
     tx_command->command_seq = command_handle->command_seq;
-    tx_command->length = 0;
+    u16_to_le(0, (uint8_t *)(&tx_command->length));
   }
 
   write_command(command_handle);
@@ -350,7 +351,7 @@ void sl_cpc_system_cmd_reboot(sl_cpc_system_reset_cmd_callback_t on_reset_reply,
 
     tx_command->command_id = CMD_SYSTEM_RESET;
     tx_command->command_seq = command_handle->command_seq;
-    tx_command->length = 0;
+    u16_to_le(0, (uint8_t *)(&tx_command->length));
   }
 
   write_command(command_handle);
@@ -546,8 +547,8 @@ void sl_cpc_system_cmd_property_get(sl_cpc_system_property_get_set_cmd_callback_
 
     tx_command->command_id = CMD_SYSTEM_PROP_VALUE_GET;
     tx_command->command_seq = command_handle->command_seq;
-    tx_property_command->property_id = cpu_to_le32(property_id);
-    tx_command->length = sizeof(sl_cpc_property_id_t);
+    u32_to_le(property_id, (uint8_t *)(&tx_property_command->property_id));
+    u16_to_le(sizeof(property_id), (uint8_t *)(&tx_command->length));
   }
 
   write_command(command_handle);
@@ -592,7 +593,7 @@ void sl_cpc_system_cmd_property_set(sl_cpc_system_property_get_set_cmd_callback_
 
     tx_command->command_id = CMD_SYSTEM_PROP_VALUE_SET;
     tx_command->command_seq = command_handle->command_seq;
-    tx_property_command->property_id = cpu_to_le32(property_id);
+    u32_to_le(property_id, (uint8_t *)(&tx_property_command->property_id));
 
     /* Adapt the property value in function of the endianess of the system.
      * We make the assumption here that if a property's length value is 2, 4 or 8 then
@@ -611,25 +612,16 @@ void sl_cpc_system_cmd_property_set(sl_cpc_system_property_get_set_cmd_callback_
           break;
 
         case 2:
-        {
-          uint16_t le16 = cpu_to_le16p((uint16_t*)value);
-          memcpy(tx_property_command->payload, &le16, 2);
-        }
-        break;
+          u16_to_le(*(const uint16_t *)value, tx_property_command->payload);
+          break;
 
         case 4:
-        {
-          uint32_t le32 = cpu_to_le32p((uint32_t*)value);
-          memcpy(tx_property_command->payload, &le32, 4);
-        }
-        break;
+          u32_to_le(*(const uint32_t *)value, tx_property_command->payload);
+          break;
 
         case 8:
-        {
-          uint64_t le64 = cpu_to_le64p((uint64_t*)value);
-          memcpy(tx_property_command->payload, &le64, 8);
-        }
-        break;
+          u64_to_le(*(const uint64_t *)value, tx_property_command->payload);
+          break;
 
         default:
           memcpy(tx_property_command->payload, value, value_length);
@@ -637,7 +629,7 @@ void sl_cpc_system_cmd_property_set(sl_cpc_system_property_get_set_cmd_callback_
       }
     }
 
-    tx_command->length = (uint8_t)(sizeof(sl_cpc_property_id_t) + value_length);
+    u16_to_le((uint16_t)(sizeof(property_id) + value_length), (uint8_t *)(&tx_command->length));
   }
 
   write_command(command_handle);
@@ -672,21 +664,22 @@ static void on_final_reset(sl_cpc_system_command_handle_t * command_handle,
                            const uint8_t *system_cmd_payload,
                            size_t system_cmd_payload_length)
 {
+  sl_cpc_system_status_t reset_status;
+
   TRACE_SYSTEM("on_final_reset()");
 
   ignore_reset_reason = false;
 
-  // Deal with endianness of the returned status since its a 32bit value.
-  sl_cpc_system_status_t reset_status_le, reset_status_cpu;
+  if (system_cmd_payload_length < sizeof(reset_status)) {
+    WARN("on_final_reset: payload too short");
+    return;
+  }
 
-  reset_status_le = 0;
-  memcpy(&reset_status_le, system_cmd_payload,
-         min(system_cmd_payload_length, sizeof(reset_status_le)));
-  reset_status_cpu = le32_to_cpu(reset_status_le);
+  reset_status = u32_from_le(system_cmd_payload);
 
   ((sl_cpc_system_reset_cmd_callback_t)command_handle->on_final)(command_handle,
                                                                  command_handle->error_status,
-                                                                 reset_status_cpu);
+                                                                 reset_status);
 }
 
 /***************************************************************************//**
@@ -705,9 +698,13 @@ static void on_final_property_is(sl_cpc_system_command_handle_t * command_handle
   sl_cpc_system_property_cmd_t system_property_cmd;
   const uint8_t *system_property_cmd_payload;
 
-  memset(&system_property_cmd, 0, sizeof(system_property_cmd));
-  memcpy(&system_property_cmd, system_cmd_payload,
-         min(system_cmd_payload_length, sizeof(system_property_cmd)));
+  if (system_cmd_payload_length < sizeof(system_property_cmd)) {
+    WARN("Payload is too short for system_property_cmd");
+    return;
+  }
+
+  system_property_cmd.property_id = u32_from_le(system_cmd_payload);
+
   system_property_cmd_payload = system_cmd_payload + sizeof(system_property_cmd);
 
   // Make sure only certain properties are allowed as u-frame (non-encrypted)
@@ -738,14 +735,10 @@ static void on_final_property_is(sl_cpc_system_command_handle_t * command_handle
     }
   }
 
-  /* Deal with endianness of the returned property-id since its a 32bit value. */
-  sl_cpc_property_id_t property_id_le = system_property_cmd.property_id;
-  sl_cpc_property_id_t property_id_cpu = le32_to_cpu(property_id_le);
-
   size_t value_length = system_cmd->length - sizeof(sl_cpc_system_property_cmd_t);
 
   callback(command_handle,
-           property_id_cpu,
+           system_property_cmd.property_id,
            (uint8_t *)system_property_cmd_payload, /* discard const qualifier */
            value_length,
            command_handle->error_status);
@@ -841,6 +834,9 @@ static void on_reply(uint8_t endpoint_id,
 
 static void on_uframe_receive(uint8_t endpoint_id, const void* data, size_t data_len)
 {
+  const uint8_t *u8_data;
+  sl_cpc_system_cmd_t system_cmd;
+
   FATAL_ON(endpoint_id != SL_CPC_ENDPOINT_SYSTEM);
 
   TRACE_SYSTEM("Unsolicited uframe received");
@@ -854,23 +850,44 @@ static void on_uframe_receive(uint8_t endpoint_id, const void* data, size_t data
     return;
   }
 
-  sl_cpc_system_cmd_t *reply = (sl_cpc_system_cmd_t *)data;
+  u8_data = (const uint8_t *)data;
 
-  if (reply->length != data_len - sizeof(sl_cpc_system_cmd_t)) {
+  system_cmd.command_id = u8_data[0];
+  system_cmd.command_seq = u8_data[1];
+  system_cmd.length = u16_from_le(u8_data + 2);
+  u8_data += sizeof(system_cmd);
+  data_len -= sizeof(system_cmd);
+
+  if (system_cmd.length != data_len) {
     WARN("Invalid system endpoint command length, ignoring frame");
     return;
   }
 
-  if (reply->command_id == CMD_SYSTEM_PROP_VALUE_IS) {
-    sl_cpc_system_property_cmd_t *property = (sl_cpc_system_property_cmd_t*) reply->payload;
+  if (system_cmd.command_id == CMD_SYSTEM_PROP_VALUE_IS) {
+    sl_cpc_system_property_cmd_t system_property_cmd;
 
-    if (property->property_id == PROP_LAST_STATUS) {
+    if (data_len < sizeof(system_property_cmd)) {
+      WARN("Payload too short for system_property_cmd");
+      return;
+    }
+
+    system_property_cmd.property_id = u32_from_le(u8_data);
+    u8_data += 4;
+    data_len -= 4;
+
+    if (system_property_cmd.property_id == PROP_LAST_STATUS) {
+      sl_cpc_system_status_t system_status;
       prop_last_status_callback_list_item_t *item;
 
-      SL_SLIST_FOR_EACH_ENTRY(prop_last_status_callbacks, item, prop_last_status_callback_list_item_t, node) {
-        sl_cpc_system_status_t* status = (sl_cpc_system_status_t*) property->payload;
+      if (data_len < sizeof(system_status)) {
+        WARN("Payload too short for system_status");
+        return;
+      }
 
-        item->callback(*status);
+      system_status = u32_from_le(u8_data);
+
+      SL_SLIST_FOR_EACH_ENTRY(prop_last_status_callbacks, item, prop_last_status_callback_list_item_t, node) {
+        item->callback(system_status);
       }
     }
   }
@@ -878,6 +895,9 @@ static void on_uframe_receive(uint8_t endpoint_id, const void* data, size_t data
 
 static void on_iframe_unsolicited(uint8_t endpoint_id, const void* data, size_t data_len)
 {
+  const uint8_t *u8_data;
+  sl_cpc_system_cmd_t system_cmd;
+
   FATAL_ON(endpoint_id != SL_CPC_ENDPOINT_SYSTEM);
 
   TRACE_SYSTEM("Unsolicited i-frame received");
@@ -887,16 +907,47 @@ static void on_iframe_unsolicited(uint8_t endpoint_id, const void* data, size_t 
     return;
   }
 
-  sl_cpc_system_cmd_t *reply = (sl_cpc_system_cmd_t *)data;
+  if (data_len < sizeof(system_cmd)) {
+    WARN("System endpoint received a iframe with not enough bytes to properly parse");
+    return;
+  }
 
-  FATAL_ON(reply->length != data_len - sizeof(sl_cpc_system_cmd_t));
+  u8_data = (const uint8_t *)data;
 
-  if (reply->command_id == CMD_SYSTEM_PROP_VALUE_IS) {
-    sl_cpc_system_property_cmd_t *property = (sl_cpc_system_property_cmd_t*) reply->payload;
+  system_cmd.command_id = u8_data[0];
+  system_cmd.command_seq = u8_data[1];
+  system_cmd.length = u16_from_le(u8_data + 2);
+  u8_data += sizeof(system_cmd);
+  data_len -= sizeof(system_cmd);
 
-    if (property->property_id >= PROP_ENDPOINT_STATE_0 && property->property_id <= PROP_ENDPOINT_STATE_255) {
-      uint8_t closed_endpoint_id = PROPERTY_ID_TO_EP_ID(property->property_id);
-      cpc_endpoint_state_t endpoint_state = core_state_mapper(*(uint8_t*)property->payload);
+  if (system_cmd.length != data_len) {
+    WARN("Invalid system endpoint command length, ignoring frame");
+    return;
+  }
+
+  if (system_cmd.command_id == CMD_SYSTEM_PROP_VALUE_IS) {
+    sl_cpc_system_property_cmd_t system_property_cmd;
+
+    if (data_len < sizeof(system_property_cmd)) {
+      WARN("Payload too short for system_property_cmd");
+      return;
+    }
+
+    system_property_cmd.property_id = u32_from_le(u8_data);
+    u8_data += 4;
+    data_len -= 4;
+
+    if (system_property_cmd.property_id >= PROP_ENDPOINT_STATE_0 && system_property_cmd.property_id <= PROP_ENDPOINT_STATE_255) {
+      uint8_t closed_endpoint_id;
+      cpc_endpoint_state_t endpoint_state;
+
+      closed_endpoint_id = PROPERTY_ID_TO_EP_ID(system_property_cmd.property_id);
+
+      if (data_len < 1) {
+        WARN("Payload too short for endpoint_state");
+        return;
+      }
+      endpoint_state = core_state_mapper(u8_data[0]);
 
       if (endpoint_state == SL_CPC_STATE_CLOSING) {
         TRACE_SYSTEM("Secondary closed the endpoint #%d", closed_endpoint_id);
@@ -909,7 +960,7 @@ static void on_iframe_unsolicited(uint8_t endpoint_id, const void* data, size_t 
           sl_cpc_system_cmd_property_set(reply_to_closing_endpoint_on_secondary_async_callback,
                                          ENDPOINT_CLOSE_RETRIES,
                                          ENDPOINT_CLOSE_RETRY_TIMEOUT,
-                                         property->property_id,
+                                         system_property_cmd.property_id,
                                          &endpoint_state,
                                          sizeof(cpc_endpoint_state_t),
                                          false);
@@ -918,7 +969,7 @@ static void on_iframe_unsolicited(uint8_t endpoint_id, const void* data, size_t 
           sl_cpc_system_cmd_property_set(reply_to_closing_endpoint_on_secondary_callback,
                                          ENDPOINT_CLOSE_RETRIES,
                                          ENDPOINT_CLOSE_RETRY_TIMEOUT,
-                                         property->property_id,
+                                         system_property_cmd.property_id,
                                          &endpoint_state,
                                          sizeof(cpc_endpoint_state_t),
                                          false);

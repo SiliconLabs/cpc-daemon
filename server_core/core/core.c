@@ -24,6 +24,7 @@
 #include <stdbool.h>
 #include <errno.h>
 #include <sys/time.h>
+#include <inttypes.h>
 
 #include "cpcd/config.h"
 #include "cpcd/exchange.h"
@@ -267,7 +268,7 @@ static void core_compute_re_transmit_timeout(sl_cpc_endpoint_t *endpoint)
     }
   }
 
-  TRACE_CORE("RTT on ep %d is %lldms", endpoint->id, round_trip_time_ms);
+  TRACE_CORE("RTT on ep %d is %" PRIu32 "ms", endpoint->id, round_trip_time_ms);
 
   if (first_rtt_measurement) {
     endpoint->smoothed_rtt = round_trip_time_ms;
@@ -290,7 +291,7 @@ static void core_compute_re_transmit_timeout(sl_cpc_endpoint_t *endpoint)
 
   if (rto <= 0) {
     WARN("There was an issue during the re_transmit_timeout calculation for \
-          endpoint #(%d), RTO(%u) <= 0, smoothed_rtt = %u, rtt_variation = %u",
+          endpoint #(%" PRIu8 "), RTO(%" PRIu32 ") <= 0, smoothed_rtt = %" PRIu32 ", rtt_variation = %" PRIu32 "",
          endpoint->id, rto, endpoint->smoothed_rtt, endpoint->rtt_variation);
     rto = SL_CPC_MIN_RE_TRANSMIT_TIMEOUT_MS;
   }
@@ -302,7 +303,7 @@ static void core_compute_re_transmit_timeout(sl_cpc_endpoint_t *endpoint)
   }
 
   endpoint->re_transmit_timeout_ms = rto;
-  TRACE_CORE("RTO on ep %d is calculated to %ldms", endpoint->id, endpoint->re_transmit_timeout_ms);
+  TRACE_CORE("RTO on ep %" PRIu8 " is calculated to %" PRIu32 "ms", endpoint->id, endpoint->re_transmit_timeout_ms);
 }
 
 #if defined(ENABLE_ENCRYPTION)
@@ -1407,7 +1408,6 @@ static void process_ack(sl_cpc_endpoint_t *endpoint, uint8_t ack)
 static void transmit_ack(sl_cpc_endpoint_t *endpoint)
 {
   sl_cpc_buffer_handle_t *handle;
-  sl_cpc_transmit_queue_item_t *item;
 
   // Get new frame handler
   handle = (sl_cpc_buffer_handle_t*) zalloc(sizeof(sl_cpc_buffer_handle_t));
@@ -1419,13 +1419,7 @@ static void transmit_ack(sl_cpc_endpoint_t *endpoint)
   // Set ACK number in the supervisory control byte
   handle->control = hdlc_create_control_supervisory(endpoint->ack, SLI_CPC_HDLC_ACK_SUPERVISORY_FUNCTION);
 
-  // Put frame in Tx Q so that it can be transmitted by CPC Core later
-  item = (sl_cpc_transmit_queue_item_t*) zalloc(sizeof(sl_cpc_transmit_queue_item_t));
-  FATAL_SYSCALL_ON(item == NULL);
-
-  item->handle = handle;
-
-  sl_slist_push_back(&transmit_queue, &item->node);
+  push_back_buffer_handle(&transmit_queue, handle);
   TRACE_CORE("Endpoint #%d sent ACK: %d", endpoint->id, endpoint->ack);
 
   core_process_transmit_queue();
@@ -1479,7 +1473,6 @@ static void transmit_reject(sl_cpc_endpoint_t *endpoint,
 {
   uint16_t fcs;
   sl_cpc_buffer_handle_t *handle;
-  sl_cpc_transmit_queue_item_t *item;
 
   handle = (sl_cpc_buffer_handle_t*) zalloc(sizeof(sl_cpc_buffer_handle_t));
   FATAL_ON(handle == NULL);
@@ -1501,13 +1494,7 @@ static void transmit_reject(sl_cpc_endpoint_t *endpoint,
   handle->fcs[0] = (uint8_t)fcs;
   handle->fcs[1] = (uint8_t)(fcs >> 8);
 
-  // Put frame in Tx Q so that it can be transmitted by CPC Core later
-  item = (sl_cpc_transmit_queue_item_t*) zalloc(sizeof(sl_cpc_transmit_queue_item_t));
-  FATAL_SYSCALL_ON(item == NULL);
-
-  item->handle = handle;
-
-  sl_slist_push_back(&transmit_queue, &item->node);
+  push_back_buffer_handle(&transmit_queue, handle);
 
   if (endpoint != NULL) {
     switch (reason) {
