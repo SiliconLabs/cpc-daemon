@@ -18,9 +18,10 @@
 #include <errno.h>
 #include <stdbool.h>
 
-#include "misc/config.h"
-#include "misc/logging.h"
-#include "misc/sleep.h"
+#include "cpcd/config.h"
+#include "cpcd/logging.h"
+#include "cpcd/sleep.h"
+
 #include "server_core/server/server_ready_sync.h"
 #include "security/private/thread/security_thread.h"
 #include "security/private/thread/command_synchronizer.h"

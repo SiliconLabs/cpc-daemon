@@ -35,11 +35,16 @@
 #include <dirent.h>
 #include <libgen.h>
 
-#include "sleep.h"
-#include "config.h"
-#include "logging.h"
+#include "cpcd/config.h"
+#include "cpcd/logging.h"
+#include "cpcd/sleep.h"
+#include "cpcd/utils.h"
+
 #include "version.h"
-#include "utils.h"
+
+#ifndef DEFAULT_INSTANCE_NAME
+  #define DEFAULT_INSTANCE_NAME "cpcd_0"
+#endif
 
 /*******************************************************************************
  **********************  DATA TYPES   ******************************************
@@ -85,20 +90,16 @@ config_t config = {
 
   // SPI config
   .spi_file = NULL,
-  .spi_bitrate = 1000000,
-  .spi_mode = SPI_MODE_0,
-  .spi_bit_per_word = 8,
-  .spi_cs_chip = "gpiochip0",
-  .spi_cs_pin = 24,
-  .spi_irq_chip = "gpiochip0",
-  .spi_irq_pin = 23,
+  .spi_bitrate = 0,
+  .spi_irq_chip = NULL,
+  .spi_irq_pin = 0,
 
   // Firmware update
-  .fu_reset_chip = "gpiochip0",
-  .fu_spi_reset_pin = 0,
-  .fu_wake_chip = "gpiochip0",
-  .fu_spi_wake_pin = 25,
-  .fu_recovery_enabled = false,
+  .fu_reset_chip = NULL,
+  .fu_spi_reset_pin = -1,
+  .fu_wake_chip = NULL,
+  .fu_spi_wake_pin = -1,
+  .fu_recovery_pins_enabled = false,
   .fu_connect_to_bootloader = false,
   .fu_enter_bootloader = false,
   .fu_file = NULL,
@@ -167,22 +168,6 @@ static const char* config_bus_to_str(bus_t value)
   }
 }
 
-static const char* config_spi_mode_to_str(unsigned int value)
-{
-  switch (value) {
-    case SPI_MODE_0:
-      return "SPI_MODE_0";
-    case SPI_MODE_1:
-      return "SPI_MODE_1";
-    case SPI_MODE_2:
-      return "SPI_MODE_2";
-    case SPI_MODE_3:
-      return "SPI_MODE_3";
-    default:
-      FATAL("spi mode value not supported (%d)", value);
-  }
-}
-
 static const char* config_operation_mode_to_str(operation_mode_t value)
 {
   switch (value) {
@@ -207,41 +192,52 @@ static const char* config_operation_mode_to_str(operation_mode_t value)
 
 #define CONFIG_PREFIX_LEN(variable) (strlen(#variable) + 1)
 
-#define CONFIG_PRINT_STR(value)                                           \
-  do {                                                                    \
-    PRINT_INFO("%s = %s", &(#value)[print_offset], config_to_str(value)); \
-    run_time_total_size += (uint32_t)sizeof(value);                       \
+#define CONFIG_PRINT_SILENCE(value)                 \
+  do {                                              \
+    run_time_total_size += (uint32_t)sizeof(value); \
   } while (0)
 
-#define CONFIG_PRINT_BOOL_TO_STR(value)                                        \
-  do {                                                                         \
-    PRINT_INFO("%s = %s", &(#value)[print_offset], config_bool_to_str(value)); \
-    run_time_total_size += (uint32_t)sizeof(value);                            \
-  } while (0)
-
-#define CONFIG_PRINT_OPERATION_MODE_TO_STR(value)                                        \
-  do {                                                                                   \
-    PRINT_INFO("%s = %s", &(#value)[print_offset], config_operation_mode_to_str(value)); \
-    run_time_total_size += (uint32_t)sizeof(value);                                      \
-  } while (0)
-
-#define CONFIG_PRINT_BUS_TO_STR(value)                                        \
+#define CONFIG_PRINT_STR_COND(value, cond)                                    \
   do {                                                                        \
-    PRINT_INFO("%s = %s", &(#value)[print_offset], config_bus_to_str(value)); \
+    if (cond && value) {                                                      \
+      PRINT_INFO("  %s = %s", &(#value)[print_offset], config_to_str(value)); \
+    }                                                                         \
     run_time_total_size += (uint32_t)sizeof(value);                           \
   } while (0)
 
-#define CONFIG_PRINT_SPI_MODE_TO_STR(value)                                        \
+#define CONFIG_PRINT_STR(value) CONFIG_PRINT_STR_COND(value, true)
+
+#define CONFIG_PRINT_BOOL_TO_STR_COND(value, cond)                                 \
   do {                                                                             \
-    PRINT_INFO("%s = %s", &(#value)[print_offset], config_spi_mode_to_str(value)); \
+    if (cond) {                                                                    \
+      PRINT_INFO("  %s = %s", &(#value)[print_offset], config_bool_to_str(value)); \
+    }                                                                              \
     run_time_total_size += (uint32_t)sizeof(value);                                \
   } while (0)
 
-#define CONFIG_PRINT_DEC(value)                            \
-  do {                                                     \
-    PRINT_INFO("%s = %d", &(#value)[print_offset], value); \
-    run_time_total_size += (uint32_t)sizeof(value);        \
+#define CONFIG_PRINT_BOOL_TO_STR(value) CONFIG_PRINT_BOOL_TO_STR_COND(value, true)
+
+#define CONFIG_PRINT_OPERATION_MODE_TO_STR(value)                                          \
+  do {                                                                                     \
+    PRINT_INFO("  %s = %s", &(#value)[print_offset], config_operation_mode_to_str(value)); \
+    run_time_total_size += (uint32_t)sizeof(value);                                        \
   } while (0)
+
+#define CONFIG_PRINT_BUS_TO_STR(value)                                          \
+  do {                                                                          \
+    PRINT_INFO("  %s = %s", &(#value)[print_offset], config_bus_to_str(value)); \
+    run_time_total_size += (uint32_t)sizeof(value);                             \
+  } while (0)
+
+#define CONFIG_PRINT_DEC_COND(value, cond)                     \
+  do {                                                         \
+    if (cond) {                                                \
+      PRINT_INFO("  %s = %d", &(#value)[print_offset], value); \
+    }                                                          \
+    run_time_total_size += (uint32_t)sizeof(value);            \
+  } while (0)
+
+#define CONFIG_PRINT_DEC(value) CONFIG_PRINT_DEC_COND(value, true)
 
 static void config_print(void)
 {
@@ -263,7 +259,7 @@ static void config_print(void)
   CONFIG_PRINT_BOOL_TO_STR(config.use_encryption);
 
   CONFIG_PRINT_STR(config.binding_key_file);
-  CONFIG_PRINT_BOOL_TO_STR(config.binding_key_override);
+  CONFIG_PRINT_SILENCE(config.binding_key_override); // used only for internal logic
 
   CONFIG_PRINT_STR(config.binding_method);
 
@@ -275,24 +271,21 @@ static void config_print(void)
 
   CONFIG_PRINT_BUS_TO_STR(config.bus);
 
-  CONFIG_PRINT_DEC(config.uart_baudrate);
-  CONFIG_PRINT_BOOL_TO_STR(config.uart_hardflow);
-  CONFIG_PRINT_STR(config.uart_file);
+  CONFIG_PRINT_DEC_COND(config.uart_baudrate, config.bus == UART);
+  CONFIG_PRINT_BOOL_TO_STR_COND(config.uart_hardflow, config.bus == UART);
+  CONFIG_PRINT_STR_COND(config.uart_file, config.bus == UART);
 
-  CONFIG_PRINT_STR(config.spi_file);
-  CONFIG_PRINT_DEC(config.spi_bitrate);
-  CONFIG_PRINT_SPI_MODE_TO_STR(config.spi_mode);
-  CONFIG_PRINT_DEC(config.spi_bit_per_word);
-  CONFIG_PRINT_STR(config.spi_cs_chip);
-  CONFIG_PRINT_DEC(config.spi_cs_pin);
-  CONFIG_PRINT_STR(config.spi_irq_chip);
-  CONFIG_PRINT_DEC(config.spi_irq_pin);
+  CONFIG_PRINT_STR_COND(config.spi_file, config.bus == SPI);
+  CONFIG_PRINT_DEC_COND(config.spi_bitrate, config.bus == SPI);
+  CONFIG_PRINT_STR_COND(config.spi_irq_chip, config.bus == SPI);
+  CONFIG_PRINT_DEC_COND(config.spi_irq_pin, config.bus == SPI);
 
-  CONFIG_PRINT_STR(config.fu_reset_chip);
-  CONFIG_PRINT_DEC(config.fu_spi_reset_pin);
-  CONFIG_PRINT_STR(config.fu_wake_chip);
-  CONFIG_PRINT_DEC(config.fu_spi_wake_pin);
-  CONFIG_PRINT_BOOL_TO_STR(config.fu_recovery_enabled);
+  CONFIG_PRINT_BOOL_TO_STR(config.fu_recovery_pins_enabled);
+  CONFIG_PRINT_STR_COND(config.fu_reset_chip, config.fu_recovery_pins_enabled);
+  CONFIG_PRINT_DEC_COND(config.fu_spi_reset_pin, config.fu_recovery_pins_enabled);
+  CONFIG_PRINT_STR_COND(config.fu_wake_chip, config.fu_recovery_pins_enabled);
+  CONFIG_PRINT_DEC_COND(config.fu_spi_wake_pin, config.fu_recovery_pins_enabled);
+
   CONFIG_PRINT_BOOL_TO_STR(config.fu_connect_to_bootloader);
   CONFIG_PRINT_BOOL_TO_STR(config.fu_enter_bootloader);
   CONFIG_PRINT_STR(config.fu_file);
@@ -699,13 +692,6 @@ static void config_parse_config_file(void)
     } else if (0 == strcmp(name, "spi_device_file")) {
       config.spi_file = strdup(val);
       FATAL_ON(config.spi_file == NULL);
-    } else if (0 == strcmp(name, "spi_cs_gpio_chip")) {
-      config.spi_cs_chip = strdup(val);
-    } else if (0 == strcmp(name, "spi_cs_gpio")) {
-      config.spi_cs_pin = (unsigned int)strtoul(val, &endptr, 10);
-      if (*endptr != '\0') {
-        FATAL("Bad config line \"%s\"", line);
-      }
     } else if (0 == strcmp(name, "spi_rx_irq_gpio_chip")) {
       config.spi_irq_chip = strdup(val);
     } else if (0 == strcmp(name, "spi_rx_irq_gpio")) {
@@ -718,37 +704,25 @@ static void config_parse_config_file(void)
       if (*endptr != '\0') {
         FATAL("Bad config line \"%s\"", line);
       }
-    } else if (0 == strcmp(name, "spi_device_mode")) {
-      if (0 == strcmp(val, "SPI_MODE_0")) {
-        config.spi_mode = SPI_MODE_0;
-      } else if (0 == strcmp(val, "SPI_MODE_1")) {
-        config.spi_mode = SPI_MODE_1;
-      } else if (0 == strcmp(val, "SPI_MODE_2")) {
-        config.spi_mode = SPI_MODE_2;
-      } else if (0 == strcmp(val, "SPI_MODE_3")) {
-        config.spi_mode = SPI_MODE_3;
-      } else {
-        FATAL("Bad value for spi_device_mode");
-      }
     } else if (0 == strcmp(name, "bootloader_recovery_pins_enabled")) {
       if (0 == strcmp(val, "true")) {
-        config.fu_recovery_enabled = true;
+        config.fu_recovery_pins_enabled = true;
       } else if (0 == strcmp(val, "false")) {
-        config.fu_recovery_enabled = false;
+        config.fu_recovery_pins_enabled = false;
       } else {
         FATAL("Config file error : bad bootloader_recovery_pins_enabled value");
       }
     } else if (0 == strcmp(name, "bootloader_wake_gpio_chip")) {
       config.fu_wake_chip = strdup(val);
     } else if (0 == strcmp(name, "bootloader_wake_gpio")) {
-      config.fu_spi_wake_pin = (unsigned int)strtoul(val, &endptr, 10);
+      config.fu_spi_wake_pin = (int)strtol(val, &endptr, 10);
       if (*endptr != '\0') {
         FATAL("Bad config line \"%s\"", line);
       }
     } else if (0 == strcmp(name, "bootloader_reset_gpio_chip")) {
       config.fu_reset_chip = strdup(val);
     } else if (0 == strcmp(name, "bootloader_reset_gpio")) {
-      config.fu_spi_reset_pin = (unsigned int)strtoul(val, &endptr, 10);
+      config.fu_spi_reset_pin = (int)strtol(val, &endptr, 10);
       if (*endptr != '\0') {
         FATAL("Bad config line \"%s\"", line);
       }
@@ -829,18 +803,12 @@ static void config_parse_config_file(void)
       if (0 == strcmp(val, "true")) {
         config.lttng_tracing = true;
       } else if (0 == strcmp(val, "false")) {
-        config.reset_sequence = false;
+        config.lttng_tracing = false;
       } else {
         fprintf(stderr, "Config file error : bad enable_lttng_tracing value\n");
       }
 #else
-      if (0 == strcmp(val, "true")) {
-        fprintf(stderr, "Config file error : lttng support is not compiled with this executable\n");
-      } else if (0 == strcmp(val, "false")) {
-        config.reset_sequence = false;
-      } else {
-        fprintf(stderr, "Config file error : bad enable_lttng_tracing value\n");
-      }
+      fprintf(stderr, "Config file error : lttng support is not compiled with this executable\n");
 #endif
     } else if (0 == strcmp(name, "binding_key_file")) {
       if (config.binding_key_override == false) {
@@ -848,7 +816,7 @@ static void config_parse_config_file(void)
         FATAL_SYSCALL_ON(config.binding_key_file == NULL);
       }
     } else {
-      FATAL("Config file error : key \"%s\" not recognized", name);
+      WARN("Configuration file error : key \"%s\" not recognized", name);
     }
   }
 
@@ -932,6 +900,12 @@ static void config_validate_configuration(void)
         FATAL("SPI device file missing");
       }
 
+#if !defined(USE_LEGACY_GPIO_SYSFS)
+      if (config.spi_irq_chip == NULL) {
+        FATAL("Daemon compiled with gpiod support but no value is set for spi_irq_chip");
+      }
+#endif
+
       prevent_device_collision(config.spi_file);
     } else if (config.bus == UART) {
       if (config.uart_file == NULL) {
@@ -1002,6 +976,21 @@ static void config_validate_configuration(void)
 
   if (config.fu_connect_to_bootloader && config.fu_enter_bootloader) {
     FATAL("Cannot select both --enter-bootloader and --connect-to-bootloader");
+  }
+
+  if (config.fu_recovery_pins_enabled) {
+    // this is to support calls to reboot_secondary_with_pins_into_bootloader()
+    if (config.fu_spi_wake_pin == -1 || config.fu_spi_reset_pin == -1) {
+      FATAL("bootloader_wake_gpio and bootloader_reset_gpio required "
+            "but not set in config");
+    }
+
+#if !defined(USE_LEGACY_GPIO_SYSFS)
+    if (config.fu_wake_chip == NULL || config.fu_reset_chip == NULL) {
+      FATAL("Daemon is compiled with gpiod support but no values are set for "
+            "bootloader_wake_gpio_chip and/or bootloader_reset_gpio_chip");
+    }
+#endif
   }
 
   if (config.fu_enter_bootloader) {

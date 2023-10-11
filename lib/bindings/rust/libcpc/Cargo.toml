@@ -1,0 +1,17 @@
+[package]
+name = "libcpc"
+version = "0.2.0"
+edition = "2021"
+description = "Safe wrapper over libcpc-sys"
+repository = "https://github.com/SiliconLabs/cpc-daemon"
+keywords = ["cpc", "siliconlabs"]
+license-file = "LICENSE"
+
+[dependencies]
+libcpc-sys = { path = "../libcpc-sys" }
+num_enum = "0.6.1"
+thiserror = "1.0.40"
+
+[dev-dependencies]
+more-asserts = "0.3.1"
+serial_test = "2.0.0"

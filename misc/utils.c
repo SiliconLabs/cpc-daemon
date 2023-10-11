@@ -17,8 +17,8 @@
 
 #include <sys/stat.h>
 
-#include "misc/utils.h"
-#include "misc/logging.h"
+#include "cpcd/logging.h"
+#include "cpcd/utils.h"
 
 int recursive_mkdir(const char *dir, size_t len, const mode_t mode)
 {

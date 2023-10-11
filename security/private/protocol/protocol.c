@@ -18,11 +18,14 @@
 #include <unistd.h>
 #include <string.h>
 
-#include "misc/logging.h"
-#include "misc/sl_status.h"
-#include "misc/sleep.h"
-#include "misc/config.h"
-#include "server_core/server_core.h"
+#include "cpcd/config.h"
+#include "cpcd/core.h"
+#include "cpcd/endianness.h"
+#include "cpcd/logging.h"
+#include "cpcd/server_core.h"
+#include "cpcd/sl_status.h"
+#include "cpcd/sleep.h"
+
 #include "server_core/system_endpoint/system.h"
 #include "security/private/thread/security_thread.h"
 #include "security/private/protocol/protocol.h"
@@ -66,8 +69,8 @@ static sl_status_t send_request(sl_cpc_security_protocol_cmd_info_t request_comm
   FATAL_ON(security_initialized == false);
   FATAL_ON(request_command.request_len != payload_size);
 
-  request.command_id = request_command.command_id;
-  request.len = request_command.request_len;
+  u16_to_le(request_command.request_len, (uint8_t *)(&request.len));
+  u16_to_le(request_command.command_id, (uint8_t *)(&request.command_id));
 
   if (payload_size > 0) {
     FATAL_ON(payload == NULL);
@@ -84,15 +87,18 @@ static sl_status_t send_request(sl_cpc_security_protocol_cmd_info_t request_comm
 
   // Wait for response
   ret = cpc_read_endpoint(security_ep, buffer, sizeof(buffer), CPC_ENDPOINT_READ_FLAG_NONE);
-  memcpy(response, buffer, SLI_SECURITY_PROTOCOL_HEADER_LENGTH + request_command.response_len);
-
   if (ret != (ssize_t)(SLI_SECURITY_PROTOCOL_HEADER_LENGTH + request_command.response_len)) {
     return SL_STATUS_FAIL;
   }
 
+  response->len = u16_from_le(buffer + 0);
+  response->command_id = u16_from_le(buffer + 2);
+
   if (response->command_id != (request_command.command_id | SLI_CPC_SECURITY_PROTOCOL_RESPONSE_MASK)) {
     return SL_STATUS_FAIL;
   }
+
+  memcpy(response->payload, buffer + 4, request_command.response_len);
 
   return SL_STATUS_OK;
 }
@@ -148,7 +154,7 @@ void security_request_unbind(void)
     FATAL("Failed request unbind with the secondary. Status = 0x%x", status);
   }
 
-  memcpy(&status, &response.payload, sizeof(status));
+  status = u32_from_le(response.payload);
   if (status != SL_STATUS_OK) {
     if (status == SL_STATUS_NOT_INITIALIZED) {
       WARN("The secondary was already not bound");
@@ -180,7 +186,7 @@ static void security_request_binding(sl_cpc_binding_request_t binding_method)
   }
 
   // Get the response
-  memcpy(&status, &response.payload, sizeof(status));
+  status = u32_from_le(response.payload);
   if (status != SL_STATUS_OK) {
     if (status == SL_STATUS_ALREADY_INITIALIZED) {
       if (config.restart_cpcd) {
@@ -211,7 +217,7 @@ void security_exchange_keys(sl_cpc_binding_request_t binding_method)
     TRACE_SECURITY("Successfully sent public key and received public key from remote");
 
     FATAL_ON(response.len != (sizeof(status) + PUBLIC_KEY_LENGTH_BYTES));
-    memcpy(&status, response.payload, sizeof(status));
+    status = u32_from_le(response.payload);
 
     if (status == SL_STATUS_INVALID_MODE) {
       FATAL("Failed to bind, secondary is not configured for ECDH binding");
@@ -231,7 +237,7 @@ void security_exchange_keys(sl_cpc_binding_request_t binding_method)
       FATAL("Failed to send plain text key. Status = 0x%x", status);
     }
 
-    memcpy(&status, &response.payload, sizeof(status));
+    status = u32_from_le(response.payload);
 
     if (status == SL_STATUS_INVALID_MODE) {
       FATAL("Failed to bind, secondary is not configured for plain text binding");
@@ -261,8 +267,7 @@ void security_initialize_session(void)
   uint8_t random1[SESSION_INIT_RANDOM_LENGTH_BYTES];
   uint8_t *random2;
   sl_cpc_security_protocol_cmd_t protocol_response;
-
-  session_init_response_t *session_init_response;
+  session_init_response_t session_init_response;
 
   ret = mbedtls_ctr_drbg_random(security_keys_get_rng_context(),
                                 random1,
@@ -277,14 +282,13 @@ void security_initialize_session(void)
     return;
   }
 
-  session_init_response = (session_init_response_t*) protocol_response.payload;
-
-  if (session_init_response->status != SL_STATUS_OK) {
+  session_init_response.status = u32_from_le(protocol_response.payload + 0);
+  if (session_init_response.status != SL_STATUS_OK) {
     FATAL("The secondary failed to initialize its session");
     return;
   }
 
-  random2 = session_init_response->random2;
+  random2 = protocol_response.payload + 4;
 
   security_compute_session_key_and_id(random1, random2);
 

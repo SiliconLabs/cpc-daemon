@@ -15,10 +15,10 @@
  *
  ******************************************************************************/
 
-#include "sleep.h"
-
 #include <errno.h>  /* EINTR errno */
 #include <time.h>   /* struct_timespec time_t nanosleep() */
+
+#include "cpcd/sleep.h"
 
 int sleep_us(uint32_t us)
 {

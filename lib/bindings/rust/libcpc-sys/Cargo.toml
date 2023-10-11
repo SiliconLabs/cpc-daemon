@@ -1,0 +1,16 @@
+[package]
+name = "libcpc-sys"
+version = "0.1.0"
+edition = "2021"
+description = "Libcpc bindings"
+repository = "https://github.com/SiliconLabs/cpc-daemon"
+keywords = ["cpc", "siliconlabs"]
+license-file = "LICENSE"
+links = "cpc"
+
+[dependencies]
+num_enum = "0.6.1"
+
+[build-dependencies]
+bindgen = "0.65.1"
+pkg-config = "0.3.27"

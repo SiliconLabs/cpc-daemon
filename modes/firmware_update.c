@@ -19,18 +19,19 @@
 #include <unistd.h>
 #include <string.h>
 
-#include "modes/firmware_update.h"
-#include "server_core/server_core.h"
+#include "cpcd/config.h"
+#include "cpcd/gpio.h"
+#include "cpcd/logging.h"
+#include "cpcd/modes.h"
+#include "cpcd/server_core.h"
+#include "cpcd/sl_status.h"
+#include "cpcd/sleep.h"
+
 #include "server_core/system_endpoint/system.h"
 #include "driver/driver_uart.h"
 #include "driver/driver_spi.h"
 #include "driver/driver_xmodem.h"
 #include "driver/driver_ezsp.h"
-#include "misc/config.h"
-#include "misc/gpio.h"
-#include "misc/logging.h"
-#include "misc/sl_status.h"
-#include "misc/sleep.h"
 #include "version.h"
 
 #define MAX_EPOLL_EVENTS 10
@@ -66,7 +67,7 @@ void run_firmware_update(void)
   // If fu_connect_to_bootloader is true,
   // we assume the bootloader is already running.
   if (!config.fu_connect_to_bootloader) {
-    if (config.fu_recovery_enabled) {
+    if (config.fu_recovery_pins_enabled) {
       PRINT_INFO("Requesting reboot into bootloader via Pins...");
       reboot_secondary_with_pins_into_bootloader();
       PRINT_INFO("Secondary is in bootloader");
@@ -159,11 +160,7 @@ static sl_status_t transfer_firmware(void)
   } else if (config.bus == SPI) {
     status = send_firmware(config.fu_file,
                            config.spi_file,
-                           config.spi_mode,
-                           config.spi_bit_per_word,
                            config.spi_bitrate,
-                           config.spi_cs_chip,
-                           config.spi_cs_pin,
                            config.spi_irq_chip,
                            config.spi_irq_pin);
   } else {
@@ -191,11 +188,7 @@ static void reboot_secondary_by_cpc(server_core_mode_t mode)
     driver_thread = driver_spi_init(&fd_socket_driver_core,
                                     &fd_socket_driver_core_notify,
                                     config.spi_file,
-                                    config.spi_mode,
-                                    config.spi_bit_per_word,
                                     config.spi_bitrate,
-                                    config.spi_cs_chip,
-                                    config.spi_cs_pin,
                                     config.spi_irq_chip,
                                     config.spi_irq_pin);
   } else {
@@ -222,11 +215,11 @@ static void reboot_secondary_with_pins_into_bootloader(void)
   static int fd_epoll;
 
   // Setup WAKE gpio
-  FATAL_ON(gpio_init(&wake_gpio, config.fu_wake_chip, config.fu_spi_wake_pin, OUT, NO_EDGE) < 0);
+  FATAL_ON(gpio_init(&wake_gpio, config.fu_wake_chip, (unsigned int)config.fu_spi_wake_pin, OUT, NO_EDGE) < 0);
   FATAL_ON(gpio_write(&wake_gpio, 1) < 0);
 
   // Setup RESET gpio
-  FATAL_ON(gpio_init(&reset_gpio, config.fu_reset_chip, config.fu_spi_reset_pin, OUT, NO_EDGE) < 0);
+  FATAL_ON(gpio_init(&reset_gpio, config.fu_reset_chip, (unsigned int)config.fu_spi_reset_pin, OUT, NO_EDGE) < 0);
   FATAL_ON(gpio_write(&reset_gpio, 1) < 0);
 
   if (config.bus == SPI) {

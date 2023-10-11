@@ -30,12 +30,14 @@
 #include <sys/ioctl.h>
 #include <linux/spi/spidev.h>
 
+#include "cpcd/logging.h"
+#include "cpcd/sleep.h"
+#include "cpcd/utils.h"
+#include "cpcd/xmodem.h"
+
 #include "server_core/core/crc.h"
 #include "driver/driver_spi.h"
 #include "driver/driver_ezsp.h"
-#include "misc/logging.h"
-#include "misc/sleep.h"
-#include "misc/xmodem.h"
 
 #define START_BTL_FRAME   0xFD
 #define END_BTL_FRAME     0xA7
@@ -52,8 +54,6 @@
 #define QUERY       0x51
 #define QUERYFOUND  0x1A
 
-#define SPI_BUFFER_SIZE  4096
-
 static cpc_spi_dev_t spi_dev;
 
 static struct spi_ioc_transfer spi_transfer;
@@ -66,25 +66,15 @@ static bool wait_irq_line(void);
 static int send_query(void);
 static bool send_end_of_file(void);
 static bool ezsp_send_bootloader_raw_bytes(const uint8_t *message, uint8_t length);
-static void cs_assert(void);
-static void cs_deassert(void);
 
 static void driver_ezsp_spi_open(const char   *device,
-                                 unsigned int mode,
-                                 unsigned int bit_per_word,
-                                 unsigned int speed,
-                                 const char *cs_gpio_chip,
-                                 unsigned int cs_gpio_pin,
+                                 uint32_t speed,
                                  const char *irq_gpio_chip,
                                  unsigned int irq_gpio_pin);
 
 sl_status_t send_firmware(const char   * image_file,
                           const char   *device,
-                          unsigned int mode,
-                          unsigned int bit_per_word,
                           unsigned int speed,
-                          const char *cs_gpio_chip,
-                          unsigned int cs_gpio_pin,
                           const char *irq_gpio_chip,
                           unsigned int irq_gpio_pin)
 {
@@ -112,11 +102,7 @@ sl_status_t send_firmware(const char   * image_file,
 
   // open connection to secondary
   driver_ezsp_spi_open(device,
-                       mode,
-                       bit_per_word,
                        speed,
-                       cs_gpio_chip,
-                       cs_gpio_pin,
                        irq_gpio_chip,
                        irq_gpio_pin);
 
@@ -249,18 +235,13 @@ sl_status_t send_firmware(const char   * image_file,
 }
 
 static void driver_ezsp_spi_open(const char   *device,
-                                 unsigned int mode,
-                                 unsigned int bit_per_word,
-                                 unsigned int speed,
-                                 const char *cs_gpio_chip,
-                                 unsigned int cs_gpio_pin,
+                                 uint32_t speed,
                                  const char *irq_gpio_chip,
                                  unsigned int irq_gpio_pin)
 {
   int ret = 0;
   int fd;
   TRACE_EZSP_SPI("Opening EZSP interface...");
-  mode |= SPI_NO_CS;
 
   memset(&spi_transfer, 0, sizeof(struct spi_ioc_transfer));
 
@@ -268,27 +249,25 @@ static void driver_ezsp_spi_open(const char   *device,
   fd = open(device, O_RDWR | O_CLOEXEC);
   FATAL_SYSCALL_ON(fd < 0);
 
+  uint8_t mode = SPI_MODE_0;
   ret = ioctl(fd, SPI_IOC_WR_MODE, &mode);
   FATAL_SYSCALL_ON(ret < 0);
 
+  uint8_t bit_per_word = 8;
   ret = ioctl(fd, SPI_IOC_WR_BITS_PER_WORD, &bit_per_word);
   FATAL_SYSCALL_ON(ret < 0);
 
-  spi_transfer.bits_per_word = (uint8_t)bit_per_word;
+  spi_transfer.bits_per_word = bit_per_word;
 
   ret = ioctl(fd, SPI_IOC_WR_MAX_SPEED_HZ, &speed);
   FATAL_SYSCALL_ON(ret < 0);
 
   spi_transfer.speed_hz = speed;
 
-  spi_transfer.rx_buf = (unsigned long)rx_spi_buffer;
-  spi_transfer.tx_buf = (unsigned long)tx_spi_buffer;
+  spi_transfer.rx_buf = (uintptr_t)rx_spi_buffer;
+  spi_transfer.tx_buf = (uintptr_t)tx_spi_buffer;
 
   spi_dev.spi_dev_descriptor = fd;
-
-  // Setup CS gpio
-  FATAL_ON(gpio_init(&spi_dev.cs_gpio, cs_gpio_chip, cs_gpio_pin, OUT, NO_EDGE) < 0);
-  FATAL_ON(gpio_write(&spi_dev.cs_gpio, 1) < 0);
 
   // Setup IRQ gpio
   FATAL_ON(gpio_init(&spi_dev.irq_gpio, irq_gpio_chip, irq_gpio_pin, IN, FALLING) < 0);
@@ -308,6 +287,8 @@ static int read_until_end_of_frame(void)
 
   spi_transfer.len = 1u;
 
+  spi_transfer.cs_change = 1;
+
   do {
     if (cpt >= SPI_BUFFER_SIZE) {
       TRACE_EZSP_SPI("Tried to write outside the rx_buffer while waiting for EOF.");
@@ -324,6 +305,9 @@ static int read_until_end_of_frame(void)
       timeout--;
     }
   } while ((rx_spi_buffer[0] != END_BTL_FRAME) && (timeout > 0));
+
+  spi_transfer.cs_change = 0;
+  ret = ioctl(spi_dev.spi_dev_descriptor, SPI_IOC_MESSAGE(1), &spi_transfer);
 
   if (timeout == 0) {
     TRACE_EZSP_SPI("Timed out while waiting for EOF.");
@@ -367,24 +351,20 @@ static int send_query(void)
   tx_spi_buffer[2] = QUERY;
   tx_spi_buffer[3] = END_BTL_FRAME;
 
-  cs_assert();
+  spi_transfer.cs_change = 1;
   ret = ioctl(spi_dev.spi_dev_descriptor, SPI_IOC_MESSAGE(1), &spi_transfer);
   FATAL_ON(ret != 4);
 
   if (!wait_irq_line()) {
     TRACE_EZSP_SPI("Timed out while waiting for the IRQ line to go high while sending query.");
-    cs_deassert();
     return -1;
   }
 
   ret = read_until_end_of_frame();
   if (ret < 0) {
     TRACE_EZSP_SPI("Timed out while waiting for the end of frame while sending query.");
-    cs_deassert();
     return -1;
   }
-
-  cs_deassert();
 
   return rx_spi_buffer[2];
 }
@@ -404,13 +384,11 @@ static bool send_end_of_file(void)
   tx_spi_buffer[2] = XMODEM_CMD_EOT;
   tx_spi_buffer[3] = END_BTL_FRAME;
 
-  cs_assert();
-
+  spi_transfer.cs_change = 1;
   ret = ioctl(spi_dev.spi_dev_descriptor, SPI_IOC_MESSAGE(1), &spi_transfer);
   FATAL_ON(ret != 4);
 
   if (!wait_irq_line()) {
-    cs_deassert();
     TRACE_EZSP_SPI("Timed out while waiting for the IRQ line to go high while waiting for EOF.");
     return false;
   }
@@ -418,11 +396,8 @@ static bool send_end_of_file(void)
   ret = read_until_end_of_frame();
   if (ret < 0) {
     TRACE_EZSP_SPI("Timed out while waiting for the end of frame while sending EOF.");
-    cs_deassert();
     return -1;
   }
-
-  cs_deassert();
 
   if (rx_spi_buffer[2] == FILEDONE) {
     TRACE_EZSP_SPI("Received FILEDONE.");
@@ -450,13 +425,11 @@ static bool ezsp_send_bootloader_raw_bytes(const uint8_t *message, uint8_t lengt
 
   spi_transfer.len = length + 3u;
 
-  cs_assert();
-
+  spi_transfer.cs_change = 1;
   ret = ioctl(spi_dev.spi_dev_descriptor, SPI_IOC_MESSAGE(1), &spi_transfer);
   FATAL_ON(ret != (int)(length) + 3);
 
   if (!wait_irq_line()) {
-    cs_deassert();
     TRACE_EZSP_SPI("Timed out while waiting for the IRQ line to go high after sending FW frame number %d to the bootloader.", seq_no);
     return false;
   }
@@ -465,12 +438,9 @@ static bool ezsp_send_bootloader_raw_bytes(const uint8_t *message, uint8_t lengt
   // with BLOCKOK
   ret = read_until_end_of_frame();
   if (ret < 0) {
-    cs_deassert();
     TRACE_EZSP_SPI("Timed out while waiting for EOF after sending FW frame number %d to the bootloader.", seq_no);
     return false;
   }
-
-  cs_deassert();
 
   if (rx_spi_buffer[2] != BLOCKOK) {
     TRACE_EZSP_SPI("Received 0x%X instead of BLOCKOK for frame number 0x%X.", rx_spi_buffer[2], seq_no);
@@ -493,22 +463,4 @@ static bool ezsp_send_bootloader_raw_bytes(const uint8_t *message, uint8_t lengt
   }
 
   return true;
-}
-
-static void cs_assert(void)
-{
-  int ret = 0;
-
-  ret = gpio_write(&spi_dev.cs_gpio, 0);
-  FATAL_SYSCALL_ON(ret < 0);
-}
-
-static void cs_deassert(void)
-{
-  int ret = 0;
-
-  ret = gpio_write(&spi_dev.cs_gpio, 1);
-  FATAL_SYSCALL_ON(ret < 0);
-
-  sleep_ms(1);
 }
