@@ -15,16 +15,17 @@
  *
  ******************************************************************************/
 
+#include <errno.h>
+#include <string.h>
+#include <sys/epoll.h>
+
+#include "cpcd/logging.h"
+#include "cpcd/sl_slist.h"
+#include "cpcd/utils.h"
+
 #include "epoll.h"
-#include "misc/logging.h"
-#include "misc/sl_slist.h"
-#include "misc/utils.h"
 #include "server_core/core/core.h"
 #include "server_core/server/server.h"
-
-#include <sys/epoll.h>
-#include <string.h>
-#include <errno.h>
 
 typedef struct {
   sl_slist_node_t node;
@@ -49,7 +50,7 @@ void epoll_init(void)
 
 void epoll_register(epoll_private_data_t *private_data)
 {
-  struct epoll_event event = {};
+  struct epoll_event event;
   int ret;
 
   FATAL_ON(private_data == NULL);

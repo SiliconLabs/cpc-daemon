@@ -35,12 +35,14 @@
 #include <unistd.h>
 #include <pthread.h>
 
+#include "cpcd/event.h"
+#include "cpcd/exchange.h"
+#include "cpcd/sleep.h"
+#include "cpcd/sl_slist.h"
+#include "cpcd/utils.h"
+
 #include "sl_cpc.h"
 #include "version.h"
-#include "misc/utils.h"
-#include "misc/sleep.h"
-#include "server_core/cpcd_exchange.h"
-#include "server_core/cpcd_event.h"
 
 #ifdef COMPILE_LTTNG
 #include <lttng/tracef.h>
@@ -51,28 +53,39 @@
 
 typedef struct {
   int ctrl_sock_fd;
+  int ref_count;
+  int ep_open_ref_count;
+  int ep_evt_open_ref_count;
   pthread_mutex_t ctrl_sock_fd_lock;
   size_t max_write_size;
   char *secondary_app_version;
   bool enable_tracing;
   char* instance_name;
   bool initialized;
+  pid_t pid;
 } sli_cpc_handle_t;
 
 typedef struct {
   uint8_t id;
   int server_sock_fd;
   int sock_fd;
+  int ref_count;
   pthread_mutex_t sock_fd_lock;
   sli_cpc_handle_t *lib_handle;
 } sli_cpc_endpoint_t;
 
 typedef struct {
-  int endpoint_id;
+  uint8_t endpoint_id;
   int sock_fd;
+  int ref_count;
   pthread_mutex_t sock_fd_lock;
   sli_cpc_handle_t *lib_handle;
 } sli_cpc_endpoint_event_handle_t;
+
+typedef struct {
+  sl_slist_node_t node;
+  void *handle;
+} sli_handle_list_item_t;
 
 static void lib_trace(sli_cpc_handle_t* lib_handle, FILE *__restrict __stream, const char* string, ...)
 {
@@ -108,7 +121,7 @@ static void lib_trace(sli_cpc_handle_t* lib_handle, FILE *__restrict __stream, c
     }
   }
 
-  fprintf(__stream, "[%s] libcpc(%s) ", time_string, lib_handle->instance_name);
+  fprintf(__stream, "[%s] libcpc(%s:%d) ", time_string, lib_handle->instance_name, lib_handle->pid);
 
   va_list vl;
 
@@ -160,15 +173,20 @@ static void lib_trace(sli_cpc_handle_t* lib_handle, FILE *__restrict __stream, c
     }                      \
   } while (0)
 
-#ifndef DEFAULT_INSTANCE_NAME
-  #define DEFAULT_INSTANCE_NAME "cpcd_0"
-#endif
-
 #define CTRL_SOCKET_TIMEOUT_SEC 2
 
 #define DEFAULT_ENDPOINT_SOCKET_SIZE SL_CPC_READ_MINIMUM_SIZE
 
+#define TX_WINDOW_SIZE_MIN 1
+#define TX_WINDOW_SIZE_MAX 1
+
+static sl_slist_node_t *lib_handle_list;
+static sl_slist_node_t *ep_handle_list;
+static sl_slist_node_t *ep_evt_handle_list;
+
 static cpc_reset_callback_t saved_reset_callback;
+
+static pthread_mutex_t cpc_api_lock = PTHREAD_MUTEX_INITIALIZER;
 
 int cpc_deinit(cpc_handle_t *handle);
 
@@ -310,7 +328,7 @@ static int check_version(sli_cpc_handle_t *lib_handle)
   }
 
   if (strncmp(version, PROJECT_VER, PROJECT_MAX_VERSION_SIZE) != 0) {
-    TRACE_LIB_ERROR(lib_handle, -ELIBBAD, "libcpc version does not match with the daemon");
+    TRACE_LIB_ERROR(lib_handle, -ELIBBAD, "libcpc version (v%s) does not match the daemon version (v%s)", PROJECT_VER, version);
     SET_CPC_RET(-ELIBBAD);
     RETURN_CPC_RET;
   }
@@ -388,7 +406,6 @@ static int set_pid(sli_cpc_handle_t *lib_handle)
   int tmp_ret = 0;
   bool can_connect = false;
   ssize_t bytes_written = 0;
-  const pid_t pid = getpid();
   const size_t set_pid_query_len = sizeof(cpcd_exchange_buffer_t) + sizeof(pid_t);
   uint8_t buf[set_pid_query_len];
   cpcd_exchange_buffer_t* set_pid_query = (cpcd_exchange_buffer_t*)buf;
@@ -396,7 +413,7 @@ static int set_pid(sli_cpc_handle_t *lib_handle)
   set_pid_query->type = EXCHANGE_SET_PID_QUERY;
   set_pid_query->endpoint_number = 0;
 
-  memcpy(set_pid_query->payload, &pid, sizeof(pid_t));
+  memcpy(set_pid_query->payload, &lib_handle->pid, sizeof(pid_t));
 
   bytes_written = send(lib_handle->ctrl_sock_fd, set_pid_query, set_pid_query_len, 0);
   if (bytes_written < (ssize_t)set_pid_query_len) {
@@ -408,9 +425,9 @@ static int set_pid(sli_cpc_handle_t *lib_handle)
   tmp_ret = cpc_query_receive(lib_handle, lib_handle->ctrl_sock_fd, &can_connect, sizeof(bool));
   if (tmp_ret == 0) {
     if (can_connect) {
-      TRACE_LIB(lib_handle, "pid %d registered with daemon", pid);
+      TRACE_LIB(lib_handle, "pid %d registered with daemon", lib_handle->pid);
     } else {
-      TRACE_LIB_ERROR(lib_handle, -ELIBMAX, "cannot set pid %d, another process with same pid is already registered", pid);
+      TRACE_LIB_ERROR(lib_handle, -ELIBMAX, "cannot set pid %d, another process with same pid is already registered", lib_handle->pid);
       SET_CPC_RET(-ELIBMAX);
       RETURN_CPC_RET;
     }
@@ -464,6 +481,134 @@ static void SIGUSR1_handler(int signum)
   }
 }
 
+static int lock_cpc_api(pthread_mutex_t *lock)
+{
+  INIT_CPC_RET(int);
+  int tmp_ret = 0;
+
+  tmp_ret = pthread_mutex_lock(lock);
+  if (tmp_ret != 0) {
+    SET_CPC_RET(-tmp_ret);
+    RETURN_CPC_RET;
+  }
+
+  RETURN_CPC_RET;
+}
+
+static int unlock_cpc_api(pthread_mutex_t *lock)
+{
+  INIT_CPC_RET(int);
+  int tmp_ret = 0;
+
+  tmp_ret = pthread_mutex_unlock(lock);
+  if (tmp_ret != 0) {
+    SET_CPC_RET(-tmp_ret);
+    RETURN_CPC_RET;
+  }
+
+  RETURN_CPC_RET;
+}
+
+static void increment_ref_count(int *ref_count)
+{
+  *ref_count = *ref_count + 1;
+}
+
+static void decrement_ref_count(int *ref_count)
+{
+  *ref_count = *ref_count - 1;
+}
+
+static sli_handle_list_item_t* find_handle(sl_slist_node_t *handle_list, void *handle)
+{
+  sli_handle_list_item_t *item = NULL;
+
+  if (handle) {
+    SL_SLIST_FOR_EACH_ENTRY(handle_list,
+                            item,
+                            sli_handle_list_item_t,
+                            node) {
+      if (item && item->handle == handle) {
+        return item;
+      }
+    }
+  }
+
+  return NULL;
+}
+
+static int sli_cpc_deinit(bool atomic, cpc_handle_t *handle)
+{
+  INIT_CPC_RET(int);
+  int tmp_ret = 0;
+  sli_cpc_handle_t *lib_handle = NULL;
+  sli_handle_list_item_t *lib_handle_item = NULL;
+
+  if (handle == NULL) {
+    SET_CPC_RET(-EINVAL);
+    RETURN_CPC_RET;
+  }
+
+  if (atomic) {
+    lock_cpc_api(&cpc_api_lock);
+  }
+
+  lib_handle_item = find_handle(lib_handle_list, handle->ptr);
+  if (lib_handle_item == NULL) {
+    SET_CPC_RET(-EINVAL);
+    goto cleanup;
+  }
+
+  lib_handle = (sli_cpc_handle_t *)handle->ptr;
+
+  if (lib_handle->ref_count != 0) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot deinit a handle (%p) that is in use", handle);
+    SET_CPC_RET(-EPERM);
+
+    goto cleanup;
+  }
+
+  if (lib_handle->ep_open_ref_count != 0) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot deinit a handle (%p) with endpoint handles that are not closed", handle);
+    SET_CPC_RET(-EPERM);
+
+    goto cleanup;
+  }
+
+  if (lib_handle->ep_evt_open_ref_count != 0) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot deinit a handle (%p) with endpoint event handles that are not closed", handle);
+    SET_CPC_RET(-EPERM);
+
+    goto cleanup;
+  }
+
+  if (close(lib_handle->ctrl_sock_fd) < 0) {
+    TRACE_LIB_ERRNO(lib_handle, "close(%d) failed", lib_handle->ctrl_sock_fd);
+  }
+
+  tmp_ret = pthread_mutex_destroy(&lib_handle->ctrl_sock_fd_lock);
+  if (tmp_ret != 0) {
+    TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_destroy(%p) failed, free up resources anyway", &lib_handle->ctrl_sock_fd_lock);
+  }
+
+  TRACE_LIB(lib_handle, "cpc lib deinitialized");
+
+  sl_slist_remove(&lib_handle_list, &lib_handle_item->node);
+  free(lib_handle_item);
+
+  free(lib_handle->instance_name);
+  free(lib_handle->secondary_app_version);
+  free(lib_handle);
+  handle->ptr = NULL;
+
+  cleanup:
+  if (atomic) {
+    unlock_cpc_api(&cpc_api_lock);
+  }
+
+  RETURN_CPC_RET;
+}
+
 /***************************************************************************//**
  * Initialize the CPC library.
  * Upon success, users will get a handle that must be passed to subsequent calls.
@@ -473,6 +618,7 @@ int cpc_init(cpc_handle_t *handle, const char *instance_name, bool enable_tracin
   INIT_CPC_RET(int);
   int tmp_ret = 0;
   sli_cpc_handle_t *lib_handle = NULL;
+  sli_handle_list_item_t *lib_handle_item = NULL;
   struct sockaddr_un server_addr = { 0 };
 
   if (handle == NULL) {
@@ -485,6 +631,8 @@ int cpc_init(cpc_handle_t *handle, const char *instance_name, bool enable_tracin
     SET_CPC_RET(-ENOMEM);
     RETURN_CPC_RET;
   }
+
+  lib_handle->pid = getpid();
 
   /* Save the parameters internally for possible further re-init */
   lib_handle->enable_tracing = enable_tracing;
@@ -550,7 +698,7 @@ int cpc_init(cpc_handle_t *handle, const char *instance_name, bool enable_tracin
   }
 
   // Set ctrl socket timeout
-  struct timeval timeout;
+  struct timeval timeout = { 0 };
   timeout.tv_sec = CTRL_SOCKET_TIMEOUT_SEC;
   timeout.tv_usec = 0;
 
@@ -559,6 +707,9 @@ int cpc_init(cpc_handle_t *handle, const char *instance_name, bool enable_tracin
     SET_CPC_RET(-errno);
     goto close_ctrl_sock_fd;
   }
+
+  TRACE_LIB(lib_handle, "libcpc version: v%s", cpc_get_library_version());
+  TRACE_LIB(lib_handle, "libcpc API version: v%d", LIBRARY_API_VERSION);
 
   tmp_ret = check_version(lib_handle);
   if (tmp_ret < 0) {
@@ -612,18 +763,40 @@ int cpc_init(cpc_handle_t *handle, const char *instance_name, bool enable_tracin
     goto free_secondary_app_version;
   }
 
+  lib_handle_item = zalloc(sizeof(sli_handle_list_item_t));
+  if (lib_handle_item == NULL) {
+    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", sizeof(sli_handle_list_item_t));
+    SET_CPC_RET(-ENOMEM);
+    goto destroy_mutex;
+  }
+
+  lock_cpc_api(&cpc_api_lock);
+
+  lib_handle_item->handle = lib_handle;
+  sl_slist_push(&lib_handle_list, &lib_handle_item->node);
+
   lib_handle->initialized = true;
   handle->ptr = (void *)lib_handle;
+
+  unlock_cpc_api(&cpc_api_lock);
+
   TRACE_LIB(lib_handle, "cpc lib initialized");
 
   RETURN_CPC_RET;
+
+  destroy_mutex:
+  tmp_ret = pthread_mutex_destroy(&lib_handle->ctrl_sock_fd_lock);
+  if (tmp_ret != 0) {
+    TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_destroy(%p) failed, free up resources anyway", &lib_handle->ctrl_sock_fd_lock);
+    SET_CPC_RET(-tmp_ret);
+  }
 
   free_secondary_app_version:
   free(lib_handle->secondary_app_version);
 
   close_ctrl_sock_fd:
   if (close(lib_handle->ctrl_sock_fd) < 0) {
-    TRACE_LIB_ERRNO(lib_handle, "close(%d) failed", lib_handle->ctrl_sock_fd);
+    TRACE_LIB_ERRNO(lib_handle, "close(%d) failed, free up resources anyway", lib_handle->ctrl_sock_fd);
     SET_CPC_RET(-errno);
   }
 
@@ -641,35 +814,7 @@ int cpc_init(cpc_handle_t *handle, const char *instance_name, bool enable_tracin
  ******************************************************************************/
 int cpc_deinit(cpc_handle_t *handle)
 {
-  INIT_CPC_RET(int);
-  int tmp_ret = 0;
-  sli_cpc_handle_t *lib_handle = NULL;
-
-  if (handle->ptr == NULL) {
-    SET_CPC_RET(-EINVAL);
-    RETURN_CPC_RET;
-  }
-
-  lib_handle = (sli_cpc_handle_t *)handle->ptr;
-
-  if (close(lib_handle->ctrl_sock_fd) < 0) {
-    TRACE_LIB_ERRNO(lib_handle, "close(%d) failed", lib_handle->ctrl_sock_fd);
-  }
-
-  tmp_ret = pthread_mutex_destroy(&lib_handle->ctrl_sock_fd_lock);
-  if (tmp_ret != 0) {
-    TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_destroy(%p) failed, free up resources anyway", &lib_handle->ctrl_sock_fd_lock);
-  }
-
-  TRACE_LIB(lib_handle, "cpc lib deinitialized");
-
-  free(lib_handle->instance_name);
-  free(lib_handle->secondary_app_version);
-  free(lib_handle);
-
-  handle->ptr = NULL;
-
-  RETURN_CPC_RET;
+  return sli_cpc_deinit(true, handle);
 }
 
 /***************************************************************************//**
@@ -683,9 +828,19 @@ int cpc_restart(cpc_handle_t *handle)
   INIT_CPC_RET(int);
   int tmp_ret = 0;
   sli_cpc_handle_t *lib_handle = NULL;
+  sli_handle_list_item_t *lib_handle_item_copy = NULL;
 
-  if (handle->ptr == NULL) {
+  if (handle == NULL) {
     SET_CPC_RET(-EINVAL);
+    RETURN_CPC_RET;
+  }
+
+  lock_cpc_api(&cpc_api_lock);
+
+  if (find_handle(lib_handle_list, handle->ptr) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
     RETURN_CPC_RET;
   }
 
@@ -695,32 +850,53 @@ int cpc_restart(cpc_handle_t *handle)
   if (lib_handle_copy == NULL) {
     TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", sizeof(sli_cpc_handle_t));
     SET_CPC_RET(-ENOMEM);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+  memcpy(lib_handle_copy, lib_handle, sizeof(sli_cpc_handle_t));
+
+  lib_handle_copy->instance_name = strdup(lib_handle->instance_name);
+  if (lib_handle_copy->instance_name == NULL) {
+    TRACE_LIB_ERRNO(lib_handle, "failed to copy the instance name");
+    SET_CPC_RET(-errno);
+
+    free(lib_handle_copy);
+
+    unlock_cpc_api(&cpc_api_lock);
     RETURN_CPC_RET;
   }
 
-  memcpy(lib_handle_copy, lib_handle, sizeof(sli_cpc_handle_t));
-  lib_handle_copy->instance_name = strdup(lib_handle->instance_name);
-  if (lib_handle_copy->instance_name == NULL) {
+  lib_handle_item_copy = zalloc(sizeof(sli_handle_list_item_t));
+  if (lib_handle_item_copy == NULL) {
+    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", sizeof(sli_handle_list_item_t));
+    SET_CPC_RET(-ENOMEM);
+
+    free(lib_handle_copy->instance_name);
     free(lib_handle_copy);
-    TRACE_LIB_ERRNO(lib_handle, "failed to copy the instance name");
-    SET_CPC_RET(-errno);
+
+    unlock_cpc_api(&cpc_api_lock);
     RETURN_CPC_RET;
   }
+  lib_handle_item_copy->handle = lib_handle_copy;
 
   // De-init the original handle
   if (lib_handle_copy->initialized) {
-    tmp_ret = cpc_deinit(handle);
+    tmp_ret = sli_cpc_deinit(false, handle);
     if (tmp_ret != 0) {
-      // Restore the handle copy on failure
-      free(lib_handle_copy->instance_name);
-      lib_handle_copy->instance_name = lib_handle->instance_name;
-      handle->ptr = (void *)lib_handle_copy;
-
-      TRACE_LIB_ERROR(lib_handle, tmp_ret, "cpc_deinit(%p) failed", handle);
+      TRACE_LIB_ERROR(lib_handle, tmp_ret, "sli_cpc_deinit(%p) failed", handle);
       SET_CPC_RET(tmp_ret);
+
+      free(lib_handle_copy->instance_name);
+      free(lib_handle_copy);
+      free(lib_handle_item_copy);
+
+      unlock_cpc_api(&cpc_api_lock);
       RETURN_CPC_RET;
     }
   }
+
+  unlock_cpc_api(&cpc_api_lock);
 
   // De-init was successful, invalidate copy
   lib_handle_copy->initialized = false;
@@ -728,22 +904,28 @@ int cpc_restart(cpc_handle_t *handle)
   // Attemps a connection
   tmp_ret = cpc_init(handle, lib_handle_copy->instance_name, lib_handle_copy->enable_tracing, saved_reset_callback);
   if (tmp_ret != 0) {
-    TRACE_LIB_ERROR(lib_handle_copy, tmp_ret, "Failed cpc_init, attempting again in %d milliseconds", CPCD_REBOOT_TIME_MS);
+    TRACE_LIB_ERROR(lib_handle_copy, tmp_ret, "cpc_init(%p, %s, %d, %p) failed, attempting again in %d milliseconds", handle, lib_handle_copy->instance_name, lib_handle_copy->enable_tracing, saved_reset_callback, CPCD_REBOOT_TIME_MS);
     sleep_ms(CPCD_REBOOT_TIME_MS);  // Wait for the minimum time it takes for CPCd to reboot
 
     tmp_ret = cpc_init(handle, lib_handle_copy->instance_name, lib_handle_copy->enable_tracing, saved_reset_callback);
     if (tmp_ret != 0) {
-      // Restore the handle copy on failure
-      handle->ptr = (void *)lib_handle_copy;
-      TRACE_LIB_ERROR(lib_handle_copy, tmp_ret, "cpc_init(%p) failed", handle);
       SET_CPC_RET(tmp_ret);
+      TRACE_LIB_ERROR(lib_handle_copy, tmp_ret, "cpc_init(%p, %s, %d, %p) failed", handle, lib_handle_copy->instance_name, lib_handle_copy->enable_tracing, saved_reset_callback);
+
+      // Restore lib_handle
+      handle->ptr = (void *)lib_handle_copy;
+
+      lock_cpc_api(&cpc_api_lock);
+      sl_slist_push(&lib_handle_list, &lib_handle_item_copy->node);
+      unlock_cpc_api(&cpc_api_lock);
+
       RETURN_CPC_RET;
     }
   }
 
-  // On success we can free the lib_handle_copy
   free(lib_handle_copy->instance_name);
   free(lib_handle_copy);
+  free(lib_handle_item_copy);
 
   RETURN_CPC_RET;
 }
@@ -762,19 +944,36 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
   bool can_open = false;
   sli_cpc_handle_t *lib_handle = NULL;
   sli_cpc_endpoint_t *ep = NULL;
+  sli_handle_list_item_t *ep_handle_item = NULL;
   struct sockaddr_un ep_addr = { 0 };
+  uint8_t payload[sizeof(uint8_t) + sizeof(bool)];
 
-  if (id == SL_CPC_ENDPOINT_SYSTEM || endpoint == NULL || handle.ptr == NULL) {
+  if (id == SL_CPC_ENDPOINT_SYSTEM || endpoint == NULL) {
     SET_CPC_RET(-EINVAL);
     RETURN_CPC_RET;
   }
 
-  lib_handle = (sli_cpc_handle_t *)handle.ptr;
+  lock_cpc_api(&cpc_api_lock);
 
-  if (tx_window_size != 1) {
-    TRACE_LIB_ERROR(lib_handle, -EINVAL, "Only a tx window of 1 is supported at the moment");
+  if (find_handle(lib_handle_list, handle.ptr) == NULL) {
     SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
     RETURN_CPC_RET;
+  }
+
+  lib_handle = (sli_cpc_handle_t *)handle.ptr;
+  increment_ref_count(&lib_handle->ref_count);
+
+  unlock_cpc_api(&cpc_api_lock);
+
+  if (tx_window_size < TX_WINDOW_SIZE_MIN || tx_window_size > TX_WINDOW_SIZE_MAX) {
+    TRACE_LIB_ERROR(lib_handle,
+                    -EINVAL,
+                    "tx window must be in the %d-%d range",
+                    TX_WINDOW_SIZE_MIN, TX_WINDOW_SIZE_MAX);
+    SET_CPC_RET(-EINVAL);
+    goto cleanup;
   }
 
   TRACE_LIB(lib_handle, "opening EP #%d", id);
@@ -792,7 +991,7 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
     if (nchars < 0 || (size_t) nchars >= size) {
       TRACE_LIB_ERROR(lib_handle, -ERANGE, "socket path '%s/cpcd/%s/ep%d.cpcd.sock' does not fit in buffer", CPC_SOCKET_DIR, lib_handle->instance_name, id);
       SET_CPC_RET(-ERANGE);
-      RETURN_CPC_RET;
+      goto cleanup;
     }
   }
 
@@ -800,11 +999,8 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
   if (ep == NULL) {
     TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", sizeof(sli_cpc_endpoint_t));
     SET_CPC_RET(-ERANGE);
-    RETURN_CPC_RET;
+    goto cleanup;
   }
-
-  ep->id = id;
-  ep->lib_handle = lib_handle;
 
   tmp_ret = pthread_mutex_lock(&lib_handle->ctrl_sock_fd_lock);
   if (tmp_ret != 0) {
@@ -813,9 +1009,11 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
     goto free_endpoint;
   }
 
+  payload[0] = tx_window_size;
+
   tmp_ret = cpc_query_exchange(lib_handle, lib_handle->ctrl_sock_fd,
                                EXCHANGE_OPEN_ENDPOINT_QUERY, id,
-                               (void*)&can_open, sizeof(can_open));
+                               (void*)payload, sizeof(payload));
 
   if (tmp_ret) {
     TRACE_LIB_ERROR(lib_handle, tmp_ret, "failed to exchange open endpoint query");
@@ -833,6 +1031,7 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
     goto free_endpoint;
   }
 
+  memcpy(&can_open, &payload[1], sizeof(bool));
   if (can_open == false) {
     if (id == SL_CPC_ENDPOINT_SECURITY) {
       TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot open security endpoint as a client");
@@ -880,21 +1079,49 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
     goto close_sock_fd;
   }
 
-  TRACE_LIB(lib_handle, "opened EP #%d", ep->id);
-  endpoint->ptr = (void *)ep;
+  ep_handle_item = zalloc(sizeof(sli_handle_list_item_t));
+  if (ep_handle_item == NULL) {
+    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", sizeof(sli_handle_list_item_t));
+    SET_CPC_RET(-ENOMEM);
+    goto destroy_mutex;
+  }
 
+  lock_cpc_api(&cpc_api_lock);
+
+  ep_handle_item->handle = ep;
+  sl_slist_push(&ep_handle_list, &ep_handle_item->node);
+  increment_ref_count(&lib_handle->ep_open_ref_count);
+
+  ep->id = id;
+  ep->lib_handle = lib_handle;
+  endpoint->ptr = (void *)ep;
   SET_CPC_RET(ep->sock_fd);
-  RETURN_CPC_RET;
+
+  unlock_cpc_api(&cpc_api_lock);
+
+  TRACE_LIB(lib_handle, "opened EP #%d", ep->id);
+  goto cleanup;
+
+  destroy_mutex:
+  tmp_ret = pthread_mutex_destroy(&ep->sock_fd_lock);
+  if (tmp_ret != 0) {
+    TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_destroy(%p) failed, free up resources anyway", &ep->sock_fd_lock);
+    SET_CPC_RET(-tmp_ret);
+  }
 
   close_sock_fd:
   if (close(ep->sock_fd) < 0) {
-    TRACE_LIB_ERRNO(lib_handle, "close(%d) failed", ep->sock_fd);
+    TRACE_LIB_ERRNO(lib_handle, "close(%d) failed, free up resources anyway", ep->sock_fd);
     SET_CPC_RET(-errno);
   }
 
   free_endpoint:
   free(ep);
 
+  cleanup:
+  lock_cpc_api(&cpc_api_lock);
+  decrement_ref_count(&lib_handle->ref_count);
+  unlock_cpc_api(&cpc_api_lock);
   RETURN_CPC_RET;
 }
 
@@ -908,23 +1135,50 @@ int cpc_close_endpoint(cpc_endpoint_t *endpoint)
   int tmp_ret = 0;
   sli_cpc_handle_t *lib_handle = NULL;
   sli_cpc_endpoint_t *ep = NULL;
+  sli_handle_list_item_t *ep_handle_item = NULL;
 
   if (endpoint == NULL) {
     SET_CPC_RET(-EINVAL);
     RETURN_CPC_RET;
   }
 
-  ep = (sli_cpc_endpoint_t *)endpoint->ptr;
-  if (ep == NULL) {
+  lock_cpc_api(&cpc_api_lock);
+
+  ep_handle_item = find_handle(ep_handle_list, endpoint->ptr);
+  if (ep_handle_item == NULL) {
     SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
+  ep = (sli_cpc_endpoint_t *)endpoint->ptr;
+  if (find_handle(lib_handle_list, ep->lib_handle) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
     RETURN_CPC_RET;
   }
 
   lib_handle = ep->lib_handle;
+  increment_ref_count(&lib_handle->ref_count);
+
+  if (ep->ref_count != 0) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot close a handle (%p) that is in use", *endpoint);
+    SET_CPC_RET(-EPERM);
+
+    unlock_cpc_api(&cpc_api_lock);
+    goto cleanup;
+  }
+
+  sl_slist_remove(&ep_handle_list, &ep_handle_item->node);
+  free(ep_handle_item);
+
+  unlock_cpc_api(&cpc_api_lock);
 
   tmp_ret = pthread_mutex_lock(&lib_handle->ctrl_sock_fd_lock);
   if (tmp_ret != 0) {
-    TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_lock(%p) failed", &lib_handle->ctrl_sock_fd_lock);
+    TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_lock(%p) failed, free up resources anyway", &lib_handle->ctrl_sock_fd_lock);
     goto destroy_mutex;
   }
 
@@ -933,13 +1187,13 @@ int cpc_close_endpoint(cpc_endpoint_t *endpoint)
                                (void*)&ep->server_sock_fd, sizeof(ep->server_sock_fd));
 
   if (tmp_ret) {
-    TRACE_LIB_ERROR(lib_handle, tmp_ret, "failed to exchange close endpoint query");
+    TRACE_LIB_ERROR(lib_handle, tmp_ret, "failed to exchange close endpoint query, free up resources anyway");
   }
 
   TRACE_LIB(lib_handle, "closing EP #%d", ep->id);
 
   if (close(ep->sock_fd) < 0) {
-    TRACE_LIB_ERRNO(lib_handle, "close(%d) failed", ep->sock_fd);
+    TRACE_LIB_ERRNO(lib_handle, "close(%d) failed, free up resources anyway", ep->sock_fd);
     goto unlock_mutex;
   }
   ep->sock_fd = -1;
@@ -968,9 +1222,19 @@ int cpc_close_endpoint(cpc_endpoint_t *endpoint)
     TRACE_LIB_ERRNO(lib_handle, "close(%d) failed", ep->sock_fd);
   }
 
+  lock_cpc_api(&cpc_api_lock);
+
   free(ep);
   endpoint->ptr = NULL;
 
+  decrement_ref_count(&lib_handle->ep_open_ref_count);
+
+  unlock_cpc_api(&cpc_api_lock);
+
+  cleanup:
+  lock_cpc_api(&cpc_api_lock);
+  decrement_ref_count(&lib_handle->ref_count);
+  unlock_cpc_api(&cpc_api_lock);
   RETURN_CPC_RET;
 }
 
@@ -988,15 +1252,37 @@ ssize_t cpc_read_endpoint(cpc_endpoint_t endpoint, void *buffer, size_t count, c
   int sock_flags = 0;
   ssize_t bytes_read = 0;
   sli_cpc_endpoint_t *ep = NULL;
+  sli_cpc_handle_t *lib_handle = NULL;
 
-  if (buffer == NULL || count < SL_CPC_READ_MINIMUM_SIZE || endpoint.ptr == NULL) {
+  if (buffer == NULL || count < SL_CPC_READ_MINIMUM_SIZE) {
     SET_CPC_RET(-EINVAL);
     RETURN_CPC_RET;
   }
 
-  ep = (sli_cpc_endpoint_t *)endpoint.ptr;
+  lock_cpc_api(&cpc_api_lock);
 
-  TRACE_LIB(ep->lib_handle, "reading from EP #%d", ep->id);
+  if (find_handle(ep_handle_list, endpoint.ptr) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
+  ep = (sli_cpc_endpoint_t *)endpoint.ptr;
+  if (find_handle(lib_handle_list, ep->lib_handle) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
+  lib_handle = ep->lib_handle;
+  increment_ref_count(&lib_handle->ref_count);
+  increment_ref_count(&ep->ref_count);
+
+  unlock_cpc_api(&cpc_api_lock);
+
+  TRACE_LIB(lib_handle, "reading from EP #%d", ep->id);
 
   if (flags & CPC_ENDPOINT_READ_FLAG_NON_BLOCKING) {
     sock_flags |= MSG_DONTWAIT;
@@ -1004,11 +1290,11 @@ ssize_t cpc_read_endpoint(cpc_endpoint_t endpoint, void *buffer, size_t count, c
 
   bytes_read = recv(ep->sock_fd, buffer, count, sock_flags);
   if (bytes_read == 0) {
-    TRACE_LIB_ERROR(ep->lib_handle, -ECONNRESET, "recv(%d) failed", ep->sock_fd);
+    TRACE_LIB_ERROR(lib_handle, -ECONNRESET, "recv(%d) failed", ep->sock_fd);
     SET_CPC_RET(-ECONNRESET);
   } else if (bytes_read < 0) {
     if (errno != EAGAIN) {
-      TRACE_LIB_ERRNO(ep->lib_handle, "recv(%d) failed", ep->sock_fd);
+      TRACE_LIB_ERRNO(lib_handle, "recv(%d) failed", ep->sock_fd);
     }
     SET_CPC_RET(-errno);
   } else {
@@ -1016,9 +1302,13 @@ ssize_t cpc_read_endpoint(cpc_endpoint_t endpoint, void *buffer, size_t count, c
   }
 
   if (bytes_read > 0) {
-    TRACE_LIB(ep->lib_handle, "read from EP #%d", ep->id);
+    TRACE_LIB(lib_handle, "read from EP #%d", ep->id);
   }
 
+  lock_cpc_api(&cpc_api_lock);
+  decrement_ref_count(&ep->ref_count);
+  decrement_ref_count(&lib_handle->ref_count);
+  unlock_cpc_api(&cpc_api_lock);
   RETURN_CPC_RET;
 }
 
@@ -1031,21 +1321,44 @@ ssize_t cpc_write_endpoint(cpc_endpoint_t endpoint, const void *data, size_t dat
   int sock_flags = 0;
   ssize_t bytes_written = 0;
   sli_cpc_endpoint_t *ep = NULL;
+  sli_cpc_handle_t *lib_handle = NULL;
 
-  if (endpoint.ptr == NULL || data == NULL || data_length == 0) {
+  if (data == NULL || data_length == 0) {
     SET_CPC_RET(-EINVAL);
+    RETURN_CPC_RET;
+  }
+
+  lock_cpc_api(&cpc_api_lock);
+
+  if (find_handle(ep_handle_list, endpoint.ptr) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
     RETURN_CPC_RET;
   }
 
   ep = (sli_cpc_endpoint_t *)endpoint.ptr;
-
-  if (data_length > ep->lib_handle->max_write_size) {
-    TRACE_LIB_ERROR(ep->lib_handle, -EINVAL, "payload too large (%d > %d)", data_length, ep->lib_handle->max_write_size);
+  if (find_handle(lib_handle_list, ep->lib_handle) == NULL) {
     SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
     RETURN_CPC_RET;
   }
 
-  TRACE_LIB(ep->lib_handle, "writing to EP #%d", ep->id);
+  lib_handle = ep->lib_handle;
+  increment_ref_count(&lib_handle->ref_count);
+  increment_ref_count(&ep->ref_count);
+
+  unlock_cpc_api(&cpc_api_lock);
+
+  if (data_length > lib_handle->max_write_size) {
+    TRACE_LIB_ERROR(lib_handle, -EINVAL, "payload too large (%d > %d)", data_length, lib_handle->max_write_size);
+    SET_CPC_RET(-EINVAL);
+
+    goto cleanup;
+  }
+
+  TRACE_LIB(lib_handle, "writing to EP #%d", ep->id);
 
   if (flags & CPC_ENDPOINT_WRITE_FLAG_NON_BLOCKING) {
     sock_flags |= MSG_DONTWAIT;
@@ -1053,14 +1366,15 @@ ssize_t cpc_write_endpoint(cpc_endpoint_t endpoint, const void *data, size_t dat
 
   bytes_written = send(ep->sock_fd, data, data_length, sock_flags);
   if (bytes_written == -1) {
-    TRACE_LIB_ERRNO(ep->lib_handle, "send(%d) failed", ep->sock_fd);
+    TRACE_LIB_ERRNO(lib_handle, "send(%d) failed", ep->sock_fd);
     SET_CPC_RET(-errno);
-    RETURN_CPC_RET;
+
+    goto cleanup;
   } else {
     SET_CPC_RET(bytes_written);
   }
 
-  TRACE_LIB(ep->lib_handle, "wrote to EP #%d", ep->id);
+  TRACE_LIB(lib_handle, "wrote to EP #%d", ep->id);
 
   /*
    * The socket type between the library and the daemon are of type
@@ -1072,6 +1386,11 @@ ssize_t cpc_write_endpoint(cpc_endpoint_t endpoint, const void *data, size_t dat
    */
   assert((size_t)bytes_written == data_length);
 
+  cleanup:
+  lock_cpc_api(&cpc_api_lock);
+  decrement_ref_count(&ep->ref_count);
+  decrement_ref_count(&lib_handle->ref_count);
+  unlock_cpc_api(&cpc_api_lock);
   RETURN_CPC_RET;
 }
 
@@ -1084,18 +1403,30 @@ int cpc_get_endpoint_state(cpc_handle_t handle, uint8_t id, cpc_endpoint_state_t
   int tmp_ret = 0;
   sli_cpc_handle_t *lib_handle = NULL;
 
-  if (state == NULL || handle.ptr == NULL || id == SL_CPC_ENDPOINT_SYSTEM) {
+  if (state == NULL || id == SL_CPC_ENDPOINT_SYSTEM) {
     SET_CPC_RET(-EINVAL);
     RETURN_CPC_RET;
   }
 
+  lock_cpc_api(&cpc_api_lock);
+
+  if (find_handle(lib_handle_list, handle.ptr) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
   lib_handle = (sli_cpc_handle_t *)handle.ptr;
+  increment_ref_count(&lib_handle->ref_count);
+
+  unlock_cpc_api(&cpc_api_lock);
 
   tmp_ret = pthread_mutex_lock(&lib_handle->ctrl_sock_fd_lock);
   if (tmp_ret != 0) {
     TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_lock(%p) failed", &lib_handle->ctrl_sock_fd_lock);
     SET_CPC_RET(-tmp_ret);
-    RETURN_CPC_RET;
+    goto cleanup;
   }
 
   TRACE_LIB(lib_handle, "get state EP #%d", id);
@@ -1108,9 +1439,13 @@ int cpc_get_endpoint_state(cpc_handle_t handle, uint8_t id, cpc_endpoint_state_t
   if (tmp_ret != 0) {
     TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_unlock(%p) failed", &lib_handle->ctrl_sock_fd_lock);
     SET_CPC_RET(-tmp_ret);
-    RETURN_CPC_RET;
+    goto cleanup;
   }
 
+  cleanup:
+  lock_cpc_api(&cpc_api_lock);
+  decrement_ref_count(&lib_handle->ref_count);
+  unlock_cpc_api(&cpc_api_lock);
   RETURN_CPC_RET;
 }
 
@@ -1122,22 +1457,45 @@ int cpc_set_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, const 
   INIT_CPC_RET(int);
   int tmp_ret = 0;
   sli_cpc_endpoint_t *ep = NULL;
+  sli_cpc_handle_t *lib_handle = NULL;
 
-  if (option == CPC_OPTION_NONE || endpoint.ptr == NULL || optval == NULL) {
+  if (option == CPC_OPTION_NONE || optval == NULL) {
     SET_CPC_RET(-EINVAL);
     RETURN_CPC_RET;
   }
 
+  lock_cpc_api(&cpc_api_lock);
+
+  if (find_handle(ep_handle_list, endpoint.ptr) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
   ep = (sli_cpc_endpoint_t *)endpoint.ptr;
+  if (find_handle(lib_handle_list, ep->lib_handle) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
+  lib_handle = ep->lib_handle;
+  increment_ref_count(&lib_handle->ref_count);
+  increment_ref_count(&ep->ref_count);
+
+  unlock_cpc_api(&cpc_api_lock);
 
   if (option == CPC_OPTION_RX_TIMEOUT) {
     cpc_timeval_t *useropt = (cpc_timeval_t*)optval;
-    struct timeval sockopt;
+    struct timeval sockopt = { 0 };
 
     if (optlen != sizeof(cpc_timeval_t)) {
-      TRACE_LIB_ERROR(ep->lib_handle, -EINVAL, "optval must be of type cpc_timeval_t");
+      TRACE_LIB_ERROR(lib_handle, -EINVAL, "optval must be of type cpc_timeval_t");
       SET_CPC_RET(-EINVAL);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     sockopt.tv_sec  = useropt->seconds;
@@ -1145,18 +1503,20 @@ int cpc_set_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, const 
 
     tmp_ret = setsockopt(ep->sock_fd, SOL_SOCKET, SO_RCVTIMEO, &sockopt, (socklen_t)sizeof(sockopt));
     if (tmp_ret < 0) {
-      TRACE_LIB_ERRNO(ep->lib_handle, "setsockopt(%d) failed", ep->sock_fd);
+      TRACE_LIB_ERRNO(lib_handle, "setsockopt(%d) failed", ep->sock_fd);
       SET_CPC_RET(-errno);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
   } else if (option == CPC_OPTION_TX_TIMEOUT) {
     cpc_timeval_t *useropt = (cpc_timeval_t*)optval;
-    struct timeval sockopt;
+    struct timeval sockopt = { 0 };
 
     if (optlen != sizeof(cpc_timeval_t)) {
-      TRACE_LIB_ERROR(ep->lib_handle, -EINVAL, "optval must be of type cpc_timeval_t");
+      TRACE_LIB_ERROR(lib_handle, -EINVAL, "optval must be of type cpc_timeval_t");
       SET_CPC_RET(-EINVAL);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     sockopt.tv_sec  = useropt->seconds;
@@ -1164,36 +1524,39 @@ int cpc_set_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, const 
 
     tmp_ret = setsockopt(ep->sock_fd, SOL_SOCKET, SO_SNDTIMEO, &sockopt, (socklen_t)sizeof(sockopt));
     if (tmp_ret < 0) {
-      TRACE_LIB_ERRNO(ep->lib_handle, "setsockopt(%d) failed", ep->sock_fd);
+      TRACE_LIB_ERRNO(lib_handle, "setsockopt(%d) failed", ep->sock_fd);
       SET_CPC_RET(-errno);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
   } else if (option == CPC_OPTION_BLOCKING) {
     if (optlen != sizeof(bool)) {
-      TRACE_LIB_ERROR(ep->lib_handle, -EINVAL, "optval must be of type bool");
+      TRACE_LIB_ERROR(lib_handle, -EINVAL, "optval must be of type bool");
       SET_CPC_RET(-EINVAL);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     tmp_ret = pthread_mutex_lock(&ep->sock_fd_lock);
     if (tmp_ret != 0) {
-      TRACE_LIB_ERROR(ep->lib_handle, -tmp_ret, "pthread_mutex_lock(%p) failed", &ep->sock_fd_lock);
+      TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_lock(%p) failed", &ep->sock_fd_lock);
       SET_CPC_RET(-tmp_ret);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     int flags = fcntl(ep->sock_fd, F_GETFL);
     if (flags < 0) {
-      TRACE_LIB_ERRNO(ep->lib_handle, "fnctl(%d) failed", ep->sock_fd);
+      TRACE_LIB_ERRNO(lib_handle, "fnctl(%d) failed", ep->sock_fd);
       SET_CPC_RET(-errno);
 
       tmp_ret = pthread_mutex_unlock(&ep->sock_fd_lock);
       if (tmp_ret != 0) {
-        TRACE_LIB_ERROR(ep->lib_handle, -tmp_ret, "pthread_mutex_unlock(%p) failed", &ep->sock_fd_lock);
+        TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_unlock(%p) failed", &ep->sock_fd_lock);
         SET_CPC_RET(-tmp_ret);
       }
 
-      RETURN_CPC_RET;
+      goto cleanup;
     }
 
     if (*(bool*)optval == true) {
@@ -1204,34 +1567,40 @@ int cpc_set_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, const 
 
     tmp_ret = fcntl(ep->sock_fd, F_SETFL, flags);
     if (tmp_ret < 0) {
-      TRACE_LIB_ERRNO(ep->lib_handle, "fnctl(%d) failed", ep->sock_fd);
+      TRACE_LIB_ERRNO(lib_handle, "fnctl(%d) failed", ep->sock_fd);
       SET_CPC_RET(-errno);
     }
 
     tmp_ret = pthread_mutex_unlock(&ep->sock_fd_lock);
     if (tmp_ret != 0) {
-      TRACE_LIB_ERROR(ep->lib_handle, -tmp_ret, "pthread_mutex_unlock(%p) failed", &ep->sock_fd_lock);
+      TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_unlock(%p) failed", &ep->sock_fd_lock);
       SET_CPC_RET(-tmp_ret);
     }
 
-    RETURN_CPC_RET;
+    goto cleanup;
   } else if (option == CPC_OPTION_SOCKET_SIZE) {
     if (optlen != sizeof(int)) {
-      TRACE_LIB_ERROR(ep->lib_handle, -EINVAL, "optval must be of type int");
+      TRACE_LIB_ERROR(lib_handle, -EINVAL, "optval must be of type int");
       SET_CPC_RET(-EINVAL);
-      RETURN_CPC_RET;
+      goto cleanup;
     }
 
     if (setsockopt(ep->sock_fd, SOL_SOCKET, SO_SNDBUF, optval, (socklen_t)optlen) != 0) {
-      TRACE_LIB_ERRNO(ep->lib_handle, "setsockopt(%d) failed", ep->sock_fd);
+      TRACE_LIB_ERRNO(lib_handle, "setsockopt(%d) failed", ep->sock_fd);
       SET_CPC_RET(-errno);
-      RETURN_CPC_RET;
+      goto cleanup;
     }
   } else {
+    TRACE_LIB_ERROR(lib_handle, -EINVAL, "invalid endpoint option: %d", option);
     SET_CPC_RET(-EINVAL);
-    RETURN_CPC_RET;
+    goto cleanup;
   }
 
+  cleanup:
+  lock_cpc_api(&cpc_api_lock);
+  decrement_ref_count(&ep->ref_count);
+  decrement_ref_count(&lib_handle->ref_count);
+  unlock_cpc_api(&cpc_api_lock);
   RETURN_CPC_RET;
 }
 
@@ -1243,82 +1612,112 @@ int cpc_get_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, void *
   INIT_CPC_RET(int);
   int tmp_ret = 0;
   sli_cpc_endpoint_t *ep = NULL;
+  sli_cpc_handle_t *lib_handle = NULL;
 
-  if (option == CPC_OPTION_NONE || endpoint.ptr == NULL || optval == NULL || optlen == NULL) {
+  if (option == CPC_OPTION_NONE || optval == NULL || optlen == NULL) {
     SET_CPC_RET(-EINVAL);
     RETURN_CPC_RET;
   }
 
+  lock_cpc_api(&cpc_api_lock);
+
+  if (find_handle(ep_handle_list, endpoint.ptr) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
   ep = (sli_cpc_endpoint_t *)endpoint.ptr;
+  if (find_handle(lib_handle_list, ep->lib_handle) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
+  lib_handle = ep->lib_handle;
+  increment_ref_count(&lib_handle->ref_count);
+  increment_ref_count(&ep->ref_count);
+
+  unlock_cpc_api(&cpc_api_lock);
 
   if (option == CPC_OPTION_RX_TIMEOUT) {
     cpc_timeval_t *useropt = (cpc_timeval_t*)optval;
-    struct timeval sockopt;
+    struct timeval sockopt = { 0 };
     socklen_t socklen = sizeof(sockopt);
 
     if (*optlen != sizeof(cpc_timeval_t)) {
-      TRACE_LIB_ERROR(ep->lib_handle, -EINVAL, "optval must be of type cpc_timeval_t");
+      TRACE_LIB_ERROR(lib_handle, -EINVAL, "optval must be of type cpc_timeval_t");
       SET_CPC_RET(-EINVAL);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     tmp_ret = getsockopt(ep->sock_fd, SOL_SOCKET, SO_RCVTIMEO, &sockopt, &socklen);
     if (tmp_ret < 0) {
-      TRACE_LIB_ERRNO(ep->lib_handle, "getsockopt(%d) failed", ep->sock_fd);
+      TRACE_LIB_ERRNO(lib_handle, "getsockopt(%d) failed", ep->sock_fd);
       SET_CPC_RET(-errno);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     // these values are "usually" of type long, so make sure they
     // fit in integers (really, they should).
     if (sockopt.tv_sec > INT_MAX || sockopt.tv_usec > INT_MAX) {
-      TRACE_LIB_ERROR(ep->lib_handle, -EINVAL, "getsockopt returned value out of bound");
+      TRACE_LIB_ERROR(lib_handle, -EINVAL, "getsockopt returned value out of bound");
       SET_CPC_RET(-EINVAL);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     useropt->seconds      = (int)sockopt.tv_sec;
     useropt->microseconds = (int)sockopt.tv_usec;
   } else if (option == CPC_OPTION_TX_TIMEOUT) {
     cpc_timeval_t *useropt = (cpc_timeval_t*)optval;
-    struct timeval sockopt;
+    struct timeval sockopt = { 0 };
     socklen_t socklen = sizeof(sockopt);
 
     if (*optlen != sizeof(cpc_timeval_t)) {
-      TRACE_LIB_ERROR(ep->lib_handle, -EINVAL, "optval must be of type cpc_timeval_t");
+      TRACE_LIB_ERROR(lib_handle, -EINVAL, "optval must be of type cpc_timeval_t");
       SET_CPC_RET(-EINVAL);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     tmp_ret = getsockopt(ep->sock_fd, SOL_SOCKET, SO_SNDTIMEO, &sockopt, &socklen);
     if (tmp_ret < 0) {
-      TRACE_LIB_ERRNO(ep->lib_handle, "getsockopt(%d) failed", ep->sock_fd);
+      TRACE_LIB_ERRNO(lib_handle, "getsockopt(%d) failed", ep->sock_fd);
       SET_CPC_RET(-errno);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     if (sockopt.tv_sec > INT_MAX || sockopt.tv_usec > INT_MAX) {
-      TRACE_LIB_ERROR(ep->lib_handle, -EINVAL, "getsockopt returned value out of bound");
+      TRACE_LIB_ERROR(lib_handle, -EINVAL, "getsockopt returned value out of bound");
       SET_CPC_RET(-EINVAL);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     useropt->seconds      = (int)sockopt.tv_sec;
     useropt->microseconds = (int)sockopt.tv_usec;
   } else if (option == CPC_OPTION_BLOCKING) {
     if (*optlen < sizeof(bool)) {
-      TRACE_LIB_ERROR(ep->lib_handle, -ENOMEM, "insufficient space to store option value");
+      TRACE_LIB_ERROR(lib_handle, -ENOMEM, "insufficient space to store option value");
       SET_CPC_RET(-ENOMEM);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     *optlen = sizeof(bool);
 
     int flags = fcntl(ep->sock_fd, F_GETFL);
     if (flags < 0) {
-      TRACE_LIB_ERRNO(ep->lib_handle, "fnctl(%d) failed", ep->sock_fd);
+      TRACE_LIB_ERRNO(lib_handle, "fnctl(%d) failed", ep->sock_fd);
       SET_CPC_RET(-errno);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     if (flags & O_NONBLOCK) {
@@ -1330,42 +1729,53 @@ int cpc_get_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, void *
     socklen_t socklen = (socklen_t)*optlen;
 
     if (*optlen < sizeof(int)) {
-      TRACE_LIB_ERROR(ep->lib_handle, -ENOMEM, "insufficient space to store option value");
+      TRACE_LIB_ERROR(lib_handle, -ENOMEM, "insufficient space to store option value");
       SET_CPC_RET(-ENOMEM);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     tmp_ret = getsockopt(ep->sock_fd, SOL_SOCKET, SO_SNDBUF, optval, &socklen);
     if (tmp_ret < 0) {
-      TRACE_LIB_ERRNO(ep->lib_handle, "getsockopt(%d) failed", ep->sock_fd);
+      TRACE_LIB_ERRNO(lib_handle, "getsockopt(%d) failed", ep->sock_fd);
       SET_CPC_RET(-errno);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     *optlen = (size_t)socklen;
   } else if (option == CPC_OPTION_MAX_WRITE_SIZE) {
     *optlen = sizeof(size_t);
-    memcpy(optval, &ep->lib_handle->max_write_size, sizeof(ep->lib_handle->max_write_size));
+    memcpy(optval, &lib_handle->max_write_size, sizeof(lib_handle->max_write_size));
   } else if (option == CPC_OPTION_ENCRYPTED) {
     if (*optlen < sizeof(bool)) {
-      TRACE_LIB_ERROR(ep->lib_handle, -ENOMEM, "insufficient space to store option value");
+      TRACE_LIB_ERROR(lib_handle, -ENOMEM, "insufficient space to store option value");
       SET_CPC_RET(-ENOMEM);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     tmp_ret = get_endpoint_encryption(ep, (bool*)optval);
     if (tmp_ret) {
-      TRACE_LIB_ERROR(ep->lib_handle, tmp_ret, "failed to query endpoint encryption state");
+      TRACE_LIB_ERROR(lib_handle, tmp_ret, "failed to query endpoint encryption state");
       SET_CPC_RET(tmp_ret);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     *optlen = sizeof(bool);
   } else {
+    TRACE_LIB_ERROR(lib_handle, -EINVAL, "invalid endpoint option: %d", option);
     SET_CPC_RET(-EINVAL);
-    RETURN_CPC_RET;
+
+    goto cleanup;
   }
 
+  cleanup:
+  lock_cpc_api(&cpc_api_lock);
+  decrement_ref_count(&ep->ref_count);
+  decrement_ref_count(&lib_handle->ref_count);
+  unlock_cpc_api(&cpc_api_lock);
   RETURN_CPC_RET;
 }
 
@@ -1386,14 +1796,20 @@ const char* cpc_get_secondary_app_version(cpc_handle_t handle)
   char *secondary_app_version = NULL;
   size_t secondary_app_version_len = 0;
 
-  if (handle.ptr == NULL) {
+  lock_cpc_api(&cpc_api_lock);
+
+  if (find_handle(lib_handle_list, handle.ptr) == NULL) {
+    unlock_cpc_api(&cpc_api_lock);
     return secondary_app_version;
   }
 
   lib_handle = (sli_cpc_handle_t *)handle.ptr;
+  increment_ref_count(&lib_handle->ref_count);
+
+  unlock_cpc_api(&cpc_api_lock);
 
   if (lib_handle->secondary_app_version == NULL) {
-    return secondary_app_version;
+    goto cleanup;
   }
 
   secondary_app_version_len = strlen(lib_handle->secondary_app_version) + 1;
@@ -1404,6 +1820,10 @@ const char* cpc_get_secondary_app_version(cpc_handle_t handle)
     memcpy(secondary_app_version, lib_handle->secondary_app_version, secondary_app_version_len);
   }
 
+  cleanup:
+  lock_cpc_api(&cpc_api_lock);
+  decrement_ref_count(&lib_handle->ref_count);
+  unlock_cpc_api(&cpc_api_lock);
   return secondary_app_version;
 }
 
@@ -1578,14 +1998,27 @@ int cpc_init_endpoint_event(cpc_handle_t handle, cpc_endpoint_event_handle_t *ev
   int tmp_ret = 0;
   sli_cpc_handle_t *lib_handle = NULL;
   sli_cpc_endpoint_event_handle_t *evt = NULL;
+  sli_handle_list_item_t *ep_evt_handle_item = NULL;
   struct sockaddr_un ep_event_addr = { 0 };
 
-  if (handle.ptr == NULL || event_handle == NULL || endpoint_id == SL_CPC_ENDPOINT_SYSTEM) {
+  if (event_handle == NULL || endpoint_id == SL_CPC_ENDPOINT_SYSTEM) {
     SET_CPC_RET(-EINVAL);
     RETURN_CPC_RET;
   }
 
+  lock_cpc_api(&cpc_api_lock);
+
+  if (find_handle(lib_handle_list, handle.ptr) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
   lib_handle = (sli_cpc_handle_t *)handle.ptr;
+  increment_ref_count(&lib_handle->ref_count);
+
+  unlock_cpc_api(&cpc_api_lock);
 
   tmp_ret = cpc_query_exchange(lib_handle, lib_handle->ctrl_sock_fd,
                                EXCHANGE_OPEN_ENDPOINT_EVENT_SOCKET_QUERY, endpoint_id,
@@ -1593,18 +2026,17 @@ int cpc_init_endpoint_event(cpc_handle_t handle, cpc_endpoint_event_handle_t *ev
   if (tmp_ret) {
     TRACE_LIB_ERROR(lib_handle, tmp_ret, "failed exchange open endpoint event socket");
     SET_CPC_RET(tmp_ret);
-    RETURN_CPC_RET;
+
+    goto cleanup;
   }
 
   evt = zalloc(sizeof(sli_cpc_endpoint_event_handle_t));
   if (evt == NULL) {
     TRACE_LIB_ERROR(evt->lib_handle, -ENOMEM, "alloc(%d) failed", sizeof(sli_cpc_endpoint_event_handle_t));
     SET_CPC_RET(-ENOMEM);
-    RETURN_CPC_RET;
-  }
 
-  /* Save endpoint id for further use */
-  evt->endpoint_id = endpoint_id;
+    goto cleanup;
+  }
 
   ep_event_addr.sun_family = AF_UNIX;
 
@@ -1644,23 +2076,49 @@ int cpc_init_endpoint_event(cpc_handle_t handle, cpc_endpoint_event_handle_t *ev
     goto close_sock_fd;
   }
 
-  TRACE_LIB(lib_handle, "endpoint %d event socket is connected", endpoint_id);
+  ep_evt_handle_item = zalloc(sizeof(sli_handle_list_item_t));
+  if (ep_evt_handle_item == NULL) {
+    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", sizeof(sli_handle_list_item_t));
+    SET_CPC_RET(-ENOMEM);
+    goto destroy_mutex;
+  }
 
+  lock_cpc_api(&cpc_api_lock);
+
+  ep_evt_handle_item->handle = evt;
+  sl_slist_push(&ep_evt_handle_list, &ep_evt_handle_item->node);
+  increment_ref_count(&lib_handle->ep_evt_open_ref_count);
+
+  evt->endpoint_id = endpoint_id;
   evt->lib_handle = lib_handle;
-  event_handle->ptr = (void*)evt;
-
+  event_handle->ptr = (void *) evt;
   SET_CPC_RET(evt->sock_fd);
-  RETURN_CPC_RET;
+
+  unlock_cpc_api(&cpc_api_lock);
+
+  TRACE_LIB(lib_handle, "endpoint %d event socket (%d) is connected", endpoint_id, evt->sock_fd);
+  goto cleanup;
+
+  destroy_mutex:
+  tmp_ret = pthread_mutex_destroy(&evt->sock_fd_lock);
+  if (tmp_ret != 0) {
+    TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_destroy(%p) failed, free up resources anyway", &evt->sock_fd_lock);
+    SET_CPC_RET(-tmp_ret);
+  }
 
   close_sock_fd:
   if (close(evt->sock_fd) < 0) {
-    TRACE_LIB_ERRNO(lib_handle, "close(%d) failed", evt->sock_fd);
+    TRACE_LIB_ERRNO(lib_handle, "close(%d) failed, free up resources anyway", evt->sock_fd);
     SET_CPC_RET(-errno);
   }
 
   free_event:
   free(evt);
 
+  cleanup:
+  lock_cpc_api(&cpc_api_lock);
+  decrement_ref_count(&lib_handle->ref_count);
+  unlock_cpc_api(&cpc_api_lock);
   RETURN_CPC_RET;
 }
 
@@ -1675,19 +2133,42 @@ int cpc_read_endpoint_event(cpc_endpoint_event_handle_t event_handle, cpc_event_
   ssize_t event_length = 0;
   cpcd_event_buffer_t *event = NULL;
   sli_cpc_endpoint_event_handle_t *evt = NULL;
+  sli_cpc_handle_t *lib_handle = NULL;
   int sock_flags = 0;
 
-  if (event_handle.ptr == NULL || event_type == NULL) {
+  if (event_type == NULL) {
     SET_CPC_RET(-EINVAL);
     RETURN_CPC_RET;
   }
 
+  lock_cpc_api(&cpc_api_lock);
+
+  if (find_handle(ep_evt_handle_list, event_handle.ptr) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
   evt = (sli_cpc_endpoint_event_handle_t *)event_handle.ptr;
+  if (find_handle(lib_handle_list, evt->lib_handle) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
+  lib_handle = evt->lib_handle;
+  increment_ref_count(&lib_handle->ref_count);
+  increment_ref_count(&evt->ref_count);
+
+  unlock_cpc_api(&cpc_api_lock);
 
   if (evt->sock_fd <= 0) {
-    TRACE_LIB_ERROR(evt->lib_handle, -EINVAL, "evt->sock_fd (%d) is not initialized", evt->sock_fd);
+    TRACE_LIB_ERROR(lib_handle, -EINVAL, "evt->sock_fd (%d) is not initialized", evt->sock_fd);
     SET_CPC_RET(-EINVAL);
-    RETURN_CPC_RET;
+
+    goto cleanup;
   }
 
   if (flags & CPC_ENDPOINT_EVENT_FLAG_NON_BLOCKING) {
@@ -1696,19 +2177,20 @@ int cpc_read_endpoint_event(cpc_endpoint_event_handle_t event_handle, cpc_event_
 
   tmp_ret = pthread_mutex_lock(&evt->sock_fd_lock);
   if (tmp_ret != 0) {
-    TRACE_LIB_ERROR(evt->lib_handle, -tmp_ret, "pthread_mutex_lock(%p) failed", &evt->sock_fd_lock);
+    TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_lock(%p) failed", &evt->sock_fd_lock);
     SET_CPC_RET(-tmp_ret);
-    RETURN_CPC_RET;
+
+    goto cleanup;
   }
 
   // Get the size of the event and allocate a buffer accordingly
   tmp_ret2 = recv(evt->sock_fd, NULL, 0, sock_flags | MSG_PEEK | MSG_TRUNC);
   if (tmp_ret2 <= 0) {
     if (tmp_ret2 == -1) {
-      TRACE_LIB_ERRNO(evt->lib_handle, "recv(%d) failed", evt->sock_fd);
+      TRACE_LIB_ERRNO(lib_handle, "recv(%d) failed", evt->sock_fd);
       SET_CPC_RET(-errno);
     } else {
-      TRACE_LIB_ERROR(evt->lib_handle, -EBADE, "recv(%d) failed, ret = %d", evt->sock_fd, tmp_ret2);
+      TRACE_LIB_ERROR(lib_handle, -EBADE, "recv(%d) failed, ret = %d", evt->sock_fd, tmp_ret2);
       SET_CPC_RET(-EBADE);
     }
     goto unlock_mutex;
@@ -1718,7 +2200,7 @@ int cpc_read_endpoint_event(cpc_endpoint_event_handle_t event_handle, cpc_event_
 
   event = zalloc((size_t)tmp_ret2);
   if (event ==  NULL) {
-    TRACE_LIB_ERROR(evt->lib_handle, -ENOMEM, "alloc(%d) failed", tmp_ret2);
+    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", tmp_ret2);
     SET_CPC_RET(-ENOMEM);
     goto unlock_mutex;
   }
@@ -1727,10 +2209,10 @@ int cpc_read_endpoint_event(cpc_endpoint_event_handle_t event_handle, cpc_event_
   tmp_ret2 = recv(evt->sock_fd, event, (size_t)event_length, 0);
   if (tmp_ret2 <= 0) {
     if (tmp_ret2 == -1) {
-      TRACE_LIB_ERRNO(evt->lib_handle, "recv(%d) failed", evt->sock_fd);
+      TRACE_LIB_ERRNO(lib_handle, "recv(%d) failed", evt->sock_fd);
       SET_CPC_RET(-errno);
     } else {
-      TRACE_LIB_ERROR(evt->lib_handle, -EBADE, "recv(%d) failed, ret = %d", evt->sock_fd, tmp_ret2);
+      TRACE_LIB_ERROR(lib_handle, -EBADE, "recv(%d) failed, ret = %d", evt->sock_fd, tmp_ret2);
       SET_CPC_RET(-EBADE);
     }
     goto free_event;
@@ -1744,10 +2226,15 @@ int cpc_read_endpoint_event(cpc_endpoint_event_handle_t event_handle, cpc_event_
   unlock_mutex:
   tmp_ret = pthread_mutex_unlock(&evt->sock_fd_lock);
   if (tmp_ret != 0) {
-    TRACE_LIB_ERROR(evt->lib_handle, -tmp_ret, "pthread_mutex_unlock(%p) failed", &evt->sock_fd_lock);
+    TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_unlock(%p) failed", &evt->sock_fd_lock);
     SET_CPC_RET(-tmp_ret);
   }
 
+  cleanup:
+  lock_cpc_api(&cpc_api_lock);
+  decrement_ref_count(&evt->ref_count);
+  decrement_ref_count(&lib_handle->ref_count);
+  unlock_cpc_api(&cpc_api_lock);
   RETURN_CPC_RET;
 }
 
@@ -1759,28 +2246,72 @@ int cpc_deinit_endpoint_event(cpc_endpoint_event_handle_t *event_handle)
   INIT_CPC_RET(int);
   int tmp_ret = 0;
   sli_cpc_endpoint_event_handle_t *evt = NULL;
+  sli_cpc_handle_t *lib_handle = NULL;
+  sli_handle_list_item_t *ep_evt_handle_item = NULL;
 
-  if (event_handle->ptr == NULL) {
+  if (event_handle == NULL) {
     SET_CPC_RET(-EINVAL);
     RETURN_CPC_RET;
   }
 
-  evt = (sli_cpc_endpoint_event_handle_t*)event_handle->ptr;
+  lock_cpc_api(&cpc_api_lock);
+
+  ep_evt_handle_item = find_handle(ep_evt_handle_list, event_handle->ptr);
+  if (ep_evt_handle_item == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
+  evt = (sli_cpc_endpoint_event_handle_t *)event_handle->ptr;
+  if (find_handle(lib_handle_list, evt->lib_handle) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
+  lib_handle = evt->lib_handle;
+  increment_ref_count(&lib_handle->ref_count);
+
+  if (evt->ref_count != 0) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot close a handle (%p) that is in use", event_handle);
+    SET_CPC_RET(-EPERM);
+
+    unlock_cpc_api(&cpc_api_lock);
+    goto cleanup;
+  }
+
+  sl_slist_remove(&ep_evt_handle_list, &ep_evt_handle_item->node);
+  free(ep_evt_handle_item);
+
+  unlock_cpc_api(&cpc_api_lock);
 
   if (close(evt->sock_fd) < 0) {
-    TRACE_LIB_ERRNO(evt->lib_handle, "close(%d) failed", evt->sock_fd);
+    TRACE_LIB_ERRNO(lib_handle, "close(%d) failed, free up resources anyway", evt->sock_fd);
   }
 
   tmp_ret = pthread_mutex_destroy(&evt->sock_fd_lock);
   if (tmp_ret != 0) {
-    TRACE_LIB_ERROR(evt->lib_handle, -tmp_ret, "pthread_mutex_destroy(%p) failed, free up resources anyway", &evt->sock_fd_lock);
+    TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_destroy(%p) failed, free up resources anyway", &evt->sock_fd_lock);
   }
 
-  TRACE_LIB(evt->lib_handle, "endpoint %d event socket is disconnected", evt->endpoint_id);
+  TRACE_LIB(lib_handle, "endpoint %d event socket (%d) is disconnected", evt->endpoint_id, evt->sock_fd);
+
+  lock_cpc_api(&cpc_api_lock);
 
   free(evt);
   event_handle->ptr = NULL;
 
+  decrement_ref_count(&lib_handle->ep_evt_open_ref_count);
+
+  unlock_cpc_api(&cpc_api_lock);
+
+  cleanup:
+  lock_cpc_api(&cpc_api_lock);
+  decrement_ref_count(&lib_handle->ref_count);
+  unlock_cpc_api(&cpc_api_lock);
   RETURN_CPC_RET;
 }
 
@@ -1792,56 +2323,83 @@ int cpc_get_endpoint_event_option(cpc_endpoint_event_handle_t event_handle, cpc_
   INIT_CPC_RET(int);
   int tmp_ret = 0;
   sli_cpc_endpoint_event_handle_t *evt = NULL;
+  sli_cpc_handle_t *lib_handle = NULL;
 
-  if (option == CPC_ENDPOINT_EVENT_OPTION_NONE || event_handle.ptr == NULL || optval == NULL || optlen == NULL) {
+  if (option == CPC_ENDPOINT_EVENT_OPTION_NONE || optval == NULL || optlen == NULL) {
     SET_CPC_RET(-EINVAL);
     RETURN_CPC_RET;
   }
 
-  evt = (sli_cpc_endpoint_event_handle_t*)event_handle.ptr;
+  lock_cpc_api(&cpc_api_lock);
+
+  if (find_handle(ep_evt_handle_list, event_handle.ptr) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
+  evt = (sli_cpc_endpoint_event_handle_t *)event_handle.ptr;
+  if (find_handle(lib_handle_list, evt->lib_handle) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
+  lib_handle = evt->lib_handle;
+  increment_ref_count(&lib_handle->ref_count);
+  increment_ref_count(&evt->ref_count);
+
+  unlock_cpc_api(&cpc_api_lock);
 
   if (option == CPC_ENDPOINT_EVENT_OPTION_READ_TIMEOUT) {
     cpc_timeval_t *useropt = (cpc_timeval_t*)optval;
-    struct timeval sockopt;
+    struct timeval sockopt = { 0 };
     socklen_t socklen = sizeof(sockopt);
 
     if (*optlen != sizeof(cpc_timeval_t)) {
-      TRACE_LIB_ERROR(evt->lib_handle, -EINVAL, "optval must be of type cpc_timeval_t");
+      TRACE_LIB_ERROR(lib_handle, -EINVAL, "optval must be of type cpc_timeval_t");
       SET_CPC_RET(-EINVAL);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     tmp_ret = getsockopt(evt->sock_fd, SOL_SOCKET, SO_RCVTIMEO, &sockopt, &socklen);
     if (tmp_ret < 0) {
-      TRACE_LIB_ERRNO(evt->lib_handle, "getsockopt(%d) failed", evt->sock_fd);
+      TRACE_LIB_ERRNO(lib_handle, "getsockopt(%d) failed", evt->sock_fd);
       SET_CPC_RET(-errno);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     // these values are "usually" of type long, so make sure they
     // fit in integers (really, they should).
     if (sockopt.tv_sec > INT_MAX || sockopt.tv_usec > INT_MAX) {
-      TRACE_LIB_ERROR(evt->lib_handle, -EINVAL, "getsockopt returned value out of bound");
+      TRACE_LIB_ERROR(lib_handle, -EINVAL, "getsockopt returned value out of bound");
       SET_CPC_RET(-EINVAL);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     useropt->seconds      = (int)sockopt.tv_sec;
     useropt->microseconds = (int)sockopt.tv_usec;
   } else if (option == CPC_ENDPOINT_EVENT_OPTION_BLOCKING) {
     if (*optlen < sizeof(bool)) {
-      TRACE_LIB_ERROR(evt->lib_handle, -ENOMEM, "insufficient space to store option value");
+      TRACE_LIB_ERROR(lib_handle, -ENOMEM, "insufficient space to store option value");
       SET_CPC_RET(-EINVAL);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     *optlen = sizeof(bool);
 
     int flags = fcntl(evt->sock_fd, F_GETFL);
     if (flags < 0) {
-      TRACE_LIB_ERRNO(evt->lib_handle, "fnctl(%d) failed", evt->sock_fd);
+      TRACE_LIB_ERRNO(lib_handle, "fnctl(%d) failed", evt->sock_fd);
       SET_CPC_RET(-errno);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     if (flags & O_NONBLOCK) {
@@ -1849,8 +2407,18 @@ int cpc_get_endpoint_event_option(cpc_endpoint_event_handle_t event_handle, cpc_
     } else {
       *(bool *)optval = true;
     }
+  } else {
+    TRACE_LIB_ERROR(lib_handle, -EINVAL, "invalid endpoint event option: %d", option);
+    SET_CPC_RET(-EINVAL);
+
+    goto cleanup;
   }
 
+  cleanup:
+  lock_cpc_api(&cpc_api_lock);
+  decrement_ref_count(&evt->ref_count);
+  decrement_ref_count(&lib_handle->ref_count);
+  unlock_cpc_api(&cpc_api_lock);
   RETURN_CPC_RET;
 }
 
@@ -1862,22 +2430,45 @@ int cpc_set_endpoint_event_option(cpc_endpoint_event_handle_t event_handle, cpc_
   INIT_CPC_RET(int);
   int tmp_ret = 0;
   sli_cpc_endpoint_event_handle_t *evt = NULL;
+  sli_cpc_handle_t *lib_handle = NULL;
 
-  if (option == CPC_ENDPOINT_EVENT_OPTION_NONE || event_handle.ptr == NULL || optval == NULL) {
+  if (option == CPC_ENDPOINT_EVENT_OPTION_NONE || optval == NULL) {
     SET_CPC_RET(-EINVAL);
     RETURN_CPC_RET;
   }
 
-  evt = (sli_cpc_endpoint_event_handle_t*)event_handle.ptr;
+  lock_cpc_api(&cpc_api_lock);
+
+  if (find_handle(ep_evt_handle_list, event_handle.ptr) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
+  evt = (sli_cpc_endpoint_event_handle_t *)event_handle.ptr;
+  if (find_handle(lib_handle_list, evt->lib_handle) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
+  lib_handle = evt->lib_handle;
+  increment_ref_count(&lib_handle->ref_count);
+  increment_ref_count(&evt->ref_count);
+
+  unlock_cpc_api(&cpc_api_lock);
 
   if (option == CPC_ENDPOINT_EVENT_OPTION_READ_TIMEOUT) {
     cpc_timeval_t *useropt = (cpc_timeval_t*)optval;
-    struct timeval sockopt;
+    struct timeval sockopt = { 0 };
 
     if (optlen != sizeof(cpc_timeval_t)) {
-      TRACE_LIB_ERROR(evt->lib_handle, -EINVAL, "optval must be of type cpc_timeval_t");
+      TRACE_LIB_ERROR(lib_handle, -EINVAL, "optval must be of type cpc_timeval_t");
       SET_CPC_RET(-EINVAL);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     sockopt.tv_sec  = useropt->seconds;
@@ -1885,36 +2476,39 @@ int cpc_set_endpoint_event_option(cpc_endpoint_event_handle_t event_handle, cpc_
 
     tmp_ret = setsockopt(evt->sock_fd, SOL_SOCKET, SO_RCVTIMEO, &sockopt, (socklen_t)sizeof(sockopt));
     if (tmp_ret < 0) {
-      TRACE_LIB_ERRNO(evt->lib_handle, "setsockopt(%d)", evt->sock_fd);
+      TRACE_LIB_ERRNO(lib_handle, "setsockopt(%d)", evt->sock_fd);
       SET_CPC_RET(-errno);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
   } else if (option == CPC_ENDPOINT_EVENT_OPTION_BLOCKING) {
     if (optlen != sizeof(bool)) {
-      TRACE_LIB_ERROR(evt->lib_handle, -EINVAL, "optval must be of type bool");
+      TRACE_LIB_ERROR(lib_handle, -EINVAL, "optval must be of type bool");
       SET_CPC_RET(-EINVAL);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     tmp_ret = pthread_mutex_lock(&evt->sock_fd_lock);
     if (tmp_ret != 0) {
-      TRACE_LIB_ERROR(evt->lib_handle, -tmp_ret, "pthread_mutex_lock failed");
+      TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_lock failed");
       SET_CPC_RET(-tmp_ret);
-      RETURN_CPC_RET;
+
+      goto cleanup;
     }
 
     int flags = fcntl(evt->sock_fd, F_GETFL);
     if (flags < 0) {
-      TRACE_LIB_ERRNO(evt->lib_handle, "fnctl(%d) failed", evt->sock_fd);
+      TRACE_LIB_ERRNO(lib_handle, "fnctl(%d) failed", evt->sock_fd);
       SET_CPC_RET(-errno);
 
       tmp_ret = pthread_mutex_unlock(&evt->sock_fd_lock);
       if (tmp_ret != 0) {
-        TRACE_LIB_ERROR(evt->lib_handle, -tmp_ret, "pthread_mutex_unlock(%p) failed", &evt->sock_fd_lock);
+        TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_unlock(%p) failed", &evt->sock_fd_lock);
         SET_CPC_RET(-tmp_ret);
       }
 
-      RETURN_CPC_RET;
+      goto cleanup;
     }
 
     if (*(bool*)optval == true) {
@@ -1925,22 +2519,29 @@ int cpc_set_endpoint_event_option(cpc_endpoint_event_handle_t event_handle, cpc_
 
     tmp_ret = fcntl(evt->sock_fd, F_SETFL, flags);
     if (tmp_ret < 0) {
-      TRACE_LIB_ERRNO(evt->lib_handle, "fnctl(%d) failed", evt->sock_fd);
+      TRACE_LIB_ERRNO(lib_handle, "fnctl(%d) failed", evt->sock_fd);
       SET_CPC_RET(-errno);
     }
 
     tmp_ret = pthread_mutex_unlock(&evt->sock_fd_lock);
     if (tmp_ret != 0) {
-      TRACE_LIB_ERROR(evt->lib_handle, -tmp_ret, "pthread_mutex_unlock(%p) failed", &evt->sock_fd_lock);
+      TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_unlock(%p) failed", &evt->sock_fd_lock);
       SET_CPC_RET(-tmp_ret);
     }
 
-    RETURN_CPC_RET;
+    goto cleanup;
   } else {
+    TRACE_LIB_ERROR(lib_handle, -EINVAL, "invalid endpoint event option: %d", option);
     SET_CPC_RET(-EINVAL);
-    RETURN_CPC_RET;
+
+    goto cleanup;
   }
 
+  cleanup:
+  lock_cpc_api(&cpc_api_lock);
+  decrement_ref_count(&evt->ref_count);
+  decrement_ref_count(&lib_handle->ref_count);
+  unlock_cpc_api(&cpc_api_lock);
   RETURN_CPC_RET;
 }
 

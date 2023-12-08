@@ -32,11 +32,12 @@
 #include <signal.h>
 #include <linux/serial.h>
 
-#include "misc/config.h"
-#include "misc/logging.h"
-#include "misc/sleep.h"
-#include "misc/utils.h"
-#include "misc/board_controller.h"
+#include "cpcd/board_controller.h"
+#include "cpcd/config.h"
+#include "cpcd/logging.h"
+#include "cpcd/sleep.h"
+#include "cpcd/utils.h"
+
 #include "driver/driver_uart.h"
 #include "server_core/core/hdlc.h"
 #include "server_core/core/crc.h"

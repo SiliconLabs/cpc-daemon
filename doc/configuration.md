@@ -36,13 +36,6 @@ device.
 
     spi_device_file: /dev/spidev0.0
 
-### SPI Chip Select GPIO
-
-Required when the bus type is `SPI`. The number of the GPIO used for chip select.
-Note that the pin must be available in user space.
-
-    spi_cs_gpio: 8
-
 ### SPI Rx Interrupt GPIO
 Required when the bus type is `SPI`. The SPI interface for CPC uses an additional
 pin to indicate that a packet has been received by the CPCd.
@@ -55,13 +48,6 @@ Optional when the bus type is `SPI`. The maximum transfer speed in Hz. Default v
 is 1000000.
 
     spi_device_bitrate: 1000000
-
-### SPI Mode
-
-Optional when the bus type is `SPI`. The value must be one of `SPI_MODE_0`, `SPI_MODE_1`,
-`SPI_MODE_2` or `SPI_MODE_3`. Default value is `SPI_MODE_0`.
-
-    spi_device_mode: SPI_MODE_0
 
 ### UART Device File
 
@@ -104,7 +90,7 @@ that is connected to the WAKE pin of the secondary.
 Required if `bootloader_recovery_pins_enabled` is set to `true`. The number of the GPIO
 that is connected to the RESET pin of the secondary.
 
-    bootloader_wake_gpio: 23
+    bootloader_reset_gpio: 23
 
 ### Trace to Stdout
 

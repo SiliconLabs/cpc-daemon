@@ -55,6 +55,18 @@ sudo make install
 sudo ldconfig
 ```
 
+Note that the library comes with `pkg-config` support. 
+Build systems can take advantage of that to find the library at
+build time to apply conditional rules for their application. 
+
+Here is one example using CMake to link a specific target with libcpc:
+
+```
+find_package(PkgConfig REQUIRED)
+pkg_search_module(Libcpc REQUIRED IMPORTED_TARGET libcpc)
+target_link_libraries(target PRIVATE PkgConfig::Libcpc)
+```
+
 ## Configuring and running CPCD
 A configuration file must be provided to the CPC daemon. If the configuration
 file is not specified as a command-line argument, CPC uses the default
@@ -116,7 +128,7 @@ takes as argument `plain-text` or `ecdh`.
 ```
 # Bind primary and secondary. The binding key will be generated where
 # "binding_key_file" points to in the config file
-$ ./cpcd -c cpcd.conf ---bind ecdh
+$ ./cpcd -c cpcd.conf --bind ecdh
 
 # Alternatively, the key file can be specified on the command line
 $ ./cpcd -c cpcd.conf --bind ecdh --key binding.key

@@ -22,16 +22,13 @@
 #include <pthread.h>
 
 #include <stdbool.h>
-#include "misc/gpio.h"
-#include "misc/sl_status.h"
+
+#include "cpcd/gpio.h"
+#include "cpcd/sl_status.h"
 
 sl_status_t send_firmware(const char   *image_file,
                           const char   *device,
-                          unsigned int mode,
-                          unsigned int bit_per_word,
                           unsigned int speed,
-                          const char *cs_gpio_chip,
-                          unsigned int cs_gpio_pin,
                           const char *irq_gpio_chip,
                           unsigned int irq_gpio_pin);
 

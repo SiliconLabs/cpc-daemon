@@ -18,13 +18,15 @@
 #define _GNU_SOURCE
 #include <pthread.h>
 
-#include "security.h"
-#include "misc/config.h"
-#include "misc/logging.h"
+#include "cpcd/config.h"
+#include "cpcd/logging.h"
+#include "cpcd/security.h"
+
 #include "server_core/server/server_ready_sync.h"
 #include "security/private/keys/keys.h"
 #include "security/private/thread/command_synchronizer.h"
 #include "security/private/thread/security_thread.h"
+#include "security/security.h"
 
 extern pthread_t security_thread;
 

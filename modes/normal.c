@@ -17,13 +17,14 @@
 
 #include <pthread.h>
 
-#include "modes/normal.h"
-#include "server_core/server_core.h"
+#include "cpcd/config.h"
+#include "cpcd/logging.h"
+#include "cpcd/modes.h"
+#include "cpcd/security.h"
+#include "cpcd/server_core.h"
+
 #include "driver/driver_uart.h"
 #include "driver/driver_spi.h"
-#include "misc/config.h"
-#include "misc/logging.h"
-#include "security/security.h"
 
 extern pthread_t driver_thread;
 extern pthread_t server_core_thread;
@@ -43,11 +44,7 @@ void run_normal_mode(void)
       driver_thread = driver_spi_init(&fd_socket_driver_core,
                                       &fd_socket_driver_core_notify,
                                       config.spi_file,
-                                      config.spi_mode,
-                                      config.spi_bit_per_word,
                                       config.spi_bitrate,
-                                      config.spi_cs_chip,
-                                      config.spi_cs_pin,
                                       config.spi_irq_chip,
                                       config.spi_irq_pin);
     } else {

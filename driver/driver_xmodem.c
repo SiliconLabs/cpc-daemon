@@ -15,19 +15,21 @@
  *
  ******************************************************************************/
 
-#include "server_core/core/crc.h"
-#include "driver/driver_xmodem.h"
-#include "driver/driver_uart.h"
-#include "misc/logging.h"
-#include "misc/sleep.h"
-#include "misc/xmodem.h"
-
-#include <unistd.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <unistd.h>
+
+#include "cpcd/logging.h"
+#include "cpcd/sleep.h"
+#include "cpcd/utils.h"
+#include "cpcd/xmodem.h"
+
+#include "server_core/core/crc.h"
+#include "driver/driver_xmodem.h"
+#include "driver/driver_uart.h"
 
 #define BTL_MENU_PROMPT "BL >"
 #define BTL_UPLOAD_CONFIRMATION "Serial upload complete"

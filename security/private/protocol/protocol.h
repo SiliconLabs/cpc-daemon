@@ -18,8 +18,9 @@
 #ifndef SECURITY_PROTOCOL_H
 #define SECURITY_PROTOCOL_H
 
+#include "cpcd/sl_status.h"
+
 #include "security/private/keys/keys.h"
-#include "misc/sl_status.h"
 #include "lib/sl_cpc.h"
 
 #define SLI_SECURITY_PROTOCOL_HEADER_LENGTH (sizeof(uint16_t) + sizeof(sl_cpc_security_id_t))
@@ -56,20 +57,20 @@ typedef struct {
   uint16_t request_len;
   uint16_t response_len;
   sl_cpc_security_id_t command_id;
-}sl_cpc_security_protocol_cmd_info_t;
+} sl_cpc_security_protocol_cmd_info_t;
 
 #define SLI_SECURITY_PROTOCOL_PAYLOAD_MAX_LENGTH (sizeof(sl_status_t) + SESSION_INIT_RANDOM_LENGTH_BYTES)
 
-typedef struct {
+typedef struct __attribute__((packed)) {
   uint16_t len;
   sl_cpc_security_id_t command_id;
   uint8_t payload[SLI_SECURITY_PROTOCOL_PAYLOAD_MAX_LENGTH];
-}sl_cpc_security_protocol_cmd_t;
+} sl_cpc_security_protocol_cmd_t;
 
-typedef struct {
+typedef struct __attribute__((packed)) {
   sl_status_t status;
   uint8_t random2[SESSION_INIT_RANDOM_LENGTH_BYTES];
-}__attribute__((packed)) session_init_response_t;
+} session_init_response_t;
 
 sl_status_t security_send_binding_request(sl_cpc_binding_request_t binding_request, sl_cpc_security_protocol_cmd_t *response);
 

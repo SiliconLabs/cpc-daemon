@@ -23,8 +23,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "cpcd/endianness.h"
+
 #include "sl_cpc.h"
-#include "misc/endianess.h"
 
 #define SLI_CPC_HDLC_HEADER_SIZE      5U
 #define SLI_CPC_HDLC_HEADER_RAW_SIZE  7U
@@ -49,14 +50,13 @@
 
 #define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_MASK  0x3F
 
-#define SLI_CPC_HDLC_ACK_SUPERVISORY_FUNCTION   0
-
 #define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_INFORMATION  0x00
 #define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_POLL_FINAL   0x04
 #define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_RESET_SEQ    0x31
 #define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_ACKNOWLEDGE  0x0E
 #define SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_UNKNOWN      0xFF
 
+#define SLI_CPC_HDLC_ACK_SUPERVISORY_FUNCTION      0
 #define SLI_CPC_HDLC_REJECT_SUPERVISORY_FUNCTION   1
 #define SLI_CPC_HDLC_REJECT_PAYLOAD_SIZE  1
 
@@ -71,11 +71,6 @@ SL_ENUM(sl_cpc_reject_reason_t){
   HDLC_REJECT_UNREACHABLE_ENDPOINT,
   HDLC_REJECT_ERROR
 };
-
-typedef union {
-  uint8_t bytes[2];
-  uint16_t uint16;
-}uint16_u;
 
 /***************************************************************************//**
  * Gets HDLC header flag value.
@@ -110,12 +105,7 @@ static inline uint8_t hdlc_get_address(const uint8_t *header_buf)
  ******************************************************************************/
 static inline uint16_t hdlc_get_length(const uint8_t *header_buf)
 {
-  uint16_u u;
-
-  u.bytes[0] = header_buf[SLI_CPC_HDLC_LENGTH_POS];
-  u.bytes[1] = header_buf[SLI_CPC_HDLC_LENGTH_POS + 1];
-
-  return le16_to_cpu(u.uint16);
+  return u16_from_le(header_buf + SLI_CPC_HDLC_LENGTH_POS);
 }
 
 /***************************************************************************//**
@@ -139,12 +129,7 @@ static inline uint8_t hdlc_get_control(const uint8_t *header_buf)
  ******************************************************************************/
 static inline uint16_t hdlc_get_hcs(const uint8_t *header_buf)
 {
-  uint16_u u;
-
-  u.bytes[0] = header_buf[SLI_CPC_HDLC_HCS_POS];
-  u.bytes[1] = header_buf[SLI_CPC_HDLC_HCS_POS + 1];
-
-  return le16_to_cpu(u.uint16);
+  return u16_from_le(header_buf + SLI_CPC_HDLC_HCS_POS);
 }
 
 /***************************************************************************//**
@@ -156,12 +141,7 @@ static inline uint16_t hdlc_get_hcs(const uint8_t *header_buf)
  ******************************************************************************/
 static inline uint16_t hdlc_get_fcs(const uint8_t *payload_buf, uint16_t payload_length)
 {
-  uint16_u u;
-
-  u.bytes[0] = payload_buf[payload_length];
-  u.bytes[1] = payload_buf[payload_length + 1];
-
-  return le16_to_cpu(u.uint16);
+  return u16_from_le(payload_buf + payload_length);
 }
 
 /***************************************************************************//**

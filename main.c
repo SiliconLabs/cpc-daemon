@@ -33,17 +33,15 @@
 #include <sys/time.h>
 #include <errno.h>
 
+#include "cpcd/config.h"
+#include "cpcd/logging.h"
+#include "cpcd/modes.h"
+#include "cpcd/security.h"
+#include "cpcd/server_core.h"
+#include "cpcd/sleep.h"
+
 #include "version.h"
-#include "misc/config.h"
-#include "misc/logging.h"
-#include "misc/sleep.h"
-#include "modes/normal.h"
-#include "modes/binding.h"
-#include "modes/firmware_update.h"
-#include "modes/uart_validation.h"
 #include "driver/driver_kill.h"
-#include "security/security.h"
-#include "server_core/server_core.h"
 #include "server_core/epoll/epoll.h"
 
 #if defined(HAVE_BACKTRACE)
@@ -120,7 +118,7 @@ int main(int argc, char *argv[])
   }
 #endif
 
-  /* Setup crash and gracefull exit signaling */
+  /* Setup crash and graceful exit signaling */
   {
     sigset_t mask;
     int ret;

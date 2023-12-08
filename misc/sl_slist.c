@@ -15,11 +15,12 @@
  *
  ******************************************************************************/
 
-#include "sl_slist.h"
+#include <assert.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include <assert.h>
+
+#include "cpcd/sl_slist.h"
 
 #define EFM_ASSERT(cond) assert(cond)
 

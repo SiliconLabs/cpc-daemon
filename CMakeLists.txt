@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.10)
 
 project(cpcd
-  VERSION "4.2.2.0"
+  VERSION "4.3.2.0"
   LANGUAGES C)
 set(CPC_LIBRARY_API_VERSION "3")
-set(CPC_PROTOCOL_VERSION "3")
+set(CPC_PROTOCOL_VERSION "4")
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/modules")
 
@@ -21,6 +21,7 @@ option(ENABLE_ENCRYPTION "Enable the encryption of the CPC link using MbedTLS" T
 option(USE_LEGACY_GPIO_SYSFS "Use the legacy GPIO sysfs instead of GPIO device" TRUE)
 option(COMPILE_LTTNG "Enable LTTng tracing")
 option(ENABLE_VALGRIND "Enable Valgrind in tests")
+option(TARGET_TESTING "Enable some features used only in testing")
 
 # Includes
 include(cmake/GetGitRevisionDescription.cmake)
@@ -53,7 +54,7 @@ endif()
 
 find_path(Linux_INCLUDE_DIR "linux/version.h")
 if(NOT Linux_INCLUDE_DIR)
-  message(FATAL_ERROR "Linux headers not found")
+  message(WARNING "Linux headers not found")
 endif()
 
 set(GIT_SHA1 "Unknown")
@@ -63,6 +64,7 @@ add_definitions("-DGIT_SHA1=\"${GIT_SHA1}\"")
 add_definitions("-DGIT_REFSPEC=\"${GIT_REFSPEC}\"")
 
 if(WARN_AS_ERROR)
+  message(STATUS "Treating warnings as errors")
   target_compile_options(_Warnings INTERFACE -Werror)
 endif()
 
@@ -79,6 +81,7 @@ add_library(cpc SHARED)
 target_stds(cpc C 99 POSIX 2008)
 target_link_libraries(cpc PRIVATE Interface::Warnings)
 target_sources(cpc PRIVATE misc/sleep.c)
+target_sources(cpc PRIVATE misc/sl_slist.c)
 target_sources(cpc PRIVATE lib/sl_cpc.c)
 
 if(COMPILE_LTTNG)
@@ -88,10 +91,16 @@ if(COMPILE_LTTNG)
 endif()
 
 target_include_directories(cpc PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_include_directories(cpc PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_include_directories(cpc PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/autogen")
 set_target_properties(cpc PROPERTIES VERSION ${PROJECT_VERSION})
 set_target_properties(cpc PROPERTIES SOVERSION ${CPC_LIBRARY_API_VERSION})
 set_target_properties(cpc PROPERTIES PUBLIC_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/lib/sl_cpc.h")
+configure_file(libcpc.pc.in libcpc.pc @ONLY)
+install(
+  FILES ${CMAKE_CURRENT_BINARY_DIR}/libcpc.pc
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
+)
 
 # CPCd Config file path
 if(NOT DEFINED CPCD_CONFIG_FILE_PATH)
@@ -114,6 +123,13 @@ endif()
 add_definitions(-DCPC_SOCKET_DIR="${CPC_SOCKET_DIR}")
 message(STATUS "CPC_SOCKET_DIR=${CPC_SOCKET_DIR}")
 
+# Default instance name
+if(NOT DEFINED DEFAULT_INSTANCE_NAME)
+  set(DEFAULT_INSTANCE_NAME cpcd_0)
+endif()
+add_definitions(-DDEFAULT_INSTANCE_NAME="${DEFAULT_INSTANCE_NAME}")
+message(STATUS "DEFAULT_INSTANCE_NAME=${DEFAULT_INSTANCE_NAME}")
+
 # Enable encryption support if the user requested it
 if(ENABLE_ENCRYPTION)
   add_definitions("-DENABLE_ENCRYPTION")
@@ -129,13 +145,18 @@ else()
   message(STATUS "Building CPCd with GPIO device")
 endif()
 
+if(TARGET_TESTING)
+    add_definitions(-DTARGET_TESTING)
+endif()
+
 # Build CPC Daemon if building for release or debug
 if((TARGET_GROUP STREQUAL release) OR
    (TARGET_GROUP STREQUAL debug) OR
    (TARGET_GROUP STREQUAL blackbox_test) OR
    (TARGET_GROUP STREQUAL blackbox_test_spurious_reset) OR
    (TARGET_GROUP STREQUAL blackbox_test_large_buf) OR
-   (TARGET_GROUP STREQUAL blackbox_test_nonce_overflow))
+   (TARGET_GROUP STREQUAL blackbox_test_nonce_overflow) OR
+   (TARGET_GROUP STREQUAL blackbox_test_multi_spi))
   message(STATUS "Building CPC Daemon")
 
   if((TARGET_GROUP STREQUAL debug) OR
@@ -146,6 +167,7 @@ if((TARGET_GROUP STREQUAL release) OR
     add_compile_options(-funwind-tables)
     # CMake<3.13 does not support target_link_options
     target_link_libraries(backtrace INTERFACE "-rdynamic")
+    set(CMAKE_BUILD_TYPE RelWithDebInfo)
   endif()
 
   if(TARGET_GROUP STREQUAL blackbox_test_nonce_overflow)
@@ -174,7 +196,6 @@ if((TARGET_GROUP STREQUAL release) OR
                       driver/driver_xmodem.c
                       driver/driver_ezsp.c
                       driver/driver_kill.c
-                      misc/errno_codename.c
                       misc/logging.c
                       misc/config.c
                       misc/utils.c
@@ -194,6 +215,7 @@ if((TARGET_GROUP STREQUAL release) OR
 
   target_include_directories(cpcd PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/autogen")
   target_include_directories(cpcd PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_include_directories(cpcd PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
   target_include_directories(cpcd PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/lib")
   target_link_libraries(cpcd PRIVATE Threads::Threads)
   target_link_libraries(cpcd PRIVATE backtrace)
@@ -282,7 +304,6 @@ elseif((TARGET_GROUP STREQUAL unit_test) OR (TARGET_GROUP STREQUAL unit_test_wit
                             driver/driver_uart.c
                             lib/sl_cpc.c
                             modes/uart_validation.c
-                            misc/errno_codename.c
                             misc/logging.c
                             misc/config.c
                             misc/utils.c
@@ -304,6 +325,7 @@ elseif((TARGET_GROUP STREQUAL unit_test) OR (TARGET_GROUP STREQUAL unit_test_wit
     target_include_directories(cpc_unity PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/autogen")
     target_include_directories(cpc_unity PRIVATE ${UNITY_SOURCES}/src/)
     target_include_directories(cpc_unity PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_include_directories(cpc_unity PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
     target_include_directories(cpc_unity PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/lib")
     target_link_libraries(cpc_unity PRIVATE Threads::Threads MbedTLS::mbedcrypto)
     target_link_libraries(cpc_unity PRIVATE backtrace)
@@ -312,86 +334,7 @@ elseif((TARGET_GROUP STREQUAL unit_test) OR (TARGET_GROUP STREQUAL unit_test_wit
     # Run the tests
     add_subdirectory(test/unity)
 
-    # Build CPC Daemon for target tests
-elseif(TARGET_GROUP STREQUAL target_test)
-    message(STATUS "Building target tests")
-    set(CMAKE_BUILD_TYPE Debug)
-    add_definitions(-DTARGET_TESTING)
-
-    add_definitions(-DSL_CLI_USE_STDIO)
-
-    include_directories(test/target/)
-
-    add_executable(cpc_target
-                    server_core/server_core.c
-                    server_core/epoll/epoll.c
-                    server_core/core/core.c
-                    server_core/core/crc.c
-                    server_core/core/hdlc.c
-                    server_core/server/server.c
-                    server_core/server/server_ready_sync.c
-                    server_core/system_endpoint/system.c
-                    server_core/system_endpoint/system_callbacks.c
-                    security/security.c
-                    security/private/keys/keys.c
-                    security/private/protocol/protocol.c
-                    security/private/thread/command_synchronizer.c
-                    security/private/thread/security_thread.c
-                    driver/driver_uart.c
-                    driver/driver_spi.c
-                    driver/driver_xmodem.c
-                    driver/driver_ezsp.c
-                    driver/driver_kill.c
-                    modes/uart_validation.c
-                    misc/errno_codename.c
-                    misc/logging.c
-                    misc/config.c
-                    misc/utils.c
-                    misc/sl_slist.c
-                    misc/sl_string.c
-                    misc/board_controller.c
-                    misc/sleep.c
-                    ../../test/linux/common/src/sl_assert.c
-                    ../../iostream/src/sl_iostream_stdio.c
-                    ../../iostream/src/sl_iostream.c
-                    ../../cli/src/sl_cli_arguments.c
-                    ../../cli/src/sl_cli_command.c
-                    ../../cli/src/sl_cli_input.c
-                    ../../cli/src/sl_cli_io.c
-                    ../../cli/src/sl_cli_tokenize.c
-                    ../../cli/src/sl_cli.c
-                    test/target/command_table.c
-                    test/target/cpc_test_cmd.c
-                    test/target/cpc_test_multithread.c
-                    test/target/cpc_test_cmd_large_buf.c
-                    test/target/cpc_test_multithread.c
-                    lib/sl_cpc.c
-                    test/target/main.c)
-
-    target_include_directories(cpc_target PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/autogen")
-    target_include_directories(cpc_target PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_include_directories(cpc_target PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/lib")
-    target_include_directories(cpc_target PRIVATE ../../test/linux/common/inc
-                                                  ../../test/linux/emlib/inc
-                                                  ../../iostream/inc/
-                                                  ../../cli/inc/
-                                                  ../../cli/src/
-                                                  misc/)
-    target_link_libraries(cpc_target PRIVATE Threads::Threads)
-    target_link_libraries(cpc_target PRIVATE backtrace)
-    target_link_libraries(cpc_target PRIVATE cpc)
-    if(ENABLE_ENCRYPTION)
-      target_link_libraries(cpc_target PRIVATE MbedTLS::mbedcrypto)
-    endif()
-    if(USE_LEGACY_GPIO_SYSFS)
-      target_compile_definitions(cpc_target PRIVATE USE_LEGACY_GPIO_SYSFS)
-      target_sources(cpc_target PRIVATE misc/gpio_sysfs.c)
-    else()
-      target_link_libraries(cpc_target PRIVATE PkgConfig::Libgpiod)
-      target_sources(cpc_target PRIVATE misc/gpio_gpiod.c)
-    endif()
-
-elseif(TARGET_GROUP STREQUAL blackbox_test)
+elseif((TARGET_GROUP STREQUAL blackbox_test) OR (TARGET_GROUP STREQUAL blackbox_test_multi_spi))
     message(STATUS "Building blackbox_test")
 
     set(CMAKE_BUILD_TYPE Debug)
@@ -423,7 +366,11 @@ elseif(TARGET_GROUP STREQUAL blackbox_test)
     target_link_libraries(lib_client PRIVATE cpc unity)
 
     # Run the tests
-    add_subdirectory(test/blackbox)
+    if(TARGET_GROUP STREQUAL blackbox_test)
+      add_subdirectory(test/blackbox)
+    elseif(TARGET_GROUP STREQUAL blackbox_test_multi_spi)
+      add_subdirectory(test/blackbox/multi_spi)
+    endif()
 
 elseif(TARGET_GROUP STREQUAL blackbox_test_spurious_reset)
     message(STATUS "Building blackbox_test_spurious_reset")
@@ -529,6 +476,7 @@ elseif(TARGET_GROUP STREQUAL blackbox_test_nonce_overflow)
 
     # Run the tests
     add_subdirectory(test/blackbox)
+
 else()
     message(FATAL_ERROR "Given TARGET_GROUP unknown specify when running cmake.. i.g: -DTARGET_GROUP=release")
 endif()

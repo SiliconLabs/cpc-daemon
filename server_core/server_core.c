@@ -28,17 +28,19 @@
 #include <errno.h>
 #include <signal.h>
 
-#include "misc/config.h"
-#include "misc/logging.h"
-#include "misc/sleep.h"
-#include "misc/utils.h"
-#include "modes/uart_validation.h"
-#include "server_core.h"
+#include "cpcd/config.h"
+#include "cpcd/endianness.h"
+#include "cpcd/logging.h"
+#include "cpcd/modes.h"
+#include "cpcd/security.h"
+#include "cpcd/server_core.h"
+#include "cpcd/sleep.h"
+#include "cpcd/utils.h"
+
 #include "server_core/epoll/epoll.h"
 #include "server_core/server/server.h"
 #include "server_core/core/core.h"
 #include "server_core/system_endpoint/system.h"
-#include "security/security.h"
 #include "version.h"
 #include "driver/driver_kill.h"
 
@@ -54,12 +56,19 @@ static bool reset_ack = false;
 static bool secondary_cpc_version_received = false;
 static bool secondary_app_version_received_or_not_available = false;
 static bool bootloader_info_received_or_not_available = false;
-static bool secondary_bus_speed_received = false;
-static bool failed_to_receive_secondary_bus_speed = false;
-static bool reset_reason_received = false;
+static bool secondary_bus_bitrate_received = false;
+static bool failed_to_receive_secondary_bus_bitrate = false;
+static bool secondary_bus_max_bitrate_received = false;
+static bool failed_to_receive_secondary_bus_max_bitrate = false;
 static bool capabilities_received = false;
 static bool rx_capability_received = false;
 static bool protocol_version_received = false;
+
+#if defined(UNIT_TESTING)
+static bool reset_reason_received = true;
+#else
+static bool reset_reason_received = false;
+#endif // UNIT_TESTING
 
 static server_core_mode_t server_core_mode = SERVER_CORE_MODE_NORMAL;
 
@@ -79,7 +88,8 @@ static enum {
   WAIT_FOR_SECONDARY_CPC_VERSION,
   WAIT_FOR_SECONDARY_APP_VERSION,
   WAIT_FOR_PROTOCOL_VERSION,
-  WAIT_FOR_SECONDARY_BUS_SPEED,
+  WAIT_FOR_SECONDARY_BUS_BITRATE,
+  WAIT_FOR_SECONDARY_BUS_MAX_BITRATE,
   RESET_SEQUENCE_DONE
 } reset_sequence_state = SET_NORMAL_REBOOT_MODE;
 
@@ -148,6 +158,11 @@ static void cleanup_socket_folder(const char *folder)
     }
   }
   closedir(dir);
+}
+
+bool server_core_max_bitrate_received(void)
+{
+  return secondary_bus_max_bitrate_received;
 }
 
 uint32_t server_core_get_secondary_rx_capability(void)
@@ -466,7 +481,7 @@ static void property_get_capabilities_callback(sl_cpc_system_command_handle_t *h
   FATAL_ON(status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS);
   FATAL_ON(property_value == NULL || property_length != sizeof(uint32_t));
 
-  capabilities = *((uint32_t *)property_value);
+  capabilities = u32_from_le((const uint8_t *)property_value);
 
   if (capabilities & CPC_CAPABILITIES_SECURITY_ENDPOINT_MASK) {
     TRACE_RESET("Received capability : Security endpoint");
@@ -500,8 +515,10 @@ static void property_get_rx_capability_callback(sl_cpc_system_command_handle_t *
   FATAL_ON(property_value == NULL || property_length != sizeof(uint16_t));
 
   TRACE_RESET("Received RX capability of %u bytes", *((uint16_t *)property_value));
-  rx_capability = *((uint16_t *)property_value);
+  rx_capability = u16_from_le((const uint8_t *)property_value);
   rx_capability_received = true;
+
+  PRINT_INFO("RX capability is %u bytes", rx_capability);
 }
 
 static void property_get_secondary_bootloader_info(sl_cpc_system_command_handle_t *handle,
@@ -520,7 +537,8 @@ static void property_get_secondary_bootloader_info(sl_cpc_system_command_handle_
     //  [0]: bootloader type
     //  [1]: version (unused for now)
     //  [2]: capability mask (unused for now)
-    server_core_secondary_bootloader_type = ((uint32_t*)property_value)[0];
+    server_core_secondary_bootloader_type = u32_from_le((const uint8_t *)property_value + 0);
+
     BUG_ON(server_core_secondary_bootloader_type >= SL_CPC_BOOTLOADER_UNKNOWN);
 
     PRINT_INFO("Secondary bootloader: %s",
@@ -542,16 +560,19 @@ static void property_get_secondary_cpc_version_callback(sl_cpc_system_command_ha
                                                         size_t property_length,
                                                         sl_status_t status)
 {
-  (void) handle;
-
   uint32_t version[3];
-  memcpy(version, property_value, 3 * sizeof(uint32_t));
+
+  (void) handle;
 
   if ( (property_id != PROP_SECONDARY_CPC_VERSION)
        || (status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS)
-       || (property_value == NULL || property_length != 3 * sizeof(uint32_t))) {
+       || (property_value == NULL || property_length != sizeof(version))) {
     FATAL("Cannot get Secondary CPC version (obsolete RCP firmware?)");
   }
+
+  version[0] = u32_from_le((const uint8_t *)property_value + 0);
+  version[1] = u32_from_le((const uint8_t *)property_value + 4);
+  version[2] = u32_from_le((const uint8_t *)property_value + 8);
 
   PRINT_INFO("Secondary CPC v%d.%d.%d", version[0], version[1], version[2]);
   secondary_cpc_version_received = true;
@@ -565,53 +586,99 @@ static void property_get_secondary_app_version_callback(sl_cpc_system_command_ha
 {
   (void) handle;
 
-  if ((status == SL_STATUS_OK || status == SL_STATUS_IN_PROGRESS) && property_id == PROP_SECONDARY_APP_VERSION) {
-    FATAL_ON(property_value == NULL);
-    FATAL_ON(property_length == 0);
+  if (status == SL_STATUS_OK || status == SL_STATUS_IN_PROGRESS) {
+    switch (property_id) {
+      case PROP_LAST_STATUS:
+        // Backwards compatibility for firmware upgrade
+        WARN("Cannot get Secondary APP version from obsolete firmware");
+        break;
+      case PROP_SECONDARY_APP_VERSION:
+        FATAL_ON(property_value == NULL);
+        FATAL_ON(property_length == 0);
+        BUG_ON(server_core_secondary_app_version != NULL);
 
-    const char *version = (const char *)property_value;
+        server_core_secondary_app_version = zalloc(property_length);
+        FATAL_SYSCALL_ON(server_core_secondary_app_version == NULL);
 
-    BUG_ON(server_core_secondary_app_version);
-
-    server_core_secondary_app_version = zalloc(property_length);
-    FATAL_SYSCALL_ON(server_core_secondary_app_version == NULL);
-
-    strncpy(server_core_secondary_app_version, version, property_length - 1);
-    server_core_secondary_app_version[property_length - 1] = '\0';
-    PRINT_INFO("Secondary APP v%s", server_core_secondary_app_version);
+        strncpy(server_core_secondary_app_version, property_value, property_length - 1);
+        server_core_secondary_app_version[property_length - 1] = '\0';
+        PRINT_INFO("Secondary APP v%s", server_core_secondary_app_version);
+        break;
+      default:
+        FATAL("Unexpected property_id (%d) during Secondary APP version request", property_id);
+    }
   } else {
-    WARN("Cannot get Secondary APP version (obsolete RCP firmware?)");
+    FATAL("Unable to get Secondary APP version");
   }
 
   secondary_app_version_received_or_not_available = true;
 }
 
-static void property_get_secondary_bus_speed_callback(sl_cpc_system_command_handle_t *handle,
-                                                      sl_cpc_property_id_t property_id,
-                                                      void* property_value,
-                                                      size_t property_length,
-                                                      sl_status_t status)
+static void property_get_secondary_bus_bitrate_callback(sl_cpc_system_command_handle_t *handle,
+                                                        sl_cpc_property_id_t property_id,
+                                                        void* property_value,
+                                                        size_t property_length,
+                                                        sl_status_t status)
 {
   (void) handle;
-  uint32_t bus_speed = 0;
+  uint32_t bus_bitrate = 0;
 
-  if ((status == SL_STATUS_OK || status == SL_STATUS_IN_PROGRESS) && property_id == PROP_BUS_SPEED_VALUE) {
+  if ((status == SL_STATUS_OK || status == SL_STATUS_IN_PROGRESS) && property_id == PROP_BUS_BITRATE_VALUE) {
     FATAL_ON(property_value == NULL);
     FATAL_ON(property_length != sizeof(uint32_t));
 
-    memcpy(&bus_speed, property_value, sizeof(uint32_t));
+    bus_bitrate = u32_from_le((const uint8_t *)property_value);
+    PRINT_INFO("Secondary bus bitrate is %d", bus_bitrate);
 
-    PRINT_INFO("Secondary bus speed is %d", bus_speed);
-
-    if (config.bus == UART && bus_speed != config.uart_baudrate) {
+    if (config.bus == UART && bus_bitrate != config.uart_baudrate) {
       FATAL("Baudrate mismatch (%d) on the daemon versus (%d) on the secondary",
-            config.uart_baudrate, bus_speed);
+            config.uart_baudrate, bus_bitrate);
     }
 
-    secondary_bus_speed_received = true;
+    secondary_bus_bitrate_received = true;
   } else {
-    WARN("Could not obtain the secondary's bus speed");
-    failed_to_receive_secondary_bus_speed = true;
+    WARN("Could not obtain the secondary's bus bitrate");
+    failed_to_receive_secondary_bus_bitrate = true;
+  }
+}
+
+static void property_get_secondary_bus_max_bitrate_callback(sl_cpc_system_command_handle_t *handle,
+                                                            sl_cpc_property_id_t property_id,
+                                                            void* property_value,
+                                                            size_t property_length,
+                                                            sl_status_t status)
+{
+  (void) handle;
+  uint32_t max_bus_bitrate = 0;
+
+  if ((status == SL_STATUS_OK || status == SL_STATUS_IN_PROGRESS) && property_id == PROP_BUS_MAX_BITRATE_VALUE) {
+    FATAL_ON(property_value == NULL);
+    FATAL_ON(property_length != sizeof(uint32_t));
+
+    max_bus_bitrate = u32_from_le((const uint8_t *)property_value);
+
+    if (config.bus == SPI) {
+      PRINT_INFO("Secondary max bus bitrate is %d", max_bus_bitrate);
+
+      // If the spi bitrate is not specific in the config file, use the max bitrate returned by the secondary
+      if (config.spi_bitrate == 0) {
+        config.spi_bitrate = max_bus_bitrate;
+      } else {
+        if (config.spi_bitrate > max_bus_bitrate) {
+          config.spi_bitrate = max_bus_bitrate;
+          WARN("The SPI bitrate specified in the config file is greater than the maximum suported bitrate returned by the secondary. Falling back to the value returned by the secondary");
+        } else {
+          PRINT_INFO("SPI bitrate from the config file is lesser than the maximum value returned by the secondary. For performance reason, consider raising it.", config.spi_bitrate);
+        }
+      }
+
+      PRINT_INFO("The negotiated SPI bitrate will be %d", config.spi_bitrate);
+    }
+
+    secondary_bus_max_bitrate_received = true;
+  } else {
+    WARN("Could not obtain the secondary's bus bitrate");
+    failed_to_receive_secondary_bus_max_bitrate = true;
   }
 }
 
@@ -623,15 +690,13 @@ static void property_get_protocol_version_callback(sl_cpc_system_command_handle_
 {
   (void) handle;
 
-  uint8_t* version = (uint8_t*)property_value;
-
   if ((property_id != PROP_PROTOCOL_VERSION)
       || (status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS)
       || (property_value == NULL || property_length != sizeof(uint8_t))) {
     FATAL("Cannot get Secondary Protocol version (obsolete RCP firmware?)");
   }
 
-  server_core_secondary_protocol_version = *version;
+  server_core_secondary_protocol_version = *(const uint8_t *)property_value;
   PRINT_INFO("Secondary Protocol v%d", server_core_secondary_protocol_version);
 
   protocol_version_received = true;
@@ -820,17 +885,29 @@ static void process_reset_sequence(bool firmware_reset_mode)
       if (secondary_cpc_version_received) {
         TRACE_RESET("Obtained Secondary CPC version");
 
-        reset_sequence_state = WAIT_FOR_SECONDARY_BUS_SPEED;
-        sl_cpc_system_cmd_property_get(property_get_secondary_bus_speed_callback,
-                                       PROP_BUS_SPEED_VALUE,
+        reset_sequence_state = WAIT_FOR_SECONDARY_BUS_BITRATE;
+        sl_cpc_system_cmd_property_get(property_get_secondary_bus_bitrate_callback,
+                                       PROP_BUS_BITRATE_VALUE,
                                        5,       /* 5 retries */
                                        100000,  /* 100ms between retries*/
                                        true);
       }
       break;
 
-    case WAIT_FOR_SECONDARY_BUS_SPEED:
-      if (secondary_bus_speed_received || failed_to_receive_secondary_bus_speed) {
+    case WAIT_FOR_SECONDARY_BUS_BITRATE:
+      if (secondary_bus_bitrate_received || failed_to_receive_secondary_bus_bitrate) {
+        reset_sequence_state = WAIT_FOR_SECONDARY_BUS_MAX_BITRATE;
+
+        sl_cpc_system_cmd_property_get(property_get_secondary_bus_max_bitrate_callback,
+                                       PROP_BUS_MAX_BITRATE_VALUE,
+                                       5,       /* 5 retries */
+                                       100000,  /* 100ms between retries*/
+                                       true);
+      }
+      break;
+
+    case WAIT_FOR_SECONDARY_BUS_MAX_BITRATE:
+      if (secondary_bus_max_bitrate_received || failed_to_receive_secondary_bus_max_bitrate) {
         reset_sequence_state = WAIT_FOR_SECONDARY_APP_VERSION;
 
         sl_cpc_system_cmd_property_get(property_get_secondary_app_version_callback,
@@ -985,4 +1062,9 @@ static void security_fetch_remote_security_state(epoll_private_data_t *private_d
 bool server_core_reset_sequence_in_progress(void)
 {
   return reset_sequence_state != RESET_SEQUENCE_DONE;
+}
+
+bool server_core_reset_is_received_reset_reason(void)
+{
+  return reset_reason_received;
 }
