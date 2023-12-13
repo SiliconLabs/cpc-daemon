@@ -16,6 +16,7 @@
  ******************************************************************************/
 
 #include <pthread.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include "cpcd/config.h"
@@ -25,6 +26,7 @@
 #include "cpcd/sleep.h"
 
 #include "server_core/core/core.h"
+#include "server_core/epoll/epoll.h"
 #include "driver/driver_uart.h"
 
 #define TIMEOUT_SECONDS         5
@@ -63,6 +65,14 @@ static bool enter_irq_received;
 /* Flag set when noop is received */
 static bool noop_received;
 
+/* Server core communication */
+static int server_core_fd;
+static epoll_private_data_t server_core_epoll_pdata;
+
+/* Setup/teardown server core sockets */
+static void setup_server_core_sockets(void);
+static void teardown_server_core_sockets(void);
+
 /* Main tests */
 static void test_1_rx_tx(void);
 static void test_2_rts_cts(void);
@@ -83,42 +93,87 @@ static void compare_fc_validation_values(uint32_t reference_value, uint32_t rece
 static void wait(uint32_t mseconds);
 
 /* Callbacks */
-static void reset_software_callback(sl_cpc_system_command_handle_t *handle,
-                                    sl_status_t status,
+static void reset_software_callback(sl_status_t status,
                                     sl_cpc_system_status_t reset_status);
 
-static void get_secondary_cpc_version_callback(sl_cpc_system_command_handle_t *handle,
-                                               sl_cpc_property_id_t property_id,
-                                               void* property_value,
+static void get_secondary_cpc_version_callback(sli_cpc_property_id_t property_id,
+                                               void *property_value,
                                                size_t property_length,
+                                               void *user_data,
                                                sl_status_t status);
 
-static void get_fc_validation_value_callback(sl_cpc_system_command_handle_t *handle,
-                                             sl_cpc_property_id_t property_id,
-                                             void* property_value,
+static void get_fc_validation_value_callback(sli_cpc_property_id_t property_id,
+                                             void *property_value,
                                              size_t property_length,
+                                             void *user_data,
                                              sl_status_t status);
 
-static void enable_uframe_processing_callback(sl_cpc_system_command_handle_t *handle,
-                                              sl_cpc_property_id_t property_id,
-                                              void* property_value,
+static void enable_uframe_processing_callback(sli_cpc_property_id_t property_id,
+                                              void *property_value,
                                               size_t property_length,
+                                              void *user_data,
                                               sl_status_t status);
 
-static void enter_irq_callback(sl_cpc_system_command_handle_t *handle,
-                               sl_cpc_property_id_t property_id,
-                               void* property_value,
+static void enter_irq_callback(sli_cpc_property_id_t property_id,
+                               void *property_value,
                                size_t property_length,
+                               void *user_data,
                                sl_status_t status);
 
-static void noop_callback(sl_cpc_system_command_handle_t *handle,
-                          sl_status_t status);
+static void noop_callback(sl_status_t status);
 
 /* External functions */
 __attribute__((noreturn)) void software_graceful_exit(void);
 
+static void server_core_write_callback(epoll_private_data_t *private_data)
+{
+  ssize_t ret;
+  uint8_t byte;
+
+  int uart_validation_fd = private_data->file_descriptor;
+  uint8_t endpoint_number = private_data->endpoint_number;
+
+  ret = read(uart_validation_fd, &byte, sizeof(byte));
+  FATAL_SYSCALL_ON(ret < 0);
+
+  ret = core_write(endpoint_number, &byte, sizeof(byte), SL_CPC_FLAG_UNNUMBERED_INFORMATION);
+  FATAL_ON(ret != 0);
+}
+
+static void setup_server_core_sockets(void)
+{
+  int ret;
+  int fd_sockets[2];
+
+  ret = socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd_sockets);
+  FATAL_SYSCALL_ON(ret < 0);
+
+  server_core_fd = fd_sockets[0];
+
+  server_core_epoll_pdata.callback = server_core_write_callback;
+  server_core_epoll_pdata.endpoint_number = SL_CPC_ENDPOINT_SYSTEM;
+  server_core_epoll_pdata.file_descriptor = fd_sockets[1];
+
+  epoll_register(&server_core_epoll_pdata);
+}
+
+static void teardown_server_core_sockets(void)
+{
+  int ret;
+
+  epoll_unregister(&server_core_epoll_pdata);
+
+  ret = close(server_core_fd);
+  FATAL_SYSCALL_ON(ret < 0);
+
+  ret = close(server_core_epoll_pdata.file_descriptor);
+  FATAL_SYSCALL_ON(ret < 0);
+}
+
 void run_uart_validation(void)
 {
+  setup_server_core_sockets();
+
   int test_option = (int) *config.uart_validation_test_option;
   switch (test_option) {
     case '1':
@@ -130,6 +185,8 @@ void run_uart_validation(void)
     default:
       BUG("Invalid UART validation test option: %c, see --help", test_option);
   }
+
+  teardown_server_core_sockets();
 
   software_graceful_exit();
 }
@@ -265,9 +322,10 @@ static void get_secondary_cpc_version_subtest(void)
   TRACE_UART_VALIDATION("Sending get Secondary CPC version command");
   sl_cpc_system_cmd_property_get(get_secondary_cpc_version_callback,
                                  PROP_SECONDARY_CPC_VERSION,
+                                 NULL,
                                  TIMEOUT_SECONDS,
                                  TIME_BETWEEN_RETRIES_US,
-                                 false);
+                                 SYSTEM_EP_IFRAME);
 
   while (1) {
     if (secondary_cpc_version_received) {
@@ -294,12 +352,13 @@ static void enable_uframe_processing_subtest(bool enable)
   }
 
   sl_cpc_system_cmd_property_set(enable_uframe_processing_callback,
-                                 TIMEOUT_SECONDS,
-                                 TIME_BETWEEN_RETRIES_US,
                                  PROP_UFRAME_PROCESSING,
                                  &enable,
                                  sizeof(enable),
-                                 false);
+                                 NULL,
+                                 TIMEOUT_SECONDS,
+                                 TIME_BETWEEN_RETRIES_US,
+                                 SYSTEM_EP_IFRAME);
 
   while (1) {
     if (uframe_processing_received) {
@@ -325,14 +384,18 @@ static void enter_irq_subtest(uint32_t start_in_ms, uint32_t end_in_ms)
   uint8_t timeout_seconds = TIMEOUT_SECONDS;
   sl_cpc_system_enter_irq_cmd_t enter_irq_cmd = { .start_in_ms = start_in_ms, .end_in_ms = end_in_ms };
 
+  u32_to_le(start_in_ms, (uint8_t *)&enter_irq_cmd.start_in_ms);
+  u32_to_le(end_in_ms, (uint8_t *)&enter_irq_cmd.end_in_ms);
+
   TRACE_UART_VALIDATION("Sending Enter IRQ command, start in %d ms, end in %d ms", start_in_ms, end_in_ms);
   sl_cpc_system_cmd_property_set(enter_irq_callback,
-                                 TIMEOUT_SECONDS,
-                                 TIME_BETWEEN_RETRIES_US,
                                  PROP_ENTER_IRQ,
                                  &enter_irq_cmd,
                                  sizeof(enter_irq_cmd),
-                                 false);
+                                 NULL,
+                                 TIMEOUT_SECONDS,
+                                 TIME_BETWEEN_RETRIES_US,
+                                 SYSTEM_EP_IFRAME);
   while (1) {
     if (enter_irq_received) {
       TRACE_UART_VALIDATION("Received Enter IRQ ack");
@@ -351,11 +414,13 @@ static uint32_t send_data_subtest(void)
 {
   const uint8_t data[] = { 2, 4, 8, 16, 32, 64 };
   uint32_t sum = 0;
+  ssize_t ret;
 
   for (uint32_t i = 0; i < sizeof(data); i++) {
     sum += data[i];
     TRACE_UART_VALIDATION("Sending data: %d", data[i]);
-    core_write(SL_CPC_ENDPOINT_SYSTEM, &data[i], 1, SL_CPC_FLAG_UNNUMBERED_INFORMATION);
+    ret = write(server_core_fd, &data[i], sizeof(data[i]));
+    FATAL_SYSCALL_ON(ret < 0);
   }
 
   TRACE_UART_VALIDATION("FC validation value: %d", sum);
@@ -369,9 +434,10 @@ static uint32_t get_fc_validation_value_subtest(void)
   TRACE_UART_VALIDATION("Sending get FC validation value command");
   sl_cpc_system_cmd_property_get(get_fc_validation_value_callback,
                                  PROP_FC_VALIDATION_VALUE,
+                                 NULL,
                                  TIMEOUT_SECONDS,
                                  TIME_BETWEEN_RETRIES_US,
-                                 false);
+                                 SYSTEM_EP_IFRAME);
 
   while (1) {
     if (fc_validation_value_received) {
@@ -451,12 +517,9 @@ static void wait(uint32_t mseconds)
 /***************************************************************************//**
  * Callbacks
  ******************************************************************************/
-static void reset_software_callback(sl_cpc_system_command_handle_t *handle,
-                                    sl_status_t status,
+static void reset_software_callback(sl_status_t status,
                                     sl_cpc_system_status_t reset_status)
 {
-  (void) handle;
-
   if (status == SL_STATUS_OK && reset_status == SL_STATUS_OK) {
     reset_software_received = true;
   } else {
@@ -464,55 +527,59 @@ static void reset_software_callback(sl_cpc_system_command_handle_t *handle,
   }
 }
 
-static void get_secondary_cpc_version_callback(sl_cpc_system_command_handle_t *handle,
-                                               sl_cpc_property_id_t property_id,
-                                               void* property_value,
+static void get_secondary_cpc_version_callback(sli_cpc_property_id_t property_id,
+                                               void *property_value,
                                                size_t property_length,
+                                               void *user_data,
                                                sl_status_t status)
 {
-  (void) handle;
+  (void) user_data;
 
-  uint32_t *version = (uint32_t*)property_value;
+  uint32_t version[3];
 
   if ( (property_id != PROP_SECONDARY_CPC_VERSION)
        || (status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS)
-       || (property_value == NULL || property_length != 3 * sizeof(uint32_t))) {
+       || (property_value == NULL || property_length != sizeof(version))) {
     FATAL("Cannot get Secondary CPC version (obsolete firmware?)");
   }
+
+  version[0] = u32_from_le((const uint8_t *)property_value + 0);
+  version[1] = u32_from_le((const uint8_t *)property_value + 4);
+  version[2] = u32_from_le((const uint8_t *)property_value + 8);
 
   TRACE_UART_VALIDATION("Secondary CPC v%d.%d.%d", version[0], version[1], version[2]);
   secondary_cpc_version_received = true;
 }
 
-static void get_fc_validation_value_callback(sl_cpc_system_command_handle_t *handle,
-                                             sl_cpc_property_id_t property_id,
-                                             void* property_value,
+static void get_fc_validation_value_callback(sli_cpc_property_id_t property_id,
+                                             void *property_value,
                                              size_t property_length,
+                                             void *user_data,
                                              sl_status_t status)
 {
-  (void) handle;
   (void) property_id;
   (void) property_value;
   (void) property_length;
+  (void) user_data;
 
   if (status == SL_STATUS_OK) {
     fc_validation_value_received = true;
-    fc_validation_value = *(uint32_t*)property_value;
+    fc_validation_value = u32_from_le((const uint8_t *)property_value);
   } else {
     FATAL("Cannot get fc validation value (obsolete firmware?)");
   }
 }
 
-static void enable_uframe_processing_callback(sl_cpc_system_command_handle_t *handle,
-                                              sl_cpc_property_id_t property_id,
-                                              void* property_value,
+static void enable_uframe_processing_callback(sli_cpc_property_id_t property_id,
+                                              void *property_value,
                                               size_t property_length,
+                                              void *user_data,
                                               sl_status_t status)
 {
-  (void) handle;
   (void) property_id;
   (void) property_value;
   (void) property_length;
+  (void) user_data;
 
   if (status == SL_STATUS_OK) {
     uframe_processing_received = true;
@@ -521,16 +588,16 @@ static void enable_uframe_processing_callback(sl_cpc_system_command_handle_t *ha
   }
 }
 
-static void enter_irq_callback(sl_cpc_system_command_handle_t *handle,
-                               sl_cpc_property_id_t property_id,
-                               void* property_value,
+static void enter_irq_callback(sli_cpc_property_id_t property_id,
+                               void *property_value,
                                size_t property_length,
+                               void *user_data,
                                sl_status_t status)
 {
-  (void) handle;
   (void) property_id;
   (void) property_value;
   (void) property_length;
+  (void) user_data;
 
   if (status == SL_STATUS_OK) {
     enter_irq_received = true;
@@ -539,11 +606,8 @@ static void enter_irq_callback(sl_cpc_system_command_handle_t *handle,
   }
 }
 
-static void noop_callback(sl_cpc_system_command_handle_t *handle,
-                          sl_status_t status)
+static void noop_callback(sl_status_t status)
 {
-  (void) handle;
-
   if (status == SL_STATUS_OK) {
     noop_received = true;
   } else {

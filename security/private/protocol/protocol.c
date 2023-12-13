@@ -278,7 +278,7 @@ void security_initialize_session(void)
   status = security_send_session_init_request(random1, &protocol_response);
 
   if (status != SL_STATUS_OK) {
-    FATAL("Sending session init request failed.");
+    FATAL("Sending session init request failed. Status = %d.", status);
     return;
   }
 

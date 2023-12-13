@@ -45,4 +45,10 @@ pthread_t driver_spi_init(int *fd_to_core,
                           unsigned int speed,
                           const char *irq_gpio_chip,
                           unsigned int irq_gpio_pin);
+
+bool driver_spi_is_bootloader_running(const char *device,
+                                      unsigned int speed,
+                                      const char *irq_gpio_chip,
+                                      unsigned int irq_gpio_pin);
+
 #endif//DRIVER_SPI_H

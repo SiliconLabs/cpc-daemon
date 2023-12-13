@@ -18,9 +18,8 @@ On success, it returns 0, else a negative value. Arguments are:
     of the CPC daemon exists. It can be NULL, in that case the default "cpcd_0"
     will be used
  - `enable_tracing`, to print debug info on stderr
- - `reset_callback`, a callback that's called when the secondary resets. Note
-   that this callback is called from a signal context, not same context as
-   `cpc_init`
+ - `reset_callback`, a callback that is called when the library is not connected to a daemon anymore.
+    Note that the callback will execute in the context of a separate thread.
 
 ```
   void on_reset(void)

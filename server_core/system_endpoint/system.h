@@ -24,7 +24,6 @@
 #include "cpcd/sl_slist.h"
 #include "cpcd/sl_status.h"
 
-#include "server_core/epoll/epoll.h"
 #include "sl_cpc.h"
 
 #define CPC_EP_SYSTEM 0
@@ -53,7 +52,7 @@ SL_ENUM(sl_cpc_system_cmd_id_t)
  *   This enum is encoded with 4 bytes.
  *
  ******************************************************************************/
-SL_ENUM_GENERIC(sl_cpc_property_id_t, uint32_t)
+SL_ENUM_GENERIC(sli_cpc_property_id_t, uint32_t)
 {
   PROP_LAST_STATUS            = 0x00,
   PROP_PROTOCOL_VERSION       = 0x01,
@@ -64,6 +63,7 @@ SL_ENUM_GENERIC(sl_cpc_property_id_t, uint32_t)
   PROP_FC_VALIDATION_VALUE    = 0x30,
   PROP_BUS_BITRATE_VALUE      = 0x40,
   PROP_BUS_MAX_BITRATE_VALUE  = 0x50,
+  PROP_PRIMARY_VERSION_VALUE  = 0x60,
   PROP_BOOTLOADER_INFO        = 0x200,
   PROP_BOOTLOADER_REBOOT_MODE = 0x202,
   PROP_SECURITY_STATE         = 0x301,
@@ -334,7 +334,7 @@ SL_ENUM_GENERIC(sl_cpc_property_id_t, uint32_t)
  * Helper macros to convert a property and an enpoint id (uint8_t) to a
  * sl_cpc_property_id_t enum value.
  ******************************************************************************/
-#define EP_ID_TO_PROPERTY_ID(property, ep_id)  ((sl_cpc_property_id_t)((property) | ((ep_id) & 0x000000FF)))
+#define EP_ID_TO_PROPERTY_ID(property, ep_id)  ((sli_cpc_property_id_t)((property) | ((ep_id) & 0x000000FF)))
 
 /***************************************************************************//**
  * Helper macros to convert a property enum value to an endpoint id (uint8_t)
@@ -356,8 +356,8 @@ SL_ENUM_GENERIC(sl_cpc_property_id_t, uint32_t)
  * Helper macros to extract the two aggregated endpoint states encoded in one
  * single byte.
  ******************************************************************************/
-#define AGGREGATED_STATE_LOW(agg)  ((cpc_endpoint_state_t)(agg & 0x0F))
-#define AGGREGATED_STATE_HIGH(agg) ((cpc_endpoint_state_t)(agg >> 4))
+#define AGGREGATED_STATE_LOW(agg)  ((sli_cpc_endpoint_state_t)(agg & 0x0F))
+#define AGGREGATED_STATE_HIGH(agg) ((sli_cpc_endpoint_state_t)(agg >> 4))
 
 #define GET_ENDPOINT_STATE_FROM_STATES(payload, ep_id)                      \
   ((ep_id % 2 == 0) ?  AGGREGATED_STATE_LOW(((uint8_t*)payload)[ep_id / 2]) \
@@ -451,6 +451,16 @@ typedef struct {
 } sl_cpc_system_enter_irq_cmd_t;
 
 /***************************************************************************//**
+ * Primary Set Version parameters
+ ******************************************************************************/
+typedef struct {
+  uint8_t major;
+  uint8_t minor;
+  uint8_t patch;
+  uint8_t tweak;
+} sli_cpc_system_primary_version_t;
+
+/***************************************************************************//**
  * Capabilities mask
  *
  * @note
@@ -481,7 +491,7 @@ typedef struct __attribute__((packed)) {
   uint8_t                command_seq;  ///< Command sequence number
   uint16_t               length;       ///< Length of the payload in bytes.
   uint8_t                payload[];    ///< Command payload.
-} sl_cpc_system_cmd_t;
+} sli_cpc_system_cmd_t;
 
 /***************************************************************************//**
  * System endpoint property command type
@@ -502,22 +512,10 @@ typedef struct __attribute__((packed)) {
   uint8_t              payload[];   ///< Property value.
 } sl_cpc_system_property_cmd_t;
 
-/***************************************************************************//**
- * System endpoint command handle type
- ******************************************************************************/
-typedef struct  {
-  sl_slist_node_t node_commands;
-  sl_cpc_system_cmd_t *command; // has to be malloc'ed
-  void *on_final;
-  uint8_t retry_count;
-  bool retry_forever;
-  bool is_uframe;
-  uint32_t retry_timeout_us;
-  sl_status_t error_status;
-  uint8_t command_seq;
-  bool acked;
-  epoll_private_data_t re_transmit_timer_private_data; //for epoll for timerfd
-} sl_cpc_system_command_handle_t;
+SL_ENUM_GENERIC(sl_cpc_system_ep_frame_type_t, uint8_t) {
+  SYSTEM_EP_UFRAME,
+  SYSTEM_EP_IFRAME
+};
 
 void sl_cpc_system_init(void);
 
@@ -537,8 +535,7 @@ typedef void (*sl_cpc_system_unsolicited_status_callback_t) (sl_cpc_system_statu
  *   This callback is called when the PRIMARY receives the reply from the SECONDARY
  *
  ******************************************************************************/
-typedef void (*sl_cpc_system_noop_cmd_callback_t) (sl_cpc_system_command_handle_t *handle,
-                                                   sl_status_t status);
+typedef void (*sl_cpc_system_noop_cmd_callback_t)(sl_status_t status);
 
 /***************************************************************************//**
  * Callback for the reset command
@@ -551,30 +548,34 @@ typedef void (*sl_cpc_system_noop_cmd_callback_t) (sl_cpc_system_command_handle_
  *     The SECONDARY will return STATUS_OK if the reset will occur in the
  *     desired mode. STATUS_FAILURE will be returned otherwise.
  ******************************************************************************/
-typedef void (*sl_cpc_system_reset_cmd_callback_t) (sl_cpc_system_command_handle_t *handle,
-                                                    sl_status_t command_status,
-                                                    sl_cpc_system_status_t reset_status);
+typedef void (*sl_cpc_system_reset_cmd_callback_t)(sl_status_t command_status,
+                                                   sl_cpc_system_status_t reset_status);
 
 /***************************************************************************//**
  * Callback for the property-get or set command
  *
  * @param
  *   [in] property_id
- *     The id of the property from the previously issued property-get/set
+ *     The id of the property from the previously issued property-get/set.
  *
  *   [in] property_value
- *     A pointer to the value returned by the SECONDARY. Has to be casted to an
- *     appropriate value in function of the property id.
+ *     A pointer to the property value returned by the Secondary.
+ *     Note that the content is in Little-Endian.
  *
  *   [in] property_length
  *     The length of the property value in bytes.
  *
+ *   [in] arg
+ *     Argument passed in sl_cpc_system_cmd_property_get or sl_cpc_system_cmd_property_set.
+ *
+ *   [in] status
+ *     status indicating if the command was successful or not.
  ******************************************************************************/
-typedef void (*sl_cpc_system_property_get_set_cmd_callback_t) (sl_cpc_system_command_handle_t *handle,
-                                                               sl_cpc_property_id_t property_id,
-                                                               void* property_value,
-                                                               size_t property_length,
-                                                               sl_status_t status);
+typedef void (*sl_cpc_system_property_get_set_cmd_callback_t)(sli_cpc_property_id_t property_id,
+                                                              void *property_value,
+                                                              size_t property_length,
+                                                              void *arg,
+                                                              sl_status_t status);
 
 /***************************************************************************//**
  * Send no-operation command query
@@ -597,23 +598,72 @@ void sl_cpc_system_cmd_reboot(sl_cpc_system_reset_cmd_callback_t on_reset_reply,
 
 /***************************************************************************//**
  * Sends a property-get query
+ *
+ * @param
+ *   [in] on_property_get_reply
+ *     Callback for the property-get command.
+ *
+ *   [in] property_id
+ *     The id of the property.
+ *
+ *   [in] arg
+ *     An argument that will be passed to the callback on command completion
+ *
+ *   [in] retry_count_max
+ *     The number of retry attempts.
+ *
+ *   [in] retry_timeout_us
+ *     The timeout value in microseconds for each retry attempt.
+ *
+ *   [in] frame_type
+ *     The type of the frame.
+ *
  ******************************************************************************/
 void sl_cpc_system_cmd_property_get(sl_cpc_system_property_get_set_cmd_callback_t on_property_get_reply,
-                                    sl_cpc_property_id_t property_id,
+                                    sli_cpc_property_id_t property_id,
+                                    void *arg,
                                     uint8_t retry_count_max,
                                     uint32_t retry_timeout_us,
-                                    bool is_uframe);
+                                    sl_cpc_system_ep_frame_type_t frame_type);
 
 /***************************************************************************//**
  * Sends a property-set query
+ *
+ * @param
+ *   [in] on_property_set_reply
+ *     Callback for the property-set command.
+ *
+ *   [in] property_id
+ *     The id of the property.
+ *
+ *   [in] property_value
+ *     A pointer to the property value.
+ *     Note that the content must be converted to Little-Endian.
+ *
+ *   [in] arg
+ *     An argument that will be passed to the callback on command completion
+ *
+ *   [in] property_length
+ *     The length of the property value in bytes.
+ *
+ *   [in] retry_count_max
+ *     The number of retry attempts.
+ *
+ *   [in] retry_timeout_us
+ *     The timeout value in microseconds for each retry attempt.
+ *
+ *   [in] frame_type
+ *     The type of the frame.
+ *
  ******************************************************************************/
 void sl_cpc_system_cmd_property_set(sl_cpc_system_property_get_set_cmd_callback_t on_property_set_reply,
+                                    sli_cpc_property_id_t property_id,
+                                    const void *property_value,
+                                    size_t property_length,
+                                    void *arg,
                                     uint8_t retry_count_max,
                                     uint32_t retry_timeout_us,
-                                    sl_cpc_property_id_t property_id,
-                                    const void *value,
-                                    size_t value_length,
-                                    bool is_uframe);
+                                    sl_cpc_system_ep_frame_type_t frame_type);
 
 /***************************************************************************//**
  * Registers an unsolicited prop last status callback

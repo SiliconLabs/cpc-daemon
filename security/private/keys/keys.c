@@ -36,6 +36,10 @@
 #include "security/private/keys/keys.h"
 #include "server_core/core/hdlc.h"
 
+#if defined(UNIT_TESTING)
+#include "server_core/core/core.h"
+#endif
+
 // MbedTLS minimal version required
 #define MBEDTLS_VERSION_CHECK (MBEDTLS_VERSION_NUMBER < 0x02070000)
 #if MBEDTLS_VERSION_CHECK

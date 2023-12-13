@@ -22,6 +22,8 @@
 
 #include "server_core/system_endpoint/system.h"
 
+bool is_bootloader_running(void);
+
 void run_binding_mode(void);
 
 void run_firmware_update(void);
@@ -29,6 +31,7 @@ void run_firmware_update(void);
 void run_normal_mode(void);
 
 void run_uart_validation(void);
+
 bool uart_validation_reset_requested(sl_cpc_system_status_t status);
 
 #endif // CPCD_MODES_H

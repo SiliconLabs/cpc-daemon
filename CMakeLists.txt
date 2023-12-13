@@ -4,7 +4,7 @@ project(cpcd
   VERSION "4.3.2.0"
   LANGUAGES C)
 set(CPC_LIBRARY_API_VERSION "3")
-set(CPC_PROTOCOL_VERSION "4")
+set(CPC_PROTOCOL_VERSION "5")
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/modules")
 
@@ -18,10 +18,14 @@ endif()
 set(TARGET_GROUP release CACHE STRING "Group to build")
 option(WARN_AS_ERROR "Treat warnings as errors")
 option(ENABLE_ENCRYPTION "Enable the encryption of the CPC link using MbedTLS" TRUE)
-option(USE_LEGACY_GPIO_SYSFS "Use the legacy GPIO sysfs instead of GPIO device" TRUE)
+option(USE_LEGACY_GPIO_SYSFS "Use the legacy GPIO sysfs instead of GPIO device" FALSE)
 option(COMPILE_LTTNG "Enable LTTng tracing")
 option(ENABLE_VALGRIND "Enable Valgrind in tests")
 option(TARGET_TESTING "Enable some features used only in testing")
+
+if (USE_LEGACY_GPIO_SYSFS)
+  message( WARNING "The legacy GPIO sysfs is deprecated, remove the option altogether.")
+endif()
 
 # Includes
 include(cmake/GetGitRevisionDescription.cmake)
@@ -30,24 +34,32 @@ include(cmake/Warnings.cmake)
 include(GNUInstallDirs)
 
 # Dependencies
+# In near future, we may make pkg-config mandatory.
+find_package(PkgConfig)
 find_package(Threads REQUIRED)
 find_package(Backtrace)
+
 if(ENABLE_ENCRYPTION)
-  # Use the config file provided by MbedTLS v3.
-  # Use TERMUX_MBEDTLS_PATH as an additional search path.
-  set(TERMUX_MBEDTLS_PATH "$ENV{PREFIX}/lib/cmake")
-  find_package(MbedTLS 3 QUIET CONFIG PATHS ${TERMUX_MBEDTLS_PATH})
-  if(NOT MbedTLS_FOUND)
-    unset(MbedTLS_FOUND)
-    # Fallback to module search for MbedTLS v2.
-    find_package(MbedTLS 2.7 MODULE QUIET REQUIRED COMPONENTS crypto)
+  # 1. Try pkg-config
+  # 2. Try config file provided by MbedTLS starting from 3.0
+  # 3. Try module search for MbedTLS
+  # PATHS "$ENV{PREFIX}/lib/cmake"
+  if(PkgConfig_FOUND)
+    pkg_search_module(MbedCrypto IMPORTED_TARGET mbedcrypto>=2.7)
   endif()
-  message(STATUS "Found MbedTLS: v${MbedTLS_VERSION}")
+  if(MbedCrypto_FOUND)
+    add_library(MbedTLS::mbedcrypto ALIAS PkgConfig::MbedCrypto)
+  else()
+    set(TERMUX_CMAKE_CONFIG_PATH "$ENV{PREFIX}/lib/cmake")
+    find_package(MbedTLS 3 QUIET CONFIG PATHS "${TERMUX_CMAKE_CONFIG_PATH}")
+    if(NOT MbedTLS_FOUND)
+      unset(MbedTLS_FOUND)
+      find_package(MbedTLS 2.7 MODULE QUIET REQUIRED COMPONENTS crypto)
+    endif()
+    message(STATUS "Found MbedTLS: v${MbedTLS_VERSION}")
+  endif()
 endif()
-if(NOT USE_LEGACY_GPIO_SYSFS)
-  find_package(PkgConfig REQUIRED)
-  pkg_search_module(Libgpiod REQUIRED IMPORTED_TARGET libgpiod)
-endif()
+
 if(COMPILE_LTTNG)
   find_package(LTTngUST REQUIRED)
 endif()
@@ -138,15 +150,8 @@ else()
   message(WARNING "Building CPCd with encryption disabled, removing MbedTLS dependency")
 endif()
 
-# Enable gpiod support if the user requested it
-if(USE_LEGACY_GPIO_SYSFS)
-  message(STATUS "Building CPCd with GPIO sysfs")
-else()
-  message(STATUS "Building CPCd with GPIO device")
-endif()
-
 if(TARGET_TESTING)
-    add_definitions(-DTARGET_TESTING)
+  add_definitions(-DTARGET_TESTING)
 endif()
 
 # Build CPC Daemon if building for release or debug
@@ -184,18 +189,22 @@ if((TARGET_GROUP STREQUAL release) OR
   target_sources(cpcd PRIVATE
                       server_core/server_core.c
                       server_core/epoll/epoll.c
+                      server_core/core/buffer.c
                       server_core/core/core.c
                       server_core/core/crc.c
                       server_core/core/hdlc.c
+                      server_core/core/protocol.c
+                      server_core/core/protocol_v4.c
+                      server_core/core/protocol_v5.c
                       server_core/server/server.c
                       server_core/server/server_ready_sync.c
                       server_core/system_endpoint/system.c
-                      server_core/system_endpoint/system_callbacks.c
                       driver/driver_spi.c
                       driver/driver_uart.c
                       driver/driver_xmodem.c
                       driver/driver_ezsp.c
                       driver/driver_kill.c
+                      misc/gpio.c
                       misc/logging.c
                       misc/config.c
                       misc/utils.c
@@ -229,13 +238,6 @@ if((TARGET_GROUP STREQUAL release) OR
       security/private/thread/command_synchronizer.c
       security/private/thread/security_thread.c
       security/security.c)
-  endif()
-  if(USE_LEGACY_GPIO_SYSFS)
-    target_compile_definitions(cpcd PRIVATE USE_LEGACY_GPIO_SYSFS)
-    target_sources(cpcd PRIVATE misc/gpio_sysfs.c)
-  else()
-    target_link_libraries(cpcd PRIVATE PkgConfig::Libgpiod)
-    target_sources(cpcd PRIVATE misc/gpio_gpiod.c)
   endif()
 
   # Hash all files except those in the output folder
@@ -287,13 +289,16 @@ elseif((TARGET_GROUP STREQUAL unit_test) OR (TARGET_GROUP STREQUAL unit_test_wit
     add_executable(cpc_unity
                             server_core/server_core.c
                             server_core/epoll/epoll.c
+                            server_core/core/buffer.c
                             server_core/core/core.c
                             server_core/core/crc.c
                             server_core/core/hdlc.c
+                            server_core/core/protocol.c
+                            server_core/core/protocol_v4.c
+                            server_core/core/protocol_v5.c
                             server_core/server/server.c
                             server_core/server/server_ready_sync.c
                             server_core/system_endpoint/system.c
-                            server_core/system_endpoint/system_callbacks.c
                             security/security.c
                             security/private/keys/keys.c
                             security/private/protocol/protocol.c

@@ -26,9 +26,14 @@
 #include "cpcd/gpio.h"
 #include "cpcd/sl_status.h"
 
+#define START_BTL_FRAME   0xFD
+#define END_BTL_FRAME     0xA7
+#define SPI_STATUS        0x0B
+#define SPI_VERSION       0x0A
+
 sl_status_t send_firmware(const char   *image_file,
                           const char   *device,
-                          unsigned int speed,
+                          unsigned int bitrate,
                           const char *irq_gpio_chip,
                           unsigned int irq_gpio_pin);
 

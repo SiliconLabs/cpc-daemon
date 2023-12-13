@@ -39,7 +39,11 @@ void run_normal_mode(void)
   // Init the driver
   {
     if (config.bus == UART) {
-      driver_thread = driver_uart_init(&fd_socket_driver_core, &fd_socket_driver_core_notify, config.uart_file, config.uart_baudrate, config.uart_hardflow);
+      driver_thread = driver_uart_init(&fd_socket_driver_core,
+                                       &fd_socket_driver_core_notify,
+                                       config.uart_file,
+                                       config.uart_baudrate,
+                                       config.uart_hardflow);
     } else if (config.bus == SPI) {
       driver_thread = driver_spi_init(&fd_socket_driver_core,
                                       &fd_socket_driver_core_notify,
@@ -61,4 +65,34 @@ void run_normal_mode(void)
 #endif
 
   main_wait_crash_or_graceful_exit();
+}
+
+/*
+ * @note This function is meant to be called only at startup. If takes ownership
+ * of the peripheral file and produces a specific sequence, so would break the
+ * communication if reused afterward.
+ */
+bool is_bootloader_running(void)
+{
+  static bool secondary_already_probed = false;
+  static bool secondary_running_bootloader = false;
+
+  if (secondary_already_probed) {
+    return secondary_running_bootloader;
+  }
+
+  if (config.bus == UART) {
+    secondary_running_bootloader = driver_uart_is_bootloader_running(config.uart_file,
+                                                                     config.uart_baudrate,
+                                                                     config.uart_hardflow);
+  } else if (config.bus == SPI) {
+    secondary_running_bootloader = driver_spi_is_bootloader_running(config.spi_file,
+                                                                    config.spi_bitrate,
+                                                                    config.spi_irq_chip,
+                                                                    config.spi_irq_pin);
+  } else {
+    BUG();
+  }
+
+  return secondary_running_bootloader;
 }

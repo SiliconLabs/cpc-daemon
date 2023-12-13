@@ -531,22 +531,40 @@ static void config_parse_cli_arg(int argc, char *argv[])
 
 static void config_restart_cpcd_without_args(argv_exclude_t *argv_exclude_list, size_t argc_exclude_list)
 {
+  size_t exclude_list_size = argc_exclude_list / sizeof(argv_exclude_t);
+  size_t option_list_size = sizeof(argv_opt_list) / sizeof(struct option);
   extern char **argv_g;
   extern int argc_g;
   char **argv;
 
   // Populate argv_exclude_list according to argv_opt_list
-  for (size_t i = 0; i < argc_exclude_list / sizeof(argv_exclude_t); i++) {
-    for (size_t j = 0; j < (sizeof(argv_opt_list) / sizeof(struct option)); j++) {
+  for (size_t i = 0; i < exclude_list_size; i++) {
+    for (size_t j = 0; j < option_list_size; j++) {
       if (argv_opt_list[j].name) {
-        if (strcmp(argv_exclude_list[i].name, argv_opt_list[j].name) == 0) {
+        int ret = strcmp(argv_exclude_list[i].name, argv_opt_list[j].name);
+        if (ret == 0) {
           const size_t name_len = strlen(argv_exclude_list[i].name) + strlen("--") + 1;
           argv_exclude_list[i].name = zalloc(name_len);
-          BUG_ON(snprintf(argv_exclude_list[i].name, name_len, "--%s", argv_opt_list[j].name) < 0);
+          BUG_ON(argv_exclude_list[i].name == NULL);
+
+          ret = snprintf(argv_exclude_list[i].name,
+                         name_len,
+                         "--%s",
+                         argv_opt_list[j].name);
+          BUG_ON(ret < 0);
+
           const size_t val_len = sizeof(char) + strlen("-") + 1;
           argv_exclude_list[i].val = zalloc(val_len);
-          BUG_ON(snprintf(argv_exclude_list[i].val, val_len, "-%s", (char[2]){ (char)argv_opt_list[j].val, '\0' }) < 0);
+          BUG_ON(argv_exclude_list[i].val == NULL);
+
+          ret = snprintf(argv_exclude_list[i].val,
+                         val_len,
+                         "-%s",
+                         (char[2]){ (char)argv_opt_list[j].val, '\0' });
+          BUG_ON(ret < 0);
+
           argv_exclude_list[i].has_arg = argv_opt_list[j].has_arg == required_argument;
+
           break;
         }
       }
@@ -560,7 +578,7 @@ static void config_restart_cpcd_without_args(argv_exclude_t *argv_exclude_list, 
   for (int i = 0; i < argc_g; i++) {
     if (argv_g[i]) {
       bool exclude_arg = false;
-      for (size_t j = 0; j < argc_exclude_list / sizeof(argv_exclude_t); j++) {
+      for (size_t j = 0; j < exclude_list_size; j++) {
         if ((strcmp(argv_g[i], argv_exclude_list[j].name) == 0) || (strcmp(argv_g[i], argv_exclude_list[j].val) == 0)) {
           exclude_arg = true;
           // Exclude next arg also, ie. for -f file, file is also excluded
@@ -577,6 +595,25 @@ static void config_restart_cpcd_without_args(argv_exclude_t *argv_exclude_list, 
   }
 
   config_restart_cpcd(argv);
+
+  // Free resources allocated in this function. This is dead code as
+  // `config_restart_cpcd` never returns but this makes static code
+  // analyser happy
+  for (int i = 0; i < argv_idx; i++) {
+    free(argv[i]);
+  }
+
+  free(argv);
+
+  for (size_t i = 0; i < exclude_list_size; i++) {
+    if (argv_exclude_list[i].name) {
+      free(argv_exclude_list[i].name);
+    }
+
+    if (argv_exclude_list[i].val) {
+      free(argv_exclude_list[i].val);
+    }
+  }
 }
 
 void config_exit_cpcd(int status)
@@ -900,11 +937,9 @@ static void config_validate_configuration(void)
         FATAL("SPI device file missing");
       }
 
-#if !defined(USE_LEGACY_GPIO_SYSFS)
       if (config.spi_irq_chip == NULL) {
-        FATAL("Daemon compiled with gpiod support but no value is set for spi_irq_chip");
+        FATAL("spi_irq_chip is requiered");
       }
-#endif
 
       prevent_device_collision(config.spi_file);
     } else if (config.bus == UART) {
@@ -979,18 +1014,20 @@ static void config_validate_configuration(void)
   }
 
   if (config.fu_recovery_pins_enabled) {
+    if (config.application_version_validation != NULL) {
+      FATAL("-a/--app-version is not compatible with bootloader_recovery_pins_enabled");
+    }
+
     // this is to support calls to reboot_secondary_with_pins_into_bootloader()
     if (config.fu_spi_wake_pin == -1 || config.fu_spi_reset_pin == -1) {
       FATAL("bootloader_wake_gpio and bootloader_reset_gpio required "
             "but not set in config");
     }
 
-#if !defined(USE_LEGACY_GPIO_SYSFS)
     if (config.fu_wake_chip == NULL || config.fu_reset_chip == NULL) {
-      FATAL("Daemon is compiled with gpiod support but no values are set for "
-            "bootloader_wake_gpio_chip and/or bootloader_reset_gpio_chip");
+      FATAL("Recovery pins are enabled, values are required for "
+            "bootloader_wake_gpio_chip and bootloader_reset_gpio_chip");
     }
-#endif
   }
 
   if (config.fu_enter_bootloader) {

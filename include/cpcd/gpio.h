@@ -20,46 +20,40 @@
 
 #include "sl_cpc.h"
 
-#ifdef USE_LEGACY_GPIO_SYSFS
-#define gpio_t gpio_sysfs_t
-typedef struct {
-  unsigned int pin;
-  int value_fd;
-  int irq_fd;
-} gpio_t;
-#define GPIO_EPOLL_EVENT EPOLLPRI
-#else
-#include <pthread.h>
-#include <gpiod.h>
-#define gpio_t gpio_gpiod_t
-typedef struct {
-  const char *chip_name;
-  unsigned int pin;
-  struct gpiod_line *line;
-  int irq_fd;
-} gpio_t;
+typedef int gpio_t;
+
 #define GPIO_EPOLL_EVENT EPOLLIN
-#endif
 
 SL_ENUM(gpio_direction_t){
-  IN = 0,
-  OUT,
-  HIGH,
-  NO_DIRECTION
+  GPIO_DIRECTION_IN,
+  GPIO_DIRECTION_OUT
 };
 
 SL_ENUM(gpio_edge_t){
-  FALLING = 0,
-  RISING,
-  BOTH,
-  NO_EDGE
+  GPIO_EDGE_FALLING,
+  GPIO_EDGE_RISING,
+  GPIO_EDGE_BOTH,
+  GPIO_EDGE_NO_EDGE
 };
 
-int gpio_init(gpio_t *gpio, const char *gpio_chip, unsigned int gpio_pin, gpio_direction_t direction, gpio_edge_t edge);
-int gpio_deinit(gpio_t *gpio);
-int gpio_get_fd(gpio_t *gpio);
-int gpio_clear_irq(gpio_t *gpio);
-int gpio_write(gpio_t *gpio, int value);
-int gpio_read(gpio_t *gpio);
+SL_ENUM(gpio_value_t){
+  GPIO_VALUE_LOW = 0,
+  GPIO_VALUE_HIGH = 1
+};
+
+gpio_t gpio_init(const char *gpio_chip, unsigned int gpio_pin, gpio_direction_t direction, gpio_edge_t edge);
+
+void gpio_deinit(gpio_t gpio);
+
+void gpio_write(gpio_t gpio, gpio_value_t value);
+
+gpio_value_t gpio_read(gpio_t gpio);
+
+int gpio_get_epoll_fd(gpio_t gpio);
+
+/*
+ * Clears a single gpio IRQ event.
+ */
+void gpio_clear_irq(gpio_t gpio);
 
 #endif /* GPIO_H */

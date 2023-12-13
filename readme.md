@@ -20,20 +20,34 @@ the `sl_cpc.h` header file. Bindings for libcpc are also provided in Python and
 Rust with an API that may or may not change at a later time. See `doc/python.md`
 and `doc/rust.md`.
 
-![](doc/CPC_Diagram.svg "CPCD Diagram")
+![](doc/img/CPC_Diagram.svg "CPCD Diagram")
 
 ## CPCd Dependencies
-CPCd is delivered as a [CMake](https://cmake.org) project. The minimum version
+- CMake
+
+  CPCd is delivered as a [CMake](https://cmake.org) project. The minimum version
 of CMake required to generate the project is `3.10`.
 
-CPCd requires MbedTLS to encrypt the endpoints. The minimal MbedTLS version
+- MbedTLS
+
+  CPCd requires MbedTLS to encrypt the endpoints. The minimal MbedTLS version
 required is 2.7.0. `libmbedtls-dev` must be installed to compile from sources.
 With the APT package manager, use the command:
-`sudo apt-get install libmbedtls-dev`
-
-For development purposes, encryption can be disabled by providing
+`sudo apt-get install libmbedtls-dev`. 
+  
+  For development purposes, encryption can be disabled by providing
 `ENABLE_ENCRYPTION=FALSE`
 `cmake ../ -DENABLE_ENCRYPTION=FALSE`
+
+- GPIOs
+
+  When using the SPI interface and/or the Recovery/Wake Pins of the Firmware Upgrade feature, CPCd requires the Linux Kernel
+to be compiled with the following configurations:
+  ```
+  CONFIG_GPIOLIB=y
+  CONFIG_GPIO_CDEV=y
+  CONFIG_GPIO_CDEV_V1=y
+  ``` 
 
 ## Compiling CPCd
 
@@ -55,9 +69,9 @@ sudo make install
 sudo ldconfig
 ```
 
-Note that the library comes with `pkg-config` support. 
+Note that the library comes with `pkg-config` support.
 Build systems can take advantage of that to find the library at
-build time to apply conditional rules for their application. 
+build time to apply conditional rules for their application.
 
 Here is one example using CMake to link a specific target with libcpc:
 
@@ -84,10 +98,8 @@ cpcd --conf <configuration file path>
 A description of each configuration can be found in `cpcd.conf`.
 
 ## Considerations
-- The SPI driver uses a `sysfs` class GPIO as a chip select. Make sure the
-  daemon has the proper permissions
 - When reading, the user must provide a buffer big enough to receive the
-  entire packet
+  entire packet.
 - Tracing can be enabled in the daemon configuration file or when calling the
   lib `cpc_init`
 

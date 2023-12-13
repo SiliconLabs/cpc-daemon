@@ -97,7 +97,6 @@ pthread_t driver_uart_init(int *fd_to_core, int *fd_notify_core, const char *dev
   fd_uart = driver_uart_open(device, baudrate, hardflow);
 
   /* Flush the uart IO fifo */
-
   tcflush(fd_uart, TCIOFLUSH);
 
   ret = socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd_sockets);
@@ -141,6 +140,105 @@ pthread_t driver_uart_init(int *fd_to_core, int *fd_notify_core, const char *dev
   TRACE_DRIVER("Init done");
 
   return cleanup_thread;
+}
+
+/***************************************************************************//**
+ * @brief
+ *   Probes the secondary to see if the bootloader is running
+ *
+ * The maneuver consists of sending a Carriage-Return character and waiting
+ * too see if we receive the gecko bootloader prompt.
+ *
+ * @return
+ *   true if the bootloader is running, false otherwise
+ ******************************************************************************/
+bool driver_uart_is_bootloader_running(const char *device, unsigned int baudrate, bool hardflow)
+{
+  bool bootloader_alive = true; // Return value
+  // Start of bootloader prompt for compare purposes
+  const char gecko_string[] = "\r\nGecko";
+  // The full bootloader prompt is 71 characters long. Have an arbitrarily slightly longer receive buffer
+  char prompt_buffer[128] = { 0 };
+
+  fd_uart = driver_uart_open(device, baudrate, hardflow);
+  tcflush(fd_uart, TCIOFLUSH);
+
+  // Send the carriage-return
+  {
+    const uint8_t cr = '\r';
+
+    ssize_t write_retval = write(fd_uart, &cr, sizeof(cr));
+    FATAL_SYSCALL_ON(write_retval < 0);
+  }
+
+  // Wait a reasonable amount of time to receive the start of the prompt
+  #define USEC_IN_SEC 1000000
+  #define BITS_PER_UART_BYTE 10
+  #define GECKO_STRING_USEC (useconds_t)((USEC_IN_SEC * sizeof(gecko_string) * BITS_PER_UART_BYTE) / baudrate)
+  #define BOOTLOADER_SAFE_MARGIN_USEC (useconds_t) 200
+
+  sleep_us(GECKO_STRING_USEC + BOOTLOADER_SAFE_MARGIN_USEC);
+
+  // Check if we received data
+  {
+    int nread;
+
+    ssize_t ret = ioctl(fd_uart, FIONREAD, &nread);
+    FATAL_SYSCALL_ON(ret < 0);
+
+    if (nread <= 0) {
+      // If we received nothing, it is safe to assume the bootloader is NOT running, exit now
+      bootloader_alive = false;
+      goto ret;
+    }
+  }
+
+  // Read the data into the temp buffer
+  ssize_t read_retval = read(fd_uart, prompt_buffer, sizeof(prompt_buffer));
+  FATAL_SYSCALL_ON(read_retval < 0);
+
+  // Check if the received data contains the start of the prompt
+  if (!strstr(prompt_buffer, gecko_string)) {
+    // If we haven't received back the beginning of the bootloader prompt by now, it is safe
+    // to assume the bootloader isn't running.
+    bootloader_alive = false;
+    goto ret;
+  }
+
+  // Wait for the end of the bootloader prompt "BL > "
+  #define BOOTLOADER_PROMPT_LENGTH 71
+  #define MSEC_IN_SEC 1000
+  #define GECKO_STRING_MSEC ((USEC_IN_SEC * BOOTLOADER_PROMPT_LENGTH * BITS_PER_UART_BYTE) / baudrate)
+  #define GECKO_STRING_SAFE_MARGIN_MSEC 2
+
+  size_t i = (unsigned)read_retval;
+  size_t time_elapsed_ms = 0;
+  do {
+    if (time_elapsed_ms == (GECKO_STRING_MSEC + GECKO_STRING_SAFE_MARGIN_MSEC)) {
+      BUG("Received the beginning of the bootloader prompt but never received the end under 10ms");
+    }
+
+    sleep_us(1000);
+
+    int nread;
+
+    ssize_t ret = ioctl(fd_uart, FIONREAD, &nread);
+    FATAL_SYSCALL_ON(ret < 0);
+
+    if (nread > 0) {
+      read_retval = read(fd_uart, &prompt_buffer[i], sizeof(prompt_buffer) - i);
+      FATAL_ON(read_retval < 0);
+    } else {
+      read_retval = 0;
+    }
+
+    time_elapsed_ms++;
+    i += (unsigned) read_retval;
+  } while (!strstr(prompt_buffer, "BL > "));
+
+  ret:
+  close(fd_uart);
+  return bootloader_alive;
 }
 
 void driver_uart_print_overruns(void)

@@ -47,7 +47,7 @@ static int fd_socket_drv;
 static int fd_notification_socket_drv;
 static pthread_t drv_thread;
 static sl_slist_node_t *sli_rx_pending_list_head;
-static cpc_endpoint_state_t ep_states[SL_CPC_ENDPOINT_MAX_COUNT];
+static sli_cpc_endpoint_state_t ep_states[SL_CPC_ENDPOINT_MAX_COUNT];
 static uint32_t ep_frame_counters_tx[SL_CPC_ENDPOINT_MAX_COUNT];
 static uint32_t ep_frame_counters_rx[SL_CPC_ENDPOINT_MAX_COUNT];
 
@@ -79,7 +79,7 @@ pthread_t driver_emul_init(int* fd_core, int *fd_notify_core)
   }
 
   for (i = 0; i < SL_CPC_ENDPOINT_MAX_COUNT; i++) {
-    ep_states[i] = SL_CPC_STATE_OPEN;
+    ep_states[i] = SLI_CPC_STATE_OPEN;
   }
 
   *fd_core = fd_sockets[1];
@@ -96,11 +96,17 @@ pthread_t driver_emul_init(int* fd_core, int *fd_notify_core)
 
 // -----------------------------------------------------------------------------
 // Validation interface
+sli_cpc_endpoint_state_t sli_cpc_drv_emul_get_ep_state(uint8_t id)
+{
+  return ep_states[id];
+}
 
-void sli_cpc_drv_emul_set_ep_state(uint8_t id, cpc_endpoint_state_t state)
+void sli_cpc_drv_emul_set_ep_state(uint8_t id, sli_cpc_endpoint_state_t state)
 {
   FATAL_ON(id == 0);
   ep_states[id] = state;
+  TRACE_DRIVER("Externally setting state of ep #%d to state %d",
+               id, ep_states[id]);
 }
 
 void sli_cpc_drv_emul_set_frame_counter(uint8_t id, uint32_t frame_counter, bool tx)
@@ -206,18 +212,18 @@ void sli_cpc_drv_emul_submit_pkt_for_rx(void *header_buf, void *payload_buf, uin
   free(buffer);
 }
 
-static void sli_cpc_drv_emul_create_get_endpoint_property(sl_cpc_system_cmd_t *tx_command,
-                                                          sl_cpc_property_id_t prop_id,
+static void sli_cpc_drv_emul_create_get_endpoint_property(sli_cpc_system_cmd_t *tx_command,
+                                                          sli_cpc_property_id_t prop_id,
                                                           uint8_t command_seq)
 {
   uint8_t ep_id = PROPERTY_ID_TO_EP_ID(prop_id);
 
   if (prop_id >= EP_ID_TO_PROPERTY_STATE(0x00)
       && prop_id <= EP_ID_TO_PROPERTY_STATE(0xFF)) {
-    sl_cpc_system_property_cmd_t *reply_prop_cmd_buff;
-    cpc_endpoint_state_t *reply_ep_state;
+    sli_cpc_system_property_cmd_t *reply_prop_cmd_buff;
+    sli_cpc_endpoint_state_t *reply_ep_state;
 
-    TRACE_DRIVER("Checking state status for ep_id %d", ep_id);
+    TRACE_DRIVER("ep #%d is in state %d", ep_id, ep_states[ep_id]);
 
     FATAL_ON(tx_command == NULL);
 
@@ -225,17 +231,17 @@ static void sli_cpc_drv_emul_create_get_endpoint_property(sl_cpc_system_cmd_t *t
     tx_command->command_id = CMD_SYSTEM_PROP_VALUE_IS;
     tx_command->command_seq = command_seq;
 
-    reply_prop_cmd_buff = (sl_cpc_system_property_cmd_t*) tx_command->payload;
-    reply_ep_state = (cpc_endpoint_state_t*) reply_prop_cmd_buff->payload;
+    reply_prop_cmd_buff = (sli_cpc_system_property_cmd_t*) tx_command->payload;
+    reply_ep_state = (sli_cpc_endpoint_state_t*) reply_prop_cmd_buff->payload;
 
-    reply_prop_cmd_buff->property_id = EP_ID_TO_PROPERTY_STATE(ep_id);
+    reply_prop_cmd_buff->property_id = prop_id;
 
-    *reply_ep_state = ep_states[PROPERTY_ID_TO_EP_ID(prop_id)];
+    *reply_ep_state = ep_states[ep_id];
 
-    tx_command->length = sizeof(sl_cpc_property_id_t) + sizeof(cpc_endpoint_state_t);
+    tx_command->length = sizeof(sli_cpc_property_id_t) + sizeof(sli_cpc_endpoint_state_t);
   } else if (prop_id >= EP_ID_TO_PROPERTY_ENCRYPTION(0x00)
              && prop_id <= EP_ID_TO_PROPERTY_ENCRYPTION(0xFF)) {
-    sl_cpc_system_property_cmd_t *reply_prop_cmd_buff;
+    sli_cpc_system_property_cmd_t *reply_prop_cmd_buff;
     bool *reply_ep_encryption;
 
     TRACE_DRIVER("Checking encryption status for ep_id %d", ep_id);
@@ -246,35 +252,35 @@ static void sli_cpc_drv_emul_create_get_endpoint_property(sl_cpc_system_cmd_t *t
     tx_command->command_id = CMD_SYSTEM_PROP_VALUE_IS;
     tx_command->command_seq = command_seq;
 
-    reply_prop_cmd_buff = (sl_cpc_system_property_cmd_t*) tx_command->payload;
+    reply_prop_cmd_buff = (sli_cpc_system_property_cmd_t*) tx_command->payload;
     reply_ep_encryption = (bool*) reply_prop_cmd_buff->payload;
 
     reply_prop_cmd_buff->property_id = EP_ID_TO_PROPERTY_ENCRYPTION(ep_id);
     *reply_ep_encryption = true; // default to always encrypted
 
-    tx_command->length = sizeof(sl_cpc_property_id_t) + sizeof(bool);
+    tx_command->length = sizeof(sli_cpc_property_id_t) + sizeof(bool);
   }
 }
 
-static void sli_cpc_drv_emul_create_set_endpoint_status_reply(sl_cpc_system_cmd_t *tx_command, uint8_t ep_id, uint8_t command_seq, cpc_endpoint_state_t state)
+static void sli_cpc_drv_emul_create_set_endpoint_status_reply(sli_cpc_system_cmd_t *tx_command, uint8_t ep_id, uint8_t command_seq, sli_cpc_endpoint_state_t state)
 {
   FATAL_ON(tx_command == NULL);
 
-  sl_cpc_system_property_cmd_t *reply_prop_cmd_buff;
-  cpc_endpoint_state_t *reply_ep_state;
+  sli_cpc_system_property_cmd_t *reply_prop_cmd_buff;
+  sli_cpc_endpoint_state_t *reply_ep_state;
 
   // Reply to a PROPERTY-GET with a PROPERTY-IS
   tx_command->command_id = CMD_SYSTEM_PROP_VALUE_IS;
   tx_command->command_seq = command_seq;
 
-  reply_prop_cmd_buff = (sl_cpc_system_property_cmd_t*) tx_command->payload;
-  reply_ep_state = (cpc_endpoint_state_t*) reply_prop_cmd_buff->payload;
+  reply_prop_cmd_buff = (sli_cpc_system_property_cmd_t*) tx_command->payload;
+  reply_ep_state = (sli_cpc_endpoint_state_t*) reply_prop_cmd_buff->payload;
 
   reply_prop_cmd_buff->property_id = EP_ID_TO_PROPERTY_STATE(ep_id);
 
   *reply_ep_state = state;
 
-  tx_command->length = sizeof(sl_cpc_property_id_t) + sizeof(cpc_endpoint_state_t);
+  tx_command->length = sizeof(sli_cpc_property_id_t) + sizeof(sli_cpc_endpoint_state_t);
 }
 
 static void* driver_thread_func(void* param)
@@ -381,7 +387,7 @@ static void* driver_thread_func(void* param)
 #endif
 
       /* frame_t: | header[7] |              sl_cpc_system_cmd_t              |
-       *                      | id | seq | len | sl_cpc_system_property_cmd_t |
+       *                      | id | seq | len | sli_cpc_system_property_cmd_t |
        *                                       | prop_id |      payload       |
        *   0                   1                   2                   3
        *   0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
@@ -393,15 +399,24 @@ static void* driver_thread_func(void* param)
        *  |                                                               |
        *  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
        */
-      sl_cpc_system_cmd_t system_cmd;
       const uint8_t *system_cmd_payload;
+      sli_cpc_system_cmd_t system_cmd;
+      const void *property_payload;
+      uint16_t property_length;
+
       memcpy(&system_cmd, frame->payload, sizeof(system_cmd));
+
       /* system_cmd.payload cannot be used because it's a flexible array,
        * and its content is not copied by the memcpy */
       system_cmd_payload = frame->payload + sizeof(system_cmd);
 
-      sl_cpc_system_property_cmd_t system_property_cmd;
+      sli_cpc_system_property_cmd_t system_property_cmd;
       memcpy(&system_property_cmd, system_cmd_payload, sizeof(system_property_cmd));
+
+      property_length = system_cmd.length - sizeof(sli_cpc_property_id_t);
+      property_payload = frame->payload
+                         + sizeof(sli_cpc_system_cmd_t)
+                         + sizeof(sli_cpc_system_property_cmd_t);
 
       if (address == 0) {
         switch (system_cmd.command_id) {
@@ -420,14 +435,14 @@ static void* driver_thread_func(void* param)
 
               if (system_property_cmd.property_id >= EP_ID_TO_PROPERTY_STATE(1)
                   && system_property_cmd.property_id <= EP_ID_TO_PROPERTY_STATE(255)) {
-                buf_len = sizeof(sl_cpc_system_cmd_t)
-                          + sizeof(sl_cpc_property_id_t)
-                          + sizeof(cpc_endpoint_state_t)
+                buf_len = sizeof(sli_cpc_system_cmd_t)
+                          + sizeof(sli_cpc_property_id_t)
+                          + sizeof(sli_cpc_endpoint_state_t)
                           + 2;
               } else if (system_property_cmd.property_id >= EP_ID_TO_PROPERTY_ENCRYPTION(1)
                          && system_property_cmd.property_id <= EP_ID_TO_PROPERTY_ENCRYPTION(255)) {
-                buf_len = sizeof(sl_cpc_system_cmd_t)
-                          + sizeof(sl_cpc_property_id_t)
+                buf_len = sizeof(sli_cpc_system_cmd_t)
+                          + sizeof(sli_cpc_property_id_t)
                           + sizeof(bool)
                           + 2;
               }
@@ -450,18 +465,44 @@ static void* driver_thread_func(void* param)
               FATAL_ON(buffer == NULL);
 
               if (system_cmd.command_id == CMD_SYSTEM_PROP_VALUE_GET) {
+                uint8_t ep_id = PROPERTY_ID_TO_EP_ID(system_property_cmd.property_id);
+
                 // Create the get property reply
-                TRACE_DRIVER("Replying to property get");
-                sli_cpc_drv_emul_create_get_endpoint_property((sl_cpc_system_cmd_t *)buffer,
+                TRACE_DRIVER("Replying to property get for ep #%d", ep_id);
+
+                sli_cpc_drv_emul_create_get_endpoint_property((sli_cpc_system_cmd_t *)buffer,
                                                               system_property_cmd.property_id,
                                                               system_cmd.command_seq);
               } else if (system_cmd.command_id == CMD_SYSTEM_PROP_VALUE_SET) {
-                // Create the set property reply
                 TRACE_DRIVER("Replying to property set");
-                sli_cpc_drv_emul_create_set_endpoint_status_reply((sl_cpc_system_cmd_t *)buffer,
+                uint8_t ep_id = PROPERTY_ID_TO_EP_ID(system_property_cmd.property_id);
+                sli_cpc_endpoint_state_t requested_state;
+
+                memcpy(&requested_state, property_payload, sizeof(requested_state));
+
+                TRACE_DRIVER("Property set for ep #%d requested state %d, current %d",
+                             ep_id, requested_state, ep_states[ep_id]);
+
+                if (requested_state == SLI_CPC_STATE_CONNECTED) {
+                  if (ep_states[ep_id] == SLI_CPC_STATE_OPEN) {
+                    ep_states[ep_id] = SLI_CPC_STATE_CONNECTED;
+                    TRACE_DRIVER("Property set forcing state CONNECTED for ep #%d",
+                                 ep_id);
+                  }
+                } else if (requested_state == SLI_CPC_STATE_CLOSED) {
+                  ep_states[ep_id] = SLI_CPC_STATE_CLOSED;
+                }
+
+                // Create the set property reply
+                sli_cpc_drv_emul_create_set_endpoint_status_reply((sli_cpc_system_cmd_t *)buffer,
                                                                   PROPERTY_ID_TO_EP_ID(system_property_cmd.property_id),
                                                                   system_cmd.command_seq,
                                                                   ep_states[PROPERTY_ID_TO_EP_ID(system_property_cmd.property_id)]);
+                if (requested_state == SLI_CPC_STATE_CLOSED && ep_states[ep_id] == SLI_CPC_STATE_CLOSED) {
+                  ep_states[ep_id] = SLI_CPC_STATE_OPEN;
+                  TRACE_DRIVER("Property set forcing state OPEN for ep #%d",
+                               ep_id);
+                }
               } else {
                 BUG("Invalid command id");
               }

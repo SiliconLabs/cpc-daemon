@@ -102,6 +102,7 @@ int main(int argc, char *argv[])
 {
   argc_g = argc;
   argv_g = argv;
+  bool secondary_already_running_bootloader = false;
 
   main_thread = pthread_self();
   pthread_setname_np(main_thread, "cpcd");
@@ -196,15 +197,36 @@ int main(int argc, char *argv[])
   }
 #endif
 
+  if (config.reset_sequence) {
+    secondary_already_running_bootloader = is_bootloader_running();
+  }
+
+  if (secondary_already_running_bootloader) {
+    PRINT_INFO("The bootloader has been detected to be currently running on the secondary. This can be caused by :");
+    PRINT_INFO("- A secondary which only has the bootloader flashed and no CPC application.");
+    PRINT_INFO("- A previously failed firmware upgrade.");
+    PRINT_INFO("- A previous daemon invocation with -e parameter (to put the secondary in bootloader mode and exit).");
+  }
+
   switch (config.operation_mode) {
     case MODE_NORMAL:
       PRINT_INFO("Starting daemon in normal mode");
+
+      if (secondary_already_running_bootloader) {
+        FATAL("Cannot run CPCd in normal mode because the bootloader is currently running on the secondary.");
+      }
+
       run_normal_mode();
       break;
 
     case MODE_BINDING_PLAIN_TEXT:
 #if defined(ENABLE_ENCRYPTION)
       PRINT_INFO("Starting daemon in plain text binding mode");
+
+      if (secondary_already_running_bootloader) {
+        FATAL("Cannot run CPCd in binding plain-text mode because the bootloader is currently running on the secondary.");
+      }
+
       run_binding_mode();
 #else
       FATAL("Tried to initiate binding mode with encryption disabled");
@@ -214,6 +236,11 @@ int main(int argc, char *argv[])
     case MODE_BINDING_ECDH:
 #if defined(ENABLE_ENCRYPTION)
       PRINT_INFO("Starting daemon in ECDH binding mode");
+
+      if (secondary_already_running_bootloader) {
+        FATAL("Cannot run CPCd in binding ECDH mode because the bootloader is currently running on the secondary.");
+      }
+
       run_binding_mode();
 #else
       FATAL("Tried to initiate binding mode with encryption disabled");
@@ -223,6 +250,11 @@ int main(int argc, char *argv[])
     case MODE_BINDING_UNBIND:
 #if defined(ENABLE_ENCRYPTION)
       PRINT_INFO("Starting daemon in unbind mode");
+
+      if (secondary_already_running_bootloader) {
+        FATAL("Cannot run CPCd in unbind mode because the bootloader is currently running on the secondary.");
+      }
+
       run_binding_mode();
 #else
       FATAL("Tried to unbind with encryption disabled");
@@ -236,6 +268,11 @@ int main(int argc, char *argv[])
 
     case MODE_UART_VALIDATION:
       PRINT_INFO("Starting daemon in UART validation mode");
+
+      if (secondary_already_running_bootloader) {
+        FATAL("Cannot run CPCd in UART validation mode because the bootloader is currently running on the secondary.");
+      }
+
       run_uart_validation();
       break;
 
