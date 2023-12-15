@@ -1545,18 +1545,16 @@ static void process_ack(sl_cpc_endpoint_t *endpoint, uint8_t ack)
 static void transmit_ack(sl_cpc_endpoint_t *endpoint)
 {
   sl_cpc_buffer_handle_t *handle;
-
-  // Get new frame handler
-  handle = (sl_cpc_buffer_handle_t*) zalloc(sizeof(sl_cpc_buffer_handle_t));
-  FATAL_SYSCALL_ON(handle == NULL);
-
-  handle->endpoint = endpoint;
-  handle->address = endpoint->id;
+  uint8_t control;
 
   // Set ACK number in the supervisory control byte
   control = hdlc_create_control_supervisory(endpoint->ack, SLI_CPC_HDLC_ACK_SUPERVISORY_FUNCTION);
 
-  push_back_buffer_handle(&transmit_queue, handle);
+  // Get new frame handler
+  handle = buffer_new(endpoint, endpoint->id, NULL, 0, control);
+  FATAL_SYSCALL_ON(handle == NULL);
+
+  buffer_list_push_back(handle, &transmit_queue);
   TRACE_CORE("Endpoint #%d sent ACK: %d", endpoint->id, endpoint->ack);
 
   core_process_transmit_queue();
@@ -1605,11 +1603,8 @@ static void transmit_reject(sl_cpc_endpoint_t *endpoint,
                             sl_cpc_reject_reason_t reason)
 {
   sl_cpc_buffer_handle_t *handle;
-
-  handle = (sl_cpc_buffer_handle_t*) zalloc(sizeof(sl_cpc_buffer_handle_t));
-  FATAL_ON(handle == NULL);
-
-  handle->address = address;
+  uint8_t *reason_payload;
+  uint8_t control;
 
   // Set the SEQ number and ACK number in the control byte
   control = hdlc_create_control_supervisory(ack, SLI_CPC_HDLC_REJECT_SUPERVISORY_FUNCTION);
@@ -1623,7 +1618,7 @@ static void transmit_reject(sl_cpc_endpoint_t *endpoint,
   handle = buffer_new(NULL, address, reason_payload, sizeof(uint8_t), control);
   FATAL_ON(handle == NULL);
 
-  push_back_buffer_handle(&transmit_queue, handle);
+  buffer_list_push_back(handle, &transmit_queue);
 
   if (endpoint != NULL) {
     switch (reason) {

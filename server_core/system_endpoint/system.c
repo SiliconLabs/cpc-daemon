@@ -347,7 +347,11 @@ void sl_cpc_system_cmd_noop(sl_cpc_system_noop_cmd_callback_t on_noop_reply,
 
     tx_command->command_id = CMD_SYSTEM_NOOP;
     tx_command->command_seq = command_handle->command_seq;
-    u16_to_le(0, (uint8_t *)(&tx_command->length));
+    tx_command->length = 0;
+
+    command_handle->command_length = (uint16_t) SIZEOF_SYSTEM_COMMAND(command_handle->command);
+
+    u16_to_le(tx_command->length, (uint8_t *)(&tx_command->length));
   }
 
   write_command(command_handle);
@@ -386,7 +390,11 @@ void sl_cpc_system_cmd_reboot(sl_cpc_system_reset_cmd_callback_t on_reset_reply,
 
     tx_command->command_id = CMD_SYSTEM_RESET;
     tx_command->command_seq = command_handle->command_seq;
-    u16_to_le(0, (uint8_t *)(&tx_command->length));
+    tx_command->length = 0;
+
+    command_handle->command_length = (uint16_t) SIZEOF_SYSTEM_COMMAND(command_handle->command);
+
+    u16_to_le(tx_command->length, (uint8_t *)(&tx_command->length));
   }
 
   write_command(command_handle);
@@ -590,8 +598,12 @@ void sl_cpc_system_cmd_property_get(sl_cpc_system_property_get_set_cmd_callback_
 
     tx_command->command_id = CMD_SYSTEM_PROP_VALUE_GET;
     tx_command->command_seq = command_handle->command_seq;
+    tx_command->length = (uint16_t) sizeof(property_id);
+
+    command_handle->command_length = (uint16_t) SIZEOF_SYSTEM_COMMAND(command_handle->command);
+
     u32_to_le(property_id, (uint8_t *)(&tx_property_command->property_id));
-    u16_to_le(sizeof(property_id), (uint8_t *)(&tx_command->length));
+    u16_to_le(tx_command->length, (uint8_t *)(&tx_command->length));
   }
 
   write_command(command_handle);
@@ -648,25 +660,9 @@ void sl_cpc_system_cmd_property_set(sl_cpc_system_property_get_set_cmd_callback_
 
     tx_command->length = (uint16_t)(sizeof(property_id) + property_length);
 
-        case 2:
-          u16_to_le(*(const uint16_t *)value, tx_property_command->payload);
-          break;
+    command_handle->command_length = (uint16_t) SIZEOF_SYSTEM_COMMAND(command_handle->command);
 
-        case 4:
-          u32_to_le(*(const uint32_t *)value, tx_property_command->payload);
-          break;
-
-        case 8:
-          u64_to_le(*(const uint64_t *)value, tx_property_command->payload);
-          break;
-
-        default:
-          memcpy(tx_property_command->payload, value, value_length);
-          break;
-      }
-    }
-
-    u16_to_le((uint16_t)(sizeof(property_id) + value_length), (uint8_t *)(&tx_command->length));
+    u16_to_le(tx_command->length, (uint8_t *)(&tx_command->length));
   }
 
   write_command(command_handle);
@@ -707,14 +703,13 @@ static void on_final_reset(sl_cpc_system_command_handle_t * command_handle,
   ignore_reset_reason = false;
 
   if (system_cmd_payload_length < sizeof(reset_status)) {
-    WARN("on_final_reset: payload too short");
+    WARN("Payload too short for reset_status");
     return;
   }
 
   reset_status = u32_from_le(system_cmd_payload);
 
-  ((sl_cpc_system_reset_cmd_callback_t)command_handle->on_final)(command_handle,
-                                                                 command_handle->error_status,
+  ((sl_cpc_system_reset_cmd_callback_t)command_handle->on_final)(command_handle->error_status,
                                                                  reset_status);
 }
 
@@ -772,10 +767,9 @@ static void on_final_property_is(sl_cpc_system_command_handle_t * command_handle
     }
   }
 
-  size_t value_length = system_cmd->length - sizeof(sl_cpc_system_property_cmd_t);
+  size_t value_length = system_cmd->length - sizeof(sli_cpc_system_property_cmd_t);
 
-  callback(command_handle,
-           system_property_cmd.property_id,
+  callback(system_property_cmd.property_id,
            (uint8_t *)system_property_cmd_payload, /* discard const qualifier */
            value_length,
            command_handle->on_final_arg,
@@ -875,7 +869,7 @@ static void on_reply(uint8_t endpoint_id,
 static void on_uframe_receive(uint8_t endpoint_id, const void* data, size_t data_len)
 {
   const uint8_t *u8_data;
-  sl_cpc_system_cmd_t system_cmd;
+  sli_cpc_system_cmd_t system_cmd;
 
   FATAL_ON(endpoint_id != SL_CPC_ENDPOINT_SYSTEM);
 
@@ -904,7 +898,7 @@ static void on_uframe_receive(uint8_t endpoint_id, const void* data, size_t data
   }
 
   if (system_cmd.command_id == CMD_SYSTEM_PROP_VALUE_IS) {
-    sl_cpc_system_property_cmd_t system_property_cmd;
+    sli_cpc_system_property_cmd_t system_property_cmd;
 
     if (data_len < sizeof(system_property_cmd)) {
       WARN("Payload too short for system_property_cmd");
@@ -935,8 +929,8 @@ static void on_uframe_receive(uint8_t endpoint_id, const void* data, size_t data
 
 static void on_iframe_unsolicited(uint8_t endpoint_id, const void* data, size_t data_len)
 {
+  sli_cpc_system_cmd_t system_cmd;
   const uint8_t *u8_data;
-  sl_cpc_system_cmd_t system_cmd;
 
   FATAL_ON(endpoint_id != SL_CPC_ENDPOINT_SYSTEM);
 
@@ -966,7 +960,7 @@ static void on_iframe_unsolicited(uint8_t endpoint_id, const void* data, size_t 
   }
 
   if (system_cmd.command_id == CMD_SYSTEM_PROP_VALUE_IS) {
-    sl_cpc_system_property_cmd_t system_property_cmd;
+    sli_cpc_system_property_cmd_t system_property_cmd;
 
     if (data_len < sizeof(system_property_cmd)) {
       WARN("Payload too short for system_property_cmd");
@@ -978,45 +972,9 @@ static void on_iframe_unsolicited(uint8_t endpoint_id, const void* data, size_t 
     data_len -= 4;
 
     if (system_property_cmd.property_id >= PROP_ENDPOINT_STATE_0 && system_property_cmd.property_id <= PROP_ENDPOINT_STATE_255) {
-      uint8_t closed_endpoint_id;
-      cpc_endpoint_state_t endpoint_state;
+      uint8_t endpoint_id = PROPERTY_ID_TO_EP_ID(system_property_cmd.property_id);
 
-      closed_endpoint_id = PROPERTY_ID_TO_EP_ID(system_property_cmd.property_id);
-
-      if (data_len < 1) {
-        WARN("Payload too short for endpoint_state");
-        return;
-      }
-      endpoint_state = core_state_mapper(u8_data[0]);
-
-      if (endpoint_state == SL_CPC_STATE_CLOSING) {
-        TRACE_SYSTEM("Secondary closed the endpoint #%d", closed_endpoint_id);
-        // The secondary notified us this endpoint will be closed
-        if (!server_listener_list_empty(closed_endpoint_id) && core_get_endpoint_state(closed_endpoint_id) == SL_CPC_STATE_OPEN) {
-          // There are still clients connected to the endpoint
-          // We set this endpoint in error so clients are aware
-          core_set_endpoint_in_error(closed_endpoint_id, SL_CPC_STATE_ERROR_DESTINATION_UNREACHABLE);
-          // And we acknowledge this notification
-          sl_cpc_system_cmd_property_set(reply_to_closing_endpoint_on_secondary_async_callback,
-                                         ENDPOINT_CLOSE_RETRIES,
-                                         ENDPOINT_CLOSE_RETRY_TIMEOUT,
-                                         system_property_cmd.property_id,
-                                         &endpoint_state,
-                                         sizeof(cpc_endpoint_state_t),
-                                         false);
-        } else {
-          // We acknowledge this notification and close the endpoint in the callback
-          sl_cpc_system_cmd_property_set(reply_to_closing_endpoint_on_secondary_callback,
-                                         ENDPOINT_CLOSE_RETRIES,
-                                         ENDPOINT_CLOSE_RETRY_TIMEOUT,
-                                         system_property_cmd.property_id,
-                                         &endpoint_state,
-                                         sizeof(cpc_endpoint_state_t),
-                                         false);
-        }
-      } else {
-        FATAL("Invalid property id");
-      }
+      core_on_unsolicited_endpoint_state(endpoint_id, u8_data, data_len);
     }
   }
 }

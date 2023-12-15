@@ -524,8 +524,9 @@ static void property_get_rx_capability_callback(sli_cpc_property_id_t property_i
   FATAL_ON(status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS);
   FATAL_ON(property_value == NULL || property_length != sizeof(uint16_t));
 
-  TRACE_RESET("Received RX capability of %u bytes", *((uint16_t *)property_value));
   rx_capability = u16_from_le((const uint8_t *)property_value);
+  TRACE_RESET("Received RX capability of %u bytes", rx_capability);
+
   rx_capability_received = true;
 
   PRINT_INFO("RX capability is %u bytes", rx_capability);
@@ -547,7 +548,7 @@ static void property_get_secondary_bootloader_info_callback(sli_cpc_property_id_
     //  [0]: bootloader type
     //  [1]: version (unused for now)
     //  [2]: capability mask (unused for now)
-    server_core_secondary_bootloader_type = u32_from_le((const uint8_t *)property_value + 0);
+    server_core_secondary_bootloader_type = u32_from_le((const uint8_t *)property_value);
 
     BUG_ON(server_core_secondary_bootloader_type >= SL_CPC_BOOTLOADER_UNKNOWN);
 
@@ -570,9 +571,9 @@ static void property_get_secondary_cpc_version_callback(sli_cpc_property_id_t pr
                                                         void *user_data,
                                                         sl_status_t status)
 {
-  uint32_t version[3];
+  (void) user_data;
 
-  (void) handle;
+  uint32_t version[3];
 
   if ( (property_id != PROP_SECONDARY_CPC_VERSION)
        || (status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS)
@@ -717,7 +718,7 @@ static void property_get_protocol_version_callback(sli_cpc_property_id_t propert
                                                    void *user_data,
                                                    sl_status_t status)
 {
-  (void) handle;
+  (void) user_data;
 
   if ((property_id != PROP_PROTOCOL_VERSION)
       || (status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS)

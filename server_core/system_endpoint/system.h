@@ -508,9 +508,9 @@ typedef struct __attribute__((packed)) {
  * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
  */
 typedef struct __attribute__((packed)) {
-  sl_cpc_property_id_t property_id; ///< Identifier of the property.
-  uint8_t              payload[];   ///< Property value.
-} sl_cpc_system_property_cmd_t;
+  sli_cpc_property_id_t property_id; ///< Identifier of the property.
+  uint8_t               payload[];   ///< Property value.
+} sli_cpc_system_property_cmd_t;
 
 SL_ENUM_GENERIC(sl_cpc_system_ep_frame_type_t, uint8_t) {
   SYSTEM_EP_UFRAME,
