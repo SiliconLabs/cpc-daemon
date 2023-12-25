@@ -27,7 +27,6 @@
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <sys/epoll.h>
-#include <sys/ioctl.h>
 #include <sys/timerfd.h>
 #include <signal.h>
 #include <linux/serial.h>
