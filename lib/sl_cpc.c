@@ -51,8 +51,13 @@
 #define LTTNG_TRACE(string, ...) (void)0
 #endif
 
+#define TIME_STR_LEN (27)
+
 typedef struct {
   int ctrl_sock_fd;
+  pthread_t reset_thread;
+  int reset_sock_fd;
+  cpc_reset_callback_t reset_callback;
   int ref_count;
   int ep_open_ref_count;
   int ep_evt_open_ref_count;
@@ -67,7 +72,7 @@ typedef struct {
 
 typedef struct {
   uint8_t id;
-  int server_sock_fd;
+  int session_id;
   int sock_fd;
   int ref_count;
   pthread_mutex_t sock_fd_lock;
@@ -87,78 +92,80 @@ typedef struct {
   void *handle;
 } sli_handle_list_item_t;
 
-static void lib_trace(sli_cpc_handle_t* lib_handle, FILE *__restrict __stream, const char* string, ...)
+static bool within_reset_callback(sli_cpc_handle_t *lib_handle)
 {
-  char time_string[25];
-  int errno_backup;
+  return lib_handle->reset_callback && pthread_equal(pthread_self(), lib_handle->reset_thread);
+}
 
-  // backup current errno as syscalls below might override it
-  errno_backup = errno;
+static size_t get_time_string(char *slice, size_t slice_len)
+{
+  int ret;
+  struct timespec now;
+  struct tm tm;
 
-  /* get time string */
-  {
-    long us;
-    time_t s;
-    struct timespec spec;
-    struct tm* tm_info;
-
-    int ret = clock_gettime(CLOCK_REALTIME, &spec);
-
-    s = spec.tv_sec;
-
-    us = spec.tv_nsec / 1000;
-    if (us > 999999) {
-      s++;
-      us = 0;
-    }
-
-    if (ret != -1) {
-      tm_info = localtime(&s);
-      size_t r = strftime(time_string, sizeof(time_string), "%H:%M:%S", tm_info);
-      sprintf(&time_string[r], ":%06ld", us);
-    } else {
-      strncpy(time_string, "time error", sizeof(time_string));
-    }
+  if (slice_len < TIME_STR_LEN) {
+    return 0;
   }
 
-  fprintf(__stream, "[%s] libcpc(%s:%d) ", time_string, lib_handle->instance_name, lib_handle->pid);
+  ret = clock_gettime(CLOCK_REALTIME, &now);
+  if (ret < 0) {
+    return 0;
+  }
 
+  ret = gmtime_r(&now.tv_sec, &tm) == NULL;
+  if (ret != 0) {
+    return 0;
+  }
+
+  /* XXXX-XX-XXTXX:XX:XX + .XXXXXX + Z */
+  strftime(slice, 19 + 1, "%FT%T", &tm);
+  snprintf(slice + 19, 7 + 1, ".%06lu", (long)now.tv_nsec / 1000);
+  slice[26] = 'Z';
+  return TIME_STR_LEN;
+}
+
+static void lib_trace(FILE *__restrict __stream, const char* string, ...)
+{
   va_list vl;
-
   va_start(vl, string);
   {
-    errno = errno_backup;
     vfprintf(__stream, string, vl);
     fflush(__stream);
   }
   va_end(vl);
-
-  errno = errno_backup;
 }
 
-#define TRACE_LIB(lib_handle, format, args ...)     \
-  do {                                              \
-    if (lib_handle->enable_tracing) {               \
-      lib_trace(lib_handle,                         \
-                stderr,                             \
-                "[%s:%d]: " format "\n",            \
-                __FUNCTION__, __LINE__, ## args);   \
-      LTTNG_TRACE("libcpc: " format "\n", ## args); \
-    }                                               \
+#define TRACE_LIB_GENERIC(lib_handle, lib_trace_call, format, args ...)      \
+  do {                                                                       \
+    if (lib_handle->enable_tracing) {                                        \
+      char time_string[TIME_STR_LEN + 1];                                    \
+      int errno_backup = errno;                                              \
+      time_string[get_time_string(time_string, sizeof(time_string))] = '\0'; \
+      lib_trace_call;                                                        \
+      LTTNG_TRACE("libcpc: " format "\n", ## args);                          \
+      errno = errno_backup;                                                  \
+    }                                                                        \
   } while (0)
+
+#define TRACE_LIB(lib_handle, format, args ...)                                        \
+  TRACE_LIB_GENERIC(lib_handle,                                                        \
+                    lib_trace(stderr,                                                  \
+                              "[%s] libcpc(%s:%d) [%s:%d]: " format "\n",              \
+                              time_string, lib_handle->instance_name, lib_handle->pid, \
+                              __FUNCTION__, __LINE__, ## args),                        \
+                    format,                                                            \
+                    args ...)                                                          \
 
 // trace an error, "error" is expected to be a negative value of errno,
 // eg. -EINVAL or -ENOMEM
-#define TRACE_LIB_ERROR(lib_handle, error, format, args ...)        \
-  do {                                                              \
-    if (lib_handle->enable_tracing) {                               \
-      lib_trace(lib_handle,                                         \
-                stderr,                                             \
-                "[%s:%d]: " format " : errno %s\n",                 \
-                __FUNCTION__, __LINE__, ## args, strerror(-error)); \
-      LTTNG_TRACE("libcpc: " format "\n", ## args);                 \
-    }                                                               \
-  } while (0)
+#define TRACE_LIB_ERROR(lib_handle, error, format, args ...)                           \
+  TRACE_LIB_GENERIC(lib_handle,                                                        \
+                    lib_trace(stderr,                                                  \
+                              "[%s] libcpc(%s:%d) [%s:%d]: " format " : errno %s\n",   \
+                              time_string, lib_handle->instance_name, lib_handle->pid, \
+                              __FUNCTION__, __LINE__, ## args, strerror(-error)),      \
+                    format,                                                            \
+                    args ...)                                                          \
 
 // trace an error with the current errno (useful after a failed syscall)
 #define TRACE_LIB_ERRNO(lib_handle, format, args ...) \
@@ -183,8 +190,6 @@ static void lib_trace(sli_cpc_handle_t* lib_handle, FILE *__restrict __stream, c
 static sl_slist_node_t *lib_handle_list;
 static sl_slist_node_t *ep_handle_list;
 static sl_slist_node_t *ep_evt_handle_list;
-
-static cpc_reset_callback_t saved_reset_callback;
 
 static pthread_mutex_t cpc_api_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -403,8 +408,6 @@ static int get_secondary_app_version(sli_cpc_handle_t *lib_handle)
 static int set_pid(sli_cpc_handle_t *lib_handle)
 {
   INIT_CPC_RET(int);
-  int tmp_ret = 0;
-  bool can_connect = false;
   ssize_t bytes_written = 0;
   const size_t set_pid_query_len = sizeof(cpcd_exchange_buffer_t) + sizeof(pid_t);
   uint8_t buf[set_pid_query_len];
@@ -419,21 +422,6 @@ static int set_pid(sli_cpc_handle_t *lib_handle)
   if (bytes_written < (ssize_t)set_pid_query_len) {
     TRACE_LIB_ERRNO(lib_handle, "send(%d) failed", lib_handle->ctrl_sock_fd);
     SET_CPC_RET(-errno);
-    RETURN_CPC_RET;
-  }
-
-  tmp_ret = cpc_query_receive(lib_handle, lib_handle->ctrl_sock_fd, &can_connect, sizeof(bool));
-  if (tmp_ret == 0) {
-    if (can_connect) {
-      TRACE_LIB(lib_handle, "pid %d registered with daemon", lib_handle->pid);
-    } else {
-      TRACE_LIB_ERROR(lib_handle, -ELIBMAX, "cannot set pid %d, another process with same pid is already registered", lib_handle->pid);
-      SET_CPC_RET(-ELIBMAX);
-      RETURN_CPC_RET;
-    }
-  } else {
-    TRACE_LIB_ERROR(lib_handle, tmp_ret, "failed to exchange set pid query");
-    SET_CPC_RET(tmp_ret);
     RETURN_CPC_RET;
   }
 
@@ -472,13 +460,22 @@ static int get_endpoint_encryption(sli_cpc_endpoint_t *ep, bool *encryption)
   RETURN_CPC_RET;
 }
 
-static void SIGUSR1_handler(int signum)
+static void* cpc_reset_thread(void *handle)
 {
-  (void) signum;
+  sli_cpc_handle_t *lib_handle = (sli_cpc_handle_t *) handle;
+  uint8_t tmp;
+  ssize_t ret;
 
-  if (saved_reset_callback != NULL) {
-    saved_reset_callback();
+  ret = read(lib_handle->reset_sock_fd, &tmp, sizeof(tmp));
+  if (ret < 0) {
+    TRACE_LIB_ERRNO(lib_handle, "read(%d) failed", lib_handle->reset_sock_fd);
   }
+
+  if (lib_handle->initialized) {
+    lib_handle->reset_callback();
+  }
+
+  return NULL;
 }
 
 static int lock_cpc_api(pthread_mutex_t *lock)
@@ -561,6 +558,13 @@ static int sli_cpc_deinit(bool atomic, cpc_handle_t *handle)
 
   lib_handle = (sli_cpc_handle_t *)handle->ptr;
 
+  if (within_reset_callback(lib_handle)) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot call %s within reset callback", __func__);
+    SET_CPC_RET(-EPERM);
+
+    goto cleanup;
+  }
+
   if (lib_handle->ref_count != 0) {
     TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot deinit a handle (%p) that is in use", handle);
     SET_CPC_RET(-EPERM);
@@ -580,6 +584,23 @@ static int sli_cpc_deinit(bool atomic, cpc_handle_t *handle)
     SET_CPC_RET(-EPERM);
 
     goto cleanup;
+  }
+
+  lib_handle->initialized = false;
+
+  if (lib_handle->reset_callback) {
+    if (shutdown(lib_handle->reset_sock_fd, SHUT_RD) < 0) {
+      TRACE_LIB_ERRNO(lib_handle, "shutdown(%d) failed", lib_handle->reset_sock_fd);
+    }
+
+    if (close(lib_handle->reset_sock_fd) < 0) {
+      TRACE_LIB_ERRNO(lib_handle, "close(%d) failed", lib_handle->reset_sock_fd);
+    }
+
+    tmp_ret = pthread_join(lib_handle->reset_thread, NULL);
+    if (tmp_ret) {
+      TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_join() failed", lib_handle->reset_sock_fd);
+    }
   }
 
   if (close(lib_handle->ctrl_sock_fd) < 0) {
@@ -636,7 +657,7 @@ int cpc_init(cpc_handle_t *handle, const char *instance_name, bool enable_tracin
 
   /* Save the parameters internally for possible further re-init */
   lib_handle->enable_tracing = enable_tracing;
-  saved_reset_callback = reset_callback;
+  lib_handle->reset_callback = reset_callback;
 
   if (instance_name == NULL) {
     /* If the instance name is NULL, use the default name */
@@ -729,21 +750,6 @@ int cpc_init(cpc_handle_t *handle, const char *instance_name, bool enable_tracin
     goto close_ctrl_sock_fd;
   }
 
-  // Check if reset callback is define
-  if (reset_callback != NULL) {
-    signal(SIGUSR1, SIGUSR1_handler);
-  }
-
-  // Check if control socket exists
-  if (access(server_addr.sun_path, F_OK) != 0) {
-    TRACE_LIB_ERRNO(lib_handle,
-                    "access() : %s doesn't exist. The daemon is not started or the reset "
-                    "sequence is not done or the secondary is not responsive.",
-                    server_addr.sun_path);
-    SET_CPC_RET(-errno);
-    goto close_ctrl_sock_fd;
-  }
-
   tmp_ret = get_max_write(lib_handle);
   if (tmp_ret < 0) {
     SET_CPC_RET(tmp_ret);
@@ -770,19 +776,77 @@ int cpc_init(cpc_handle_t *handle, const char *instance_name, bool enable_tracin
     goto destroy_mutex;
   }
 
+  if (lib_handle->reset_callback) {
+    /* Create the reset socket path */
+    {
+      int nchars;
+      const size_t size = sizeof(server_addr.sun_path) - 1;
+      memset(&server_addr, 0, sizeof(server_addr));
+      server_addr.sun_family = AF_UNIX;
+
+      nchars = snprintf(server_addr.sun_path, size, "%s/cpcd/%s/reset.cpcd.sock", CPC_SOCKET_DIR, lib_handle->instance_name);
+
+      /* Make sure the path fitted entirely in the struct's static buffer */
+      if (nchars < 0 || (size_t) nchars >= size) {
+        TRACE_LIB_ERROR(lib_handle, -ERANGE, "socket path '%s/cpcd/%s/reset.cpcd.sock' does not fit in buffer", CPC_SOCKET_DIR, lib_handle->instance_name);
+        SET_CPC_RET(-ERANGE);
+        goto destroy_mutex;
+      }
+    }
+
+    // Check if control socket exists
+    if (access(server_addr.sun_path, F_OK) != 0) {
+      TRACE_LIB_ERRNO(lib_handle,
+                      "access() : %s doesn't exist. The daemon is not started or "
+                      "the reset sequence is not done or the secondary is not responsive.",
+                      server_addr.sun_path);
+      SET_CPC_RET(-errno);
+      goto destroy_mutex;
+    }
+
+    lib_handle->reset_sock_fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+    if (lib_handle->reset_sock_fd < 0) {
+      TRACE_LIB_ERRNO(lib_handle, "socket() failed");
+      SET_CPC_RET(-errno);
+      goto destroy_mutex;
+    }
+
+    if (connect(lib_handle->reset_sock_fd, (struct sockaddr *) &server_addr, sizeof(server_addr)) < 0) {
+      TRACE_LIB_ERRNO(lib_handle,
+                      "connect() : could not connect to %s. Either the process does not have "
+                      "the correct permissions or the secondary is not responsive.",
+                      server_addr.sun_path);
+      SET_CPC_RET(-errno);
+      goto close_reset_sock_fd;
+    }
+
+    tmp_ret = pthread_create(&lib_handle->reset_thread, NULL, cpc_reset_thread, lib_handle);
+    if (tmp_ret) {
+      TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_create() failed");
+      SET_CPC_RET(-tmp_ret);
+      goto close_reset_sock_fd;
+    }
+  }
+
   lock_cpc_api(&cpc_api_lock);
 
   lib_handle_item->handle = lib_handle;
-  sl_slist_push(&lib_handle_list, &lib_handle_item->node);
-
   lib_handle->initialized = true;
   handle->ptr = (void *)lib_handle;
+
+  sl_slist_push(&lib_handle_list, &lib_handle_item->node);
 
   unlock_cpc_api(&cpc_api_lock);
 
   TRACE_LIB(lib_handle, "cpc lib initialized");
 
   RETURN_CPC_RET;
+
+  close_reset_sock_fd:
+  if (close(lib_handle->reset_sock_fd) < 0) {
+    TRACE_LIB_ERRNO(lib_handle, "close(%d) failed, free up resources anyway", lib_handle->reset_sock_fd);
+    SET_CPC_RET(-errno);
+  }
 
   destroy_mutex:
   tmp_ret = pthread_mutex_destroy(&lib_handle->ctrl_sock_fd_lock);
@@ -846,6 +910,14 @@ int cpc_restart(cpc_handle_t *handle)
 
   lib_handle = (sli_cpc_handle_t *)handle->ptr;
 
+  if (within_reset_callback(lib_handle)) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot call %s within reset callback", __func__);
+    SET_CPC_RET(-EPERM);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
   sli_cpc_handle_t *lib_handle_copy = zalloc(sizeof(sli_cpc_handle_t));
   if (lib_handle_copy == NULL) {
     TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", sizeof(sli_cpc_handle_t));
@@ -902,15 +974,15 @@ int cpc_restart(cpc_handle_t *handle)
   lib_handle_copy->initialized = false;
 
   // Attemps a connection
-  tmp_ret = cpc_init(handle, lib_handle_copy->instance_name, lib_handle_copy->enable_tracing, saved_reset_callback);
+  tmp_ret = cpc_init(handle, lib_handle_copy->instance_name, lib_handle_copy->enable_tracing, lib_handle_copy->reset_callback);
   if (tmp_ret != 0) {
-    TRACE_LIB_ERROR(lib_handle_copy, tmp_ret, "cpc_init(%p, %s, %d, %p) failed, attempting again in %d milliseconds", handle, lib_handle_copy->instance_name, lib_handle_copy->enable_tracing, saved_reset_callback, CPCD_REBOOT_TIME_MS);
+    TRACE_LIB_ERROR(lib_handle_copy, tmp_ret, "cpc_init(%p, %s, %d, %p) failed, attempting again in %d milliseconds", handle, lib_handle_copy->instance_name, lib_handle_copy->enable_tracing, lib_handle_copy->reset_callback, CPCD_REBOOT_TIME_MS);
     sleep_ms(CPCD_REBOOT_TIME_MS);  // Wait for the minimum time it takes for CPCd to reboot
 
-    tmp_ret = cpc_init(handle, lib_handle_copy->instance_name, lib_handle_copy->enable_tracing, saved_reset_callback);
+    tmp_ret = cpc_init(handle, lib_handle_copy->instance_name, lib_handle_copy->enable_tracing, lib_handle_copy->reset_callback);
     if (tmp_ret != 0) {
       SET_CPC_RET(tmp_ret);
-      TRACE_LIB_ERROR(lib_handle_copy, tmp_ret, "cpc_init(%p, %s, %d, %p) failed", handle, lib_handle_copy->instance_name, lib_handle_copy->enable_tracing, saved_reset_callback);
+      TRACE_LIB_ERROR(lib_handle_copy, tmp_ret, "cpc_init(%p, %s, %d, %p) failed", handle, lib_handle_copy->instance_name, lib_handle_copy->enable_tracing, lib_handle_copy->reset_callback);
 
       // Restore lib_handle
       handle->ptr = (void *)lib_handle_copy;
@@ -927,6 +999,52 @@ int cpc_restart(cpc_handle_t *handle)
   free(lib_handle_copy);
   free(lib_handle_item_copy);
 
+  RETURN_CPC_RET;
+}
+/***************************************************************************//**
+ * Get a session id associated to this instance. This id is guaranteed to be
+ * unique between all of the clients of a single endpoint on a single CPCd instance.
+ ******************************************************************************/
+int cpc_get_endpoint_session_id(cpc_endpoint_t endpoint, uint32_t *session_id)
+{
+  INIT_CPC_RET(int);
+  sli_cpc_endpoint_t *ep = NULL;
+  sli_cpc_handle_t *lib_handle = NULL;
+
+  lock_cpc_api(&cpc_api_lock);
+
+  if (find_handle(ep_handle_list, endpoint.ptr) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
+  ep = (sli_cpc_endpoint_t *)endpoint.ptr;
+  if (find_handle(lib_handle_list, ep->lib_handle) == NULL) {
+    SET_CPC_RET(-EINVAL);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
+  lib_handle = ep->lib_handle;
+
+  if (within_reset_callback(lib_handle)) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot call %s within reset callback", __func__);
+    SET_CPC_RET(-EPERM);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
+  if (ep->session_id > INT32_MAX || ep->session_id < 0) {
+    SET_CPC_RET(-ERANGE);
+  } else {
+    *session_id = (uint32_t)ep->session_id;
+  }
+
+  unlock_cpc_api(&cpc_api_lock);
   RETURN_CPC_RET;
 }
 
@@ -947,6 +1065,7 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
   sli_handle_list_item_t *ep_handle_item = NULL;
   struct sockaddr_un ep_addr = { 0 };
   uint8_t payload[sizeof(uint8_t) + sizeof(bool)];
+  uint8_t payload2[sizeof(ep->session_id) + sizeof(bool)];
 
   if (id == SL_CPC_ENDPOINT_SYSTEM || endpoint == NULL) {
     SET_CPC_RET(-EINVAL);
@@ -963,6 +1082,15 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
   }
 
   lib_handle = (sli_cpc_handle_t *)handle.ptr;
+
+  if (within_reset_callback(lib_handle)) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot call %s within reset callback", __func__);
+    SET_CPC_RET(-EPERM);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
   increment_ref_count(&lib_handle->ref_count);
 
   unlock_cpc_api(&cpc_api_lock);
@@ -1046,8 +1174,7 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
   ep->sock_fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
   if (ep->sock_fd < 0) {
     TRACE_LIB_ERRNO(lib_handle, "socket()");
-    SET_CPC_RET(-errno);
-    goto free_endpoint;
+    SET_CPC_RET(-errno); goto free_endpoint;
   }
 
   tmp_ret = connect(ep->sock_fd, (struct sockaddr *)&ep_addr, sizeof(ep_addr));
@@ -1057,10 +1184,19 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
     goto close_sock_fd;
   }
 
-  tmp_ret = cpc_query_receive(lib_handle, ep->sock_fd, (void*)&ep->server_sock_fd, sizeof(ep->server_sock_fd));
+  tmp_ret = cpc_query_receive(lib_handle, ep->sock_fd, (void*)payload2, sizeof(payload2));
   if (tmp_ret) {
     TRACE_LIB_ERROR(lib_handle, tmp_ret, "failed to receive server ack");
     SET_CPC_RET(tmp_ret);
+    goto close_sock_fd;
+  }
+
+  memcpy(&ep->session_id, payload2, sizeof(ep->session_id));
+  memcpy(&can_open, &payload2[sizeof(ep->session_id)], sizeof(bool));
+
+  if (can_open == false) {
+    TRACE_LIB_ERROR(lib_handle, -EAGAIN, "endpoint on secondary did not accept connection request");
+    SET_CPC_RET(-EAGAIN);
     goto close_sock_fd;
   }
 
@@ -1161,6 +1297,15 @@ int cpc_close_endpoint(cpc_endpoint_t *endpoint)
   }
 
   lib_handle = ep->lib_handle;
+
+  if (within_reset_callback(lib_handle)) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot call %s within reset callback", __func__);
+    SET_CPC_RET(-EPERM);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
   increment_ref_count(&lib_handle->ref_count);
 
   if (ep->ref_count != 0) {
@@ -1184,7 +1329,7 @@ int cpc_close_endpoint(cpc_endpoint_t *endpoint)
 
   tmp_ret = cpc_query_exchange(lib_handle, lib_handle->ctrl_sock_fd,
                                EXCHANGE_CLOSE_ENDPOINT_QUERY, ep->id,
-                               (void*)&ep->server_sock_fd, sizeof(ep->server_sock_fd));
+                               (void*)&ep->session_id, sizeof(ep->session_id));
 
   if (tmp_ret) {
     TRACE_LIB_ERROR(lib_handle, tmp_ret, "failed to exchange close endpoint query, free up resources anyway");
@@ -1277,6 +1422,15 @@ ssize_t cpc_read_endpoint(cpc_endpoint_t endpoint, void *buffer, size_t count, c
   }
 
   lib_handle = ep->lib_handle;
+
+  if (within_reset_callback(lib_handle)) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot call %s within reset callback", __func__);
+    SET_CPC_RET(-EPERM);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
   increment_ref_count(&lib_handle->ref_count);
   increment_ref_count(&ep->ref_count);
 
@@ -1346,6 +1500,15 @@ ssize_t cpc_write_endpoint(cpc_endpoint_t endpoint, const void *data, size_t dat
   }
 
   lib_handle = ep->lib_handle;
+
+  if (within_reset_callback(lib_handle)) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot call %s within reset callback", __func__);
+    SET_CPC_RET(-EPERM);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
   increment_ref_count(&lib_handle->ref_count);
   increment_ref_count(&ep->ref_count);
 
@@ -1418,6 +1581,15 @@ int cpc_get_endpoint_state(cpc_handle_t handle, uint8_t id, cpc_endpoint_state_t
   }
 
   lib_handle = (sli_cpc_handle_t *)handle.ptr;
+
+  if (within_reset_callback(lib_handle)) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot call %s within reset callback", __func__);
+    SET_CPC_RET(-EPERM);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
   increment_ref_count(&lib_handle->ref_count);
 
   unlock_cpc_api(&cpc_api_lock);
@@ -1482,6 +1654,15 @@ int cpc_set_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, const 
   }
 
   lib_handle = ep->lib_handle;
+
+  if (within_reset_callback(lib_handle)) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot call %s within reset callback", __func__);
+    SET_CPC_RET(-EPERM);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
   increment_ref_count(&lib_handle->ref_count);
   increment_ref_count(&ep->ref_count);
 
@@ -1637,6 +1818,15 @@ int cpc_get_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, void *
   }
 
   lib_handle = ep->lib_handle;
+
+  if (within_reset_callback(lib_handle)) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot call %s within reset callback", __func__);
+    SET_CPC_RET(-EPERM);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
   increment_ref_count(&lib_handle->ref_count);
   increment_ref_count(&ep->ref_count);
 
@@ -1804,6 +1994,14 @@ const char* cpc_get_secondary_app_version(cpc_handle_t handle)
   }
 
   lib_handle = (sli_cpc_handle_t *)handle.ptr;
+
+  if (within_reset_callback(lib_handle)) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot call %s within reset callback", __func__);
+
+    unlock_cpc_api(&cpc_api_lock);
+    return secondary_app_version;
+  }
+
   increment_ref_count(&lib_handle->ref_count);
 
   unlock_cpc_api(&cpc_api_lock);
@@ -2016,6 +2214,15 @@ int cpc_init_endpoint_event(cpc_handle_t handle, cpc_endpoint_event_handle_t *ev
   }
 
   lib_handle = (sli_cpc_handle_t *)handle.ptr;
+
+  if (within_reset_callback(lib_handle)) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot call %s within reset callback", __func__);
+    SET_CPC_RET(-EPERM);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
   increment_ref_count(&lib_handle->ref_count);
 
   unlock_cpc_api(&cpc_api_lock);
@@ -2159,6 +2366,15 @@ int cpc_read_endpoint_event(cpc_endpoint_event_handle_t event_handle, cpc_event_
   }
 
   lib_handle = evt->lib_handle;
+
+  if (within_reset_callback(lib_handle)) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot call %s within reset callback", __func__);
+    SET_CPC_RET(-EPERM);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
   increment_ref_count(&lib_handle->ref_count);
   increment_ref_count(&evt->ref_count);
 
@@ -2273,6 +2489,15 @@ int cpc_deinit_endpoint_event(cpc_endpoint_event_handle_t *event_handle)
   }
 
   lib_handle = evt->lib_handle;
+
+  if (within_reset_callback(lib_handle)) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot call %s within reset callback", __func__);
+    SET_CPC_RET(-EPERM);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
   increment_ref_count(&lib_handle->ref_count);
 
   if (evt->ref_count != 0) {
@@ -2348,6 +2573,15 @@ int cpc_get_endpoint_event_option(cpc_endpoint_event_handle_t event_handle, cpc_
   }
 
   lib_handle = evt->lib_handle;
+
+  if (within_reset_callback(lib_handle)) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot call %s within reset callback", __func__);
+    SET_CPC_RET(-EPERM);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
   increment_ref_count(&lib_handle->ref_count);
   increment_ref_count(&evt->ref_count);
 
@@ -2455,6 +2689,15 @@ int cpc_set_endpoint_event_option(cpc_endpoint_event_handle_t event_handle, cpc_
   }
 
   lib_handle = evt->lib_handle;
+
+  if (within_reset_callback(lib_handle)) {
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot call %s within reset callback", __func__);
+    SET_CPC_RET(-EPERM);
+
+    unlock_cpc_api(&cpc_api_lock);
+    RETURN_CPC_RET;
+  }
+
   increment_ref_count(&lib_handle->ref_count);
   increment_ref_count(&evt->ref_count);
 

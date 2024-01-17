@@ -117,6 +117,15 @@ class Endpoint(Structure):
         return ret
     #end def
 
+    # int cpc_get_session_id(cpc_endpoint_t endpoint, uint32_t *session_id);
+    def get_session_id(self):
+        session_id  = c_uint32()
+        ret = self.cpc_handle.lib_cpc.cpc_get_endpoint_session_id(self, byref(session_id))
+        if ret != 0:
+            raise Exception("Failed to get session id")
+        return session_id.value
+    #end def
+
     # int cpc_set_endpoint_option(cpc_endpoint_t endpoint, cpc_option_t option, const void *optval, size_t optlen);
     def set_option(self, option, optval):
         if option == Option.CPC_OPTION_BLOCKING:

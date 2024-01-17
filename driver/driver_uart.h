@@ -29,7 +29,10 @@
  */
 pthread_t driver_uart_init(int *fd_to_core, int *fd_notify_core, const char *device, unsigned int baudrate, bool hardflow);
 
+bool driver_uart_is_bootloader_running(const char *device, unsigned int baudrate, bool hardflow);
+
 int driver_uart_open(const char *device, unsigned int baudrate, bool hardflow);
+
 void driver_uart_assert_rts(bool assert);
 
 void driver_uart_print_overruns(void);

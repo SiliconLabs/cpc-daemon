@@ -20,6 +20,12 @@
 
 #include <stdint.h>
 
+static inline void u16_to_be(uint16_t x, uint8_t *p)
+{
+  p[0] = (uint8_t)(x >> 8);
+  p[1] = (uint8_t)(x >> 0);
+}
+
 static inline uint16_t u16_from_le(const uint8_t *p)
 {
   return (uint16_t)(((uint16_t)(p[0]) << 0) | ((uint16_t)(p[1]) << 8));

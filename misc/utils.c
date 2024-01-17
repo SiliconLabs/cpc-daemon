@@ -15,6 +15,7 @@
  *
  ******************************************************************************/
 
+#include <errno.h>
 #include <sys/stat.h>
 
 #include "cpcd/logging.h"
@@ -40,48 +41,60 @@ int recursive_mkdir(const char *dir, size_t len, const mode_t mode)
   }
 
   /* check if path exists and is a directory */
-  if (stat(tmp, &sb) == 0) {
-    if (S_ISDIR(sb.st_mode)) {
-      goto return_ok;
-    }
+  ret = stat(tmp, &sb);
+  if (ret == 0) {
+    /* ret is 0 if S_ISDIR returns a non-zero value, meaning that the path is a directory */
+    ret = S_ISDIR(sb.st_mode) != 0 ? 0 : -1;
+    goto cleanup;
   }
 
   /* recursive mkdir */
   for (p = tmp + 1; *p; p++) {
     if (*p == '/') {
       *p = 0;
-      /* test path */
-      if (stat(tmp, &sb) != 0) {
-        /* path does not exist - create directory */
-        if (mkdir(tmp, mode) < 0) {
-          goto return_err;
+
+      /*
+       * mkdir first and then check stat to avoid potential
+       * time of check/time of use issues
+       */
+      ret = mkdir(tmp, mode);
+      if (ret < 0) {
+        if (errno != EEXIST) {
+          goto cleanup;
         }
-      } else if (!S_ISDIR(sb.st_mode)) {
-        /* not a directory */
-        goto return_err;
       }
+
+      ret = stat(tmp, &sb);
+      if (ret != 0) {
+        goto cleanup;
+      }
+
+      ret = S_ISDIR(sb.st_mode) != 0 ? 0 : -1;
+      if (ret) {
+        goto cleanup;
+      }
+
       *p = '/';
     }
   }
 
-  /* test path */
-  if (stat(tmp, &sb) != 0) {
-    /* path does not exist - create directory */
-    if (mkdir(tmp, mode) < 0) {
-      goto return_err;
+  ret = mkdir(tmp, mode);
+  if (ret < 0) {
+    if (errno != EEXIST) {
+      goto cleanup;
     }
-  } else if (!S_ISDIR(sb.st_mode)) {
-    /* not a directory */
-    goto return_err;
   }
 
-  /* Fall through to return_ok */
+  ret = stat(tmp, &sb);
+  if (ret != 0) {
+    goto cleanup;
+  }
 
-  return_ok:
-  free(tmp);
-  return 0;
+  ret = S_ISDIR(sb.st_mode) != 0 ? 0 : -1;
 
-  return_err:
+  /* Fall through to return ret */
+
+  cleanup:
   free(tmp);
-  return -1;
+  return ret;
 }

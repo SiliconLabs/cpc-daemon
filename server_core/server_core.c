@@ -50,10 +50,16 @@ char *server_core_secondary_app_version = NULL;
 uint8_t server_core_secondary_protocol_version;
 sl_cpc_bootloader_t server_core_secondary_bootloader_type = SL_CPC_BOOTLOADER_UNKNOWN;
 
+static const sli_cpc_system_primary_version_t primary_version = {
+  .major = PROJECT_VER_MAJOR,
+  .minor = PROJECT_VER_MINOR,
+  .patch = PROJECT_VER_PATCH,
+  .tweak = PROJECT_VER_TWEAK
+};
 static bool set_reset_mode_ack = false;
-
 static bool reset_ack = false;
 static bool secondary_cpc_version_received = false;
+static bool set_primary_version_reply_received = false;
 static bool secondary_app_version_received_or_not_available = false;
 static bool bootloader_info_received_or_not_available = false;
 static bool secondary_bus_bitrate_received = false;
@@ -72,7 +78,7 @@ static bool reset_reason_received = false;
 
 static server_core_mode_t server_core_mode = SERVER_CORE_MODE_NORMAL;
 
-static sl_cpc_system_reboot_mode_t pending_mode;
+static sl_cpc_system_reboot_mode_t pending_reboot_mode;
 
 static int kill_eventfd = -1;
 static int security_ready_eventfd = -1;
@@ -88,6 +94,7 @@ static enum {
   WAIT_FOR_SECONDARY_CPC_VERSION,
   WAIT_FOR_SECONDARY_APP_VERSION,
   WAIT_FOR_PROTOCOL_VERSION,
+  WAIT_FOR_SET_PRIMARY_VERSION_REPLY,
   WAIT_FOR_SECONDARY_BUS_BITRATE,
   WAIT_FOR_SECONDARY_BUS_MAX_BITRATE,
   RESET_SEQUENCE_DONE
@@ -120,25 +127,24 @@ static void process_reset_sequence(bool firmware_reset_mode);
 static void server_core_cleanup(epoll_private_data_t *private_data);
 
 #if !defined(UNIT_TESTING)
-static void security_property_get_state_callback(sl_cpc_system_command_handle_t *handle,
-                                                 sl_cpc_property_id_t property_id,
-                                                 void* property_value,
+static void security_property_get_state_callback(sli_cpc_property_id_t property_id,
+                                                 void *property_value,
                                                  size_t property_length,
+                                                 void *user_data,
                                                  sl_status_t status);
 #endif
 
 static void security_fetch_remote_security_state(epoll_private_data_t *private_data);
 
-static void property_set_reset_mode_callback(sl_cpc_system_command_handle_t *handle,
-                                             sl_cpc_property_id_t property_id,
-                                             void* property_value,
+static void property_set_reset_mode_callback(sli_cpc_property_id_t property_id,
+                                             void *property_value,
                                              size_t property_length,
+                                             void *user_data,
                                              sl_status_t status);
 
 static void process_reboot_enter_bootloader(void);
 
-void reset_callback(sl_cpc_system_command_handle_t *handle,
-                    sl_status_t status,
+void reset_callback(sl_status_t status,
                     sl_cpc_system_status_t reset_status);
 
 static void cleanup_socket_folder(const char *folder)
@@ -241,6 +247,10 @@ pthread_t server_core_init(int fd_socket_driver_core, int fd_socket_driver_core_
     /* FIXME : If we don't perform a reset sequence, the rx_capability won't be fetched. Lets put a very conservative
      * value in place to be able to work . */
     rx_capability = 256;
+
+    ret = core_set_protocol_version(PROTOCOL_VERSION);
+    FATAL_ON(ret != 0);
+
     server_init();
 #if defined(ENABLE_ENCRYPTION)
     if (config.operation_mode != MODE_UART_VALIDATION) {
@@ -250,6 +260,9 @@ pthread_t server_core_init(int fd_socket_driver_core, int fd_socket_driver_core_
   }
 
 #if defined(UNIT_TESTING)
+  ret = core_set_protocol_version(PROTOCOL_VERSION);
+  FATAL_ON(ret != 0);
+
   server_init();
 #endif
 
@@ -332,14 +345,14 @@ static void* server_core_thread_func(void* param)
   return NULL;
 }
 
-static void property_set_reset_mode_callback(sl_cpc_system_command_handle_t *handle,
-                                             sl_cpc_property_id_t property_id,
-                                             void* property_value,
+static void property_set_reset_mode_callback(sli_cpc_property_id_t property_id,
+                                             void *property_value,
                                              size_t property_length,
+                                             void *user_data,
                                              sl_status_t status)
 {
-  (void) handle;
   (void) property_id;
+  (void) user_data;
 
   switch (status) {
     case SL_STATUS_IN_PROGRESS:
@@ -351,16 +364,16 @@ static void property_set_reset_mode_callback(sl_cpc_system_command_handle_t *han
 
       BUG_ON(property_length != sizeof(sl_cpc_system_reboot_mode_t));
 
-      sl_cpc_system_reboot_mode_t* mode = (sl_cpc_system_reboot_mode_t*) property_value;
+      sl_cpc_system_reboot_mode_t mode = (sl_cpc_system_reboot_mode_t) u32_from_le((const uint8_t *)property_value);
 
-      switch (*mode) {
+      switch (mode) {
         case REBOOT_APPLICATION:
-          if (pending_mode == REBOOT_BOOTLOADER) {
-            FATAL("The secondary does not support rebooting into bootloader mode: application reboot received as a confirmation instead of bootloader.");
+          if (pending_reboot_mode == REBOOT_BOOTLOADER) {
+            FATAL("The secondary does not support rebooting into bootloader mode: application reboot received as a confirmation instead of bootloader. Is the bootloader_interface component installed?");
           }
           break;
         case REBOOT_BOOTLOADER:
-          if (pending_mode != REBOOT_BOOTLOADER) {
+          if (pending_reboot_mode != REBOOT_BOOTLOADER) {
             BUG("Requested reboot mode was not bootloader, but received it as a reply");
           }
           break;
@@ -384,12 +397,9 @@ static void property_set_reset_mode_callback(sl_cpc_system_command_handle_t *han
   }
 }
 
-void reset_callback(sl_cpc_system_command_handle_t *handle,
-                    sl_status_t status,
+void reset_callback(sl_status_t status,
                     sl_cpc_system_status_t reset_status)
 {
-  (void) handle;
-
   switch (status) {
     case SL_STATUS_IN_PROGRESS:
     case SL_STATUS_OK:
@@ -469,13 +479,13 @@ char* server_core_get_secondary_app_version(void)
 }
 
 #if !defined(UNIT_TESTING)
-static void property_get_capabilities_callback(sl_cpc_system_command_handle_t *handle,
-                                               sl_cpc_property_id_t property_id,
-                                               void* property_value,
+static void property_get_capabilities_callback(sli_cpc_property_id_t property_id,
+                                               void *property_value,
                                                size_t property_length,
+                                               void *user_data,
                                                sl_status_t status)
 {
-  (void)handle;
+  (void)user_data;
 
   FATAL_ON(property_id != PROP_CAPABILITIES);
   FATAL_ON(status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS);
@@ -502,32 +512,33 @@ static void property_get_capabilities_callback(sl_cpc_system_command_handle_t *h
   capabilities_received = true;
 }
 
-static void property_get_rx_capability_callback(sl_cpc_system_command_handle_t *handle,
-                                                sl_cpc_property_id_t property_id,
-                                                void* property_value,
+static void property_get_rx_capability_callback(sli_cpc_property_id_t property_id,
+                                                void *property_value,
                                                 size_t property_length,
+                                                void *user_data,
                                                 sl_status_t status)
 {
-  (void)handle;
+  (void)user_data;
 
   FATAL_ON(property_id != PROP_RX_CAPABILITY);
   FATAL_ON(status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS);
   FATAL_ON(property_value == NULL || property_length != sizeof(uint16_t));
 
-  TRACE_RESET("Received RX capability of %u bytes", *((uint16_t *)property_value));
   rx_capability = u16_from_le((const uint8_t *)property_value);
+  TRACE_RESET("Received RX capability of %u bytes", rx_capability);
+
   rx_capability_received = true;
 
   PRINT_INFO("RX capability is %u bytes", rx_capability);
 }
 
-static void property_get_secondary_bootloader_info(sl_cpc_system_command_handle_t *handle,
-                                                   sl_cpc_property_id_t property_id,
-                                                   void* property_value,
-                                                   size_t property_length,
-                                                   sl_status_t status)
+static void property_get_secondary_bootloader_info_callback(sli_cpc_property_id_t property_id,
+                                                            void *property_value,
+                                                            size_t property_length,
+                                                            void *user_data,
+                                                            sl_status_t status)
 {
-  (void) handle;
+  (void) user_data;
 
   if ((status == SL_STATUS_OK || status == SL_STATUS_IN_PROGRESS) && property_id == PROP_BOOTLOADER_INFO) {
     FATAL_ON(property_value == NULL);
@@ -537,7 +548,7 @@ static void property_get_secondary_bootloader_info(sl_cpc_system_command_handle_
     //  [0]: bootloader type
     //  [1]: version (unused for now)
     //  [2]: capability mask (unused for now)
-    server_core_secondary_bootloader_type = u32_from_le((const uint8_t *)property_value + 0);
+    server_core_secondary_bootloader_type = u32_from_le((const uint8_t *)property_value);
 
     BUG_ON(server_core_secondary_bootloader_type >= SL_CPC_BOOTLOADER_UNKNOWN);
 
@@ -554,15 +565,15 @@ static void property_get_secondary_bootloader_info(sl_cpc_system_command_handle_
   bootloader_info_received_or_not_available = true;
 }
 
-static void property_get_secondary_cpc_version_callback(sl_cpc_system_command_handle_t *handle,
-                                                        sl_cpc_property_id_t property_id,
-                                                        void* property_value,
+static void property_get_secondary_cpc_version_callback(sli_cpc_property_id_t property_id,
+                                                        void *property_value,
                                                         size_t property_length,
+                                                        void *user_data,
                                                         sl_status_t status)
 {
-  uint32_t version[3];
+  (void) user_data;
 
-  (void) handle;
+  uint32_t version[3];
 
   if ( (property_id != PROP_SECONDARY_CPC_VERSION)
        || (status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS)
@@ -578,13 +589,13 @@ static void property_get_secondary_cpc_version_callback(sl_cpc_system_command_ha
   secondary_cpc_version_received = true;
 }
 
-static void property_get_secondary_app_version_callback(sl_cpc_system_command_handle_t *handle,
-                                                        sl_cpc_property_id_t property_id,
-                                                        void* property_value,
+static void property_get_secondary_app_version_callback(sli_cpc_property_id_t property_id,
+                                                        void *property_value,
                                                         size_t property_length,
+                                                        void *user_data,
                                                         sl_status_t status)
 {
-  (void) handle;
+  (void) user_data;
 
   if (status == SL_STATUS_OK || status == SL_STATUS_IN_PROGRESS) {
     switch (property_id) {
@@ -614,14 +625,32 @@ static void property_get_secondary_app_version_callback(sl_cpc_system_command_ha
   secondary_app_version_received_or_not_available = true;
 }
 
-static void property_get_secondary_bus_bitrate_callback(sl_cpc_system_command_handle_t *handle,
-                                                        sl_cpc_property_id_t property_id,
-                                                        void* property_value,
+static void property_set_primary_version_reply_callback(sli_cpc_property_id_t property_id,
+                                                        void *property_value,
                                                         size_t property_length,
+                                                        void *user_data,
                                                         sl_status_t status)
 {
-  (void) handle;
+  (void) property_value;
+  (void) property_length;
+  (void) user_data;
+
+  set_primary_version_reply_received = true;
+
+  if ((status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS) || property_id != PROP_PRIMARY_VERSION_VALUE) {
+    TRACE_SERVER("Could not set Primary version on the Secondary, status: %d, property_id: %d", status, property_id);
+  }
+}
+
+static void property_get_secondary_bus_bitrate_callback(sli_cpc_property_id_t property_id,
+                                                        void *property_value,
+                                                        size_t property_length,
+                                                        void *user_data,
+                                                        sl_status_t status)
+{
   uint32_t bus_bitrate = 0;
+
+  (void) user_data;
 
   if ((status == SL_STATUS_OK || status == SL_STATUS_IN_PROGRESS) && property_id == PROP_BUS_BITRATE_VALUE) {
     FATAL_ON(property_value == NULL);
@@ -642,14 +671,15 @@ static void property_get_secondary_bus_bitrate_callback(sl_cpc_system_command_ha
   }
 }
 
-static void property_get_secondary_bus_max_bitrate_callback(sl_cpc_system_command_handle_t *handle,
-                                                            sl_cpc_property_id_t property_id,
-                                                            void* property_value,
+static void property_get_secondary_bus_max_bitrate_callback(sli_cpc_property_id_t property_id,
+                                                            void *property_value,
                                                             size_t property_length,
+                                                            void *user_data,
                                                             sl_status_t status)
 {
-  (void) handle;
   uint32_t max_bus_bitrate = 0;
+
+  (void) user_data;
 
   if ((status == SL_STATUS_OK || status == SL_STATUS_IN_PROGRESS) && property_id == PROP_BUS_MAX_BITRATE_VALUE) {
     FATAL_ON(property_value == NULL);
@@ -665,10 +695,10 @@ static void property_get_secondary_bus_max_bitrate_callback(sl_cpc_system_comman
         config.spi_bitrate = max_bus_bitrate;
       } else {
         if (config.spi_bitrate > max_bus_bitrate) {
+          WARN("The SPI bitrate from the config file (%d) is greater than the maximum supported bitrate returned by the secondary (%d). Falling back to the value returned by the secondary", config.spi_bitrate, max_bus_bitrate);
           config.spi_bitrate = max_bus_bitrate;
-          WARN("The SPI bitrate specified in the config file is greater than the maximum suported bitrate returned by the secondary. Falling back to the value returned by the secondary");
-        } else {
-          PRINT_INFO("SPI bitrate from the config file is lesser than the maximum value returned by the secondary. For performance reason, consider raising it.", config.spi_bitrate);
+        } else if (config.spi_bitrate < max_bus_bitrate) {
+          PRINT_INFO("SPI bitrate from the config file (%d) is lesser than the maximum value returned by the secondary (%d). For performance reason, consider raising it.", config.spi_bitrate, max_bus_bitrate);
         }
       }
 
@@ -677,18 +707,18 @@ static void property_get_secondary_bus_max_bitrate_callback(sl_cpc_system_comman
 
     secondary_bus_max_bitrate_received = true;
   } else {
-    WARN("Could not obtain the secondary's bus bitrate");
+    WARN("Could not obtain the secondary's max bus bitrate");
     failed_to_receive_secondary_bus_max_bitrate = true;
   }
 }
 
-static void property_get_protocol_version_callback(sl_cpc_system_command_handle_t *handle,
-                                                   sl_cpc_property_id_t property_id,
-                                                   void* property_value,
+static void property_get_protocol_version_callback(sli_cpc_property_id_t property_id,
+                                                   void *property_value,
                                                    size_t property_length,
+                                                   void *user_data,
                                                    sl_status_t status)
 {
-  (void) handle;
+  (void) user_data;
 
   if ((property_id != PROP_PROTOCOL_VERSION)
       || (status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS)
@@ -727,9 +757,12 @@ static void capabilities_checks(void)
 
 static void protocol_version_check(void)
 {
-  if (server_core_secondary_protocol_version != PROTOCOL_VERSION) {
-    FATAL("Secondary Protocol v%d doesn't match CPCd Protocol v%d",
-          server_core_secondary_protocol_version, PROTOCOL_VERSION);
+  int ret;
+
+  ret = core_set_protocol_version(server_core_secondary_protocol_version);
+  if (ret != 0) {
+    FATAL("Secondary Protocol v%u is not supported by this application. Consider upgrading cpcd.",
+          server_core_secondary_protocol_version);
   }
 }
 
@@ -757,15 +790,17 @@ static void process_reset_sequence(bool firmware_reset_mode)
       {
         const sl_cpc_system_reboot_mode_t reboot_mode = REBOOT_APPLICATION;
 
-        pending_mode = reboot_mode;
+        pending_reboot_mode = reboot_mode;
 
+        u32_to_le(reboot_mode, (uint8_t *)&reboot_mode);
         sl_cpc_system_cmd_property_set(property_set_reset_mode_callback,
-                                       1,       /* retry once */
-                                       2000000, /* 2s between retries*/
                                        PROP_BOOTLOADER_REBOOT_MODE,
                                        &reboot_mode,
                                        sizeof(reboot_mode),
-                                       true);
+                                       NULL,
+                                       1,       /* retry once */
+                                       2000000, /* 2s between retries*/
+                                       SYSTEM_EP_UFRAME);
 
         reset_sequence_state = WAIT_NORMAL_REBOOT_MODE_ACK;
 
@@ -798,7 +833,7 @@ static void process_reset_sequence(bool firmware_reset_mode)
         /* Set it back to false because it will be used for the bootloader reboot sequence */
         reset_ack = false;
 
-        TRACE_RESET("Reset request acknowledged");
+        TRACE_RESET("Reset request acknowledged, waiting for device to reset");
       }
       break;
 
@@ -809,9 +844,10 @@ static void process_reset_sequence(bool firmware_reset_mode)
         reset_sequence_state = WAIT_FOR_RX_CAPABILITY;
         sl_cpc_system_cmd_property_get(property_get_rx_capability_callback,
                                        PROP_RX_CAPABILITY,
+                                       NULL,
                                        5,       /* 5 retries */
                                        100000,  /* 100ms between retries*/
-                                       true);
+                                       SYSTEM_EP_UFRAME);
       }
       break;
 
@@ -822,9 +858,10 @@ static void process_reset_sequence(bool firmware_reset_mode)
         reset_sequence_state = WAIT_FOR_PROTOCOL_VERSION;
         sl_cpc_system_cmd_property_get(property_get_protocol_version_callback,
                                        PROP_PROTOCOL_VERSION,
+                                       NULL,
                                        5,      /* 5 retries */
                                        100000, /* 100ms between retries*/
-                                       true);
+                                       SYSTEM_EP_UFRAME);
       }
       break;
 
@@ -837,32 +874,35 @@ static void process_reset_sequence(bool firmware_reset_mode)
         reset_sequence_state = WAIT_FOR_CAPABILITIES;
         sl_cpc_system_cmd_property_get(property_get_capabilities_callback,
                                        PROP_CAPABILITIES,
+                                       NULL,
                                        5,       /* 5 retries */
                                        100000,  /* 100ms between retries*/
-                                       true);
+                                       SYSTEM_EP_UFRAME);
       }
       break;
 
     case WAIT_FOR_CAPABILITIES:
       if (capabilities_received) {
-        TRACE_RESET("Obtained Capabilites");
+        TRACE_RESET("Obtained Capabilities");
         if (!firmware_reset_mode) {
           capabilities_checks();
 
           reset_sequence_state = WAIT_FOR_SECONDARY_CPC_VERSION;
           sl_cpc_system_cmd_property_get(property_get_secondary_cpc_version_callback,
                                          PROP_SECONDARY_CPC_VERSION,
+                                         NULL,
                                          5,       /* 5 retries */
                                          100000,  /* 100ms between retries*/
-                                         true);
+                                         SYSTEM_EP_UFRAME);
         } else {
           // Fetch bootloader information only if in firmware reset mode
           reset_sequence_state = WAIT_FOR_BOOTLOADER_INFO;
-          sl_cpc_system_cmd_property_get(property_get_secondary_bootloader_info,
+          sl_cpc_system_cmd_property_get(property_get_secondary_bootloader_info_callback,
                                          PROP_BOOTLOADER_INFO,
+                                         NULL,
                                          5,       /* 5 retries */
                                          100000,  /* 100ms between retries*/
-                                         true);
+                                         SYSTEM_EP_UFRAME);
         }
       }
       break;
@@ -874,9 +914,10 @@ static void process_reset_sequence(bool firmware_reset_mode)
         reset_sequence_state = WAIT_FOR_SECONDARY_CPC_VERSION;
         sl_cpc_system_cmd_property_get(property_get_secondary_cpc_version_callback,
                                        PROP_SECONDARY_CPC_VERSION,
+                                       NULL,
                                        5,       /* 5 retries */
                                        100000,  /* 100ms between retries*/
-                                       true);
+                                       SYSTEM_EP_UFRAME);
       }
 
       break;
@@ -885,12 +926,29 @@ static void process_reset_sequence(bool firmware_reset_mode)
       if (secondary_cpc_version_received) {
         TRACE_RESET("Obtained Secondary CPC version");
 
+        reset_sequence_state = WAIT_FOR_SET_PRIMARY_VERSION_REPLY;
+        sl_cpc_system_cmd_property_set(property_set_primary_version_reply_callback,
+                                       PROP_PRIMARY_VERSION_VALUE,
+                                       &primary_version,
+                                       sizeof(primary_version),
+                                       NULL,
+                                       5,      /* 5 retries */
+                                       100000, /* 100ms between retries*/
+                                       SYSTEM_EP_UFRAME);
+      }
+      break;
+
+    case WAIT_FOR_SET_PRIMARY_VERSION_REPLY:
+      if (set_primary_version_reply_received) {
+        TRACE_RESET("Obtained Set Primary Version Reply");
+
         reset_sequence_state = WAIT_FOR_SECONDARY_BUS_BITRATE;
         sl_cpc_system_cmd_property_get(property_get_secondary_bus_bitrate_callback,
                                        PROP_BUS_BITRATE_VALUE,
+                                       NULL,
                                        5,       /* 5 retries */
                                        100000,  /* 100ms between retries*/
-                                       true);
+                                       SYSTEM_EP_UFRAME);
       }
       break;
 
@@ -900,9 +958,10 @@ static void process_reset_sequence(bool firmware_reset_mode)
 
         sl_cpc_system_cmd_property_get(property_get_secondary_bus_max_bitrate_callback,
                                        PROP_BUS_MAX_BITRATE_VALUE,
+                                       NULL,
                                        5,       /* 5 retries */
                                        100000,  /* 100ms between retries*/
-                                       true);
+                                       SYSTEM_EP_UFRAME);
       }
       break;
 
@@ -912,9 +971,10 @@ static void process_reset_sequence(bool firmware_reset_mode)
 
         sl_cpc_system_cmd_property_get(property_get_secondary_app_version_callback,
                                        PROP_SECONDARY_APP_VERSION,
+                                       NULL,
                                        5,       /* 5 retries */
                                        100000,  /* 100ms between retries*/
-                                       true);
+                                       SYSTEM_EP_UFRAME);
       }
       break;
 
@@ -960,15 +1020,17 @@ static void process_reboot_enter_bootloader(void)
     {
       const sl_cpc_system_reboot_mode_t reboot_mode = REBOOT_BOOTLOADER;
 
-      pending_mode = reboot_mode;
+      pending_reboot_mode = reboot_mode;
 
+      u32_to_le(reboot_mode, (uint8_t *)&reboot_mode);
       sl_cpc_system_cmd_property_set(property_set_reset_mode_callback,
-                                     1,         /* retry once */
-                                     2000000,   /* 2s between retries*/
                                      PROP_BOOTLOADER_REBOOT_MODE,
                                      &reboot_mode,
                                      sizeof(reboot_mode),
-                                     true);
+                                     NULL,
+                                     1,         /* retry once */
+                                     2000000,   /* 2s between retries*/
+                                     SYSTEM_EP_UFRAME);
 
       reboot_into_bootloader_state = WAIT_BOOTLOADER_REBOOT_MODE_ACK;
 
@@ -992,6 +1054,7 @@ static void process_reboot_enter_bootloader(void)
     case WAIT_BOOTLOADER_RESET_ACK:
       if (reset_ack == true) {
         TRACE_RESET("Reset request acknowledged");
+        PRINT_INFO("Secondary is in bootloader");
         exit_server_core();
       }
       break;
@@ -1015,14 +1078,14 @@ static void server_core_cleanup(epoll_private_data_t *private_data)
 }
 
 #if !defined(UNIT_TESTING)
-static void security_property_get_state_callback(sl_cpc_system_command_handle_t *handle,
-                                                 sl_cpc_property_id_t property_id,
-                                                 void* property_value,
+static void security_property_get_state_callback(sli_cpc_property_id_t property_id,
+                                                 void *property_value,
                                                  size_t property_length,
+                                                 void *user_data,
                                                  sl_status_t status)
 {
-  (void)handle;
   (void)property_value;
+  (void)user_data;
 
   // The security state of the secondary is not currently used.
   // By receiving a response from the property get command we validate
@@ -1053,9 +1116,10 @@ static void security_fetch_remote_security_state(epoll_private_data_t *private_d
 #if !defined(UNIT_TESTING)
   sl_cpc_system_cmd_property_get(security_property_get_state_callback,
                                  PROP_SECURITY_STATE,
+                                 NULL,
                                  1,
                                  1000000, // 1 second timeout
-                                 false);  // Must be an i-frame to validate the encrypted link
+                                 SYSTEM_EP_IFRAME);  // Must be an i-frame to validate the encrypted link
 #endif
 }
 

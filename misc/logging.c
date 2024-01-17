@@ -86,6 +86,8 @@ static void write_until_success_or_error(int fd, uint8_t* buff, size_t size)
 #define ASYNC_LOGGER_TIMEOUT_MS   100
 #define ASYNC_LOGGER_DONT_TRIGG_UNLESS_THIS_CHUNK_SIZE ASYNC_LOGGER_PAGE_SIZE
 
+#define TIME_STR_LEN (27)
+
 static volatile bool gracefully_exit = false;
 
 static int stats_timer_fd;
@@ -527,34 +529,31 @@ void logging_kill(void)
   free(logging_private_data);
 }
 
-/* Prints the time "hh:mm:ss:mss" or "time error" and returns the number of chars written.
- * This internal functions assumes a buffer large enough */
-static size_t get_time_string(char* time_string, size_t time_string_size)
+static size_t get_time_string(char *slice, size_t slice_len)
 {
-  long us;
-  time_t s;
-  struct timespec spec;
-  struct tm* tm_info;
-  size_t nchar;
-  int ret = clock_gettime(CLOCK_REALTIME, &spec);
+  int ret;
+  struct timespec now;
+  struct tm tm;
 
-  s = spec.tv_sec;
-
-  us = spec.tv_nsec / 1000;
-  if (us > 999999) {
-    s++;
-    us = 0;
+  if (slice_len < TIME_STR_LEN) {
+    return 0;
   }
 
-  if (ret != ((time_t)-1)) {
-    tm_info = localtime(&s);
-    nchar = strftime(time_string, time_string_size, "%H:%M:%S", tm_info);
-    nchar += (size_t) snprintf(&time_string[nchar], time_string_size - nchar, ":%06ld", us);
-  } else {
-    nchar = (size_t) snprintf(time_string, time_string_size, "time error");
+  ret = clock_gettime(CLOCK_REALTIME, &now);
+  if (ret < 0) {
+    return 0;
   }
 
-  return nchar;
+  ret = gmtime_r(&now.tv_sec, &tm) == NULL;
+  if (ret != 0) {
+    return 0;
+  }
+
+  /* XXXX-XX-XXTXX:XX:XX + .XXXXXX + Z */
+  strftime(slice, 19 + 1, "%FT%T", &tm);
+  snprintf(slice + 19, 7 + 1, ".%06lu", (long)now.tv_nsec / 1000);
+  slice[26] = 'Z';
+  return TIME_STR_LEN;
 }
 
 void trace(const bool force_stdout, const char* string, ...)
@@ -569,7 +568,7 @@ void trace(const bool force_stdout, const char* string, ...)
   /* Append the time stamp */
   {
     log_string[log_string_length++] = '[';
-    log_string_length += get_time_string(&log_string[log_string_length], sizeof(log_string) - log_string_length);
+    log_string_length += get_time_string(log_string + log_string_length, sizeof(log_string) - log_string_length);
     log_string[log_string_length++] = ']';
     log_string[log_string_length++] = ' ';
   }
@@ -667,19 +666,17 @@ void trace_frame(const char* string, const void* buffer, size_t len)
   /* Append the time stamp */
   {
     log_string[log_string_length++] = '[';
-
-    log_string_length += get_time_string(&log_string[log_string_length], sizeof(log_string) - log_string_length);
-
-    log_string[log_string_length++] = ']';
-    log_string[log_string_length++] = ' ';
+    log_string_length += get_time_string(log_string + log_string_length, sizeof(log_string) - log_string_length);
+    if (sizeof(log_string) > (log_string_length + 2)) {
+      log_string[log_string_length++] = ']';
+      log_string[log_string_length++] = ' ';
+    }
   }
 
   /* Append  string up to buffer */
   for (size_t i = 0; string[i] != '\0'; i++) {
-    log_string[log_string_length++] = string[i];
-
     /* Edge case where the string itself can fill the whole buffer.. */
-    if (log_string_length == sizeof(log_string)) {
+    if (log_string_length >= sizeof(log_string)) {
       /* Flush the buffer */
       if (config.stdout_tracing) {
         stdio_log(log_string, log_string_length);
@@ -691,6 +688,8 @@ void trace_frame(const char* string, const void* buffer, size_t len)
       /* Start at the beginning */
       log_string_length = 0;
     }
+
+    log_string[log_string_length++] = string[i];
   }
 
   /* Append hex data */
@@ -717,12 +716,14 @@ void trace_frame(const char* string, const void* buffer, size_t len)
   }
 
   /* Newline terminate the string (overriding the last semicolon)*/
-  log_string[log_string_length - 1] = '\n';
+  if (log_string_length) {
+    log_string[log_string_length - 1] = '\n';
 
-  if (config.stdout_tracing) {
-    stdio_log(log_string, log_string_length);
-  }
-  if (config.file_tracing) {
-    file_log(log_string, log_string_length);
+    if (config.stdout_tracing) {
+      stdio_log(log_string, log_string_length);
+    }
+    if (config.file_tracing) {
+      file_log(log_string, log_string_length);
+    }
   }
 }

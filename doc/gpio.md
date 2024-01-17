@@ -1,26 +1,15 @@
 # CPC GPIO Interfaces
 
-The CPC daemon (CPCd) supports two gpio interfaces: sysfs and gpiod.
-The sysfs interface is currently the default interface when building the daemon.
-
 # Sysfs
 
-To use the sysfs interface,
-
-- Your kernel must be built with `CONFIG_GPIO_SYSFS`.
-- You must configure `cpcd.conf` to map the IRQ pin: 
-  - `spi_rx_irq_gpio`
-- If the bootloader recovery pins are enabled (i.e., "bootloader_recovery_pins_enabled: true" in configuration file), you must also configure:
-  - `bootloader_wake_gpio`
-  - `bootloader_reset_gpio`
-
+The use the sysfs interface has been deprecated, remove `-DUSE_LEGACY_GPIO_SYSFS=TRUE` parameter from the build to avoid a warning
 
 # Gpiod
 
-To use the gpiod interface, 
+The dependency to libgpiod has been removed, remove `-DUSE_LEGACY_GPIO_SYSFS=FALSE` parameter from the build to avoid a warning
 
-- You must have `libgpiod-dev` installed.
-- You must build the project with the following parameter: `-DUSE_LEGACY_GPIO_SYSFS=FALSE`
+# Gpio
+
 - You must configure `cpcd.conf` to map the proper IRQ chip and pin:
   - `spi_rx_irq_gpio_chip` & `spi_rx_irq_gpio`
 - If the bootloader recovery pins are enabled (i.e., "bootloader_recovery_pins_enabled: true" in configuration file), you must also configure:

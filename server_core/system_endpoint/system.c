@@ -27,11 +27,10 @@
 #include "cpcd/utils.h"
 
 #include "server_core/core/hdlc.h"
+#include "server_core/epoll/epoll.h"
 #include "sl_cpc.h"
 #include "system.h"
 
-#include "server_core/system_endpoint/system_callbacks.h"
-#include "server_core/server/server.h"
 #include "server_core/core/core.h"
 #include "security/security.h"
 
@@ -44,7 +43,7 @@
  * Used to return the size of a system command buffer, primarily to pass to
  * sl_cpc_write.
  ******************************************************************************/
-#define SIZEOF_SYSTEM_COMMAND(command) (sizeof(sl_cpc_system_cmd_t) + command->length)
+#define SIZEOF_SYSTEM_COMMAND(command) (sizeof(sli_cpc_system_cmd_t) + command->length)
 
 /***************************************************************************//**
  * Number of retries for set property endpoint closed.
@@ -56,6 +55,37 @@
  ******************************************************************************/
 #define ENDPOINT_CLOSE_RETRY_TIMEOUT 100000
 
+/***************************************************************************//**
+ ************************* LOCAL DECLARATIONS **********************************
+ ******************************************************************************/
+
+/***************************************************************************//**
+ * System endpoint command handle type
+ ******************************************************************************/
+typedef struct  {
+  sl_slist_node_t node_commands;
+  sli_cpc_system_cmd_t *command; // has to be malloc'ed
+  uint16_t command_length;
+  void *on_final;
+  void *on_final_arg;
+  uint8_t retry_count;
+  bool retry_forever;
+  sl_cpc_system_ep_frame_type_t frame_type;
+  uint32_t retry_timeout_us;
+  sl_status_t error_status;
+  uint8_t command_seq;
+  bool acked;
+  epoll_private_data_t re_transmit_timer_private_data; //for epoll for timerfd
+} sl_cpc_system_command_handle_t;
+
+typedef struct {
+  sl_slist_node_t node;
+  sl_cpc_system_unsolicited_status_callback_t callback;
+} prop_last_status_callback_list_item_t;
+
+/***************************************************************************//**
+ ************************* LOCAL VARIABLES *************************************
+ ******************************************************************************/
 static sl_slist_node_t *pending_commands;
 static sl_slist_node_t *commands;
 static sl_slist_node_t *retries;
@@ -65,16 +95,11 @@ static bool received_remote_sequence_numbers_reset_ack = true;
 
 extern bool ignore_reset_reason;
 
-typedef struct {
-  sl_slist_node_t node;
-  sl_cpc_system_unsolicited_status_callback_t callback;
-}prop_last_status_callback_list_item_t;
-
 static sl_slist_node_t *prop_last_status_callbacks;
 
 static void on_iframe_unsolicited(uint8_t endpoint_id, const void* data, size_t data_len);
 static void on_uframe_receive(uint8_t endpoint_id, const void* data, size_t data_len);
-static void on_reply(uint8_t endpoint_id, void *arg, void *answer, uint32_t answer_lenght);
+static void on_reply(uint8_t endpoint_id, void *arg, void *answer, uint32_t answer_length);
 static void on_timer_expired(epoll_private_data_t *private_data);
 static void write_command(sl_cpc_system_command_handle_t *command_handle);
 
@@ -82,7 +107,7 @@ static void sl_cpc_system_cmd_abort(sl_cpc_system_command_handle_t *command_hand
 
 static void sl_cpc_system_open_endpoint(void)
 {
-  core_open_endpoint(SL_CPC_ENDPOINT_SYSTEM, SL_CPC_OPEN_ENDPOINT_FLAG_UFRAME_ENABLE, 1, false);
+  core_connect_endpoint(SL_CPC_ENDPOINT_SYSTEM, SL_CPC_OPEN_ENDPOINT_FLAG_UFRAME_ENABLE, 1, false);
 
   core_set_endpoint_option(SL_CPC_ENDPOINT_SYSTEM,
                            SL_CPC_ENDPOINT_ON_FINAL,
@@ -98,23 +123,25 @@ static void sl_cpc_system_open_endpoint(void)
 }
 
 static void sl_cpc_system_init_command_handle(sl_cpc_system_command_handle_t *command_handle,
-                                              void *on_final,
+                                              void *on_final_callback,
+                                              void *on_final_arg,
                                               uint8_t retry_count,
                                               uint32_t retry_timeout_us,
-                                              bool is_uframe)
+                                              sl_cpc_system_ep_frame_type_t frame_type)
 {
   static uint8_t next_command_seq = 0;
 
   BUG_ON(command_handle == NULL);
-  BUG_ON(on_final == NULL);
+  BUG_ON(on_final_callback == NULL);
   command_handle->acked = false;
   command_handle->error_status = SL_STATUS_OK;
 
-  command_handle->on_final = on_final;
+  command_handle->on_final = on_final_callback;
+  command_handle->on_final_arg = on_final_arg;
   command_handle->retry_count = retry_count;
   command_handle->retry_timeout_us = retry_timeout_us;
   command_handle->command_seq = next_command_seq++;
-  command_handle->is_uframe = is_uframe;
+  command_handle->frame_type = frame_type;
 }
 
 const char* sl_cpc_system_bootloader_type_to_str(sl_cpc_bootloader_t bootloader)
@@ -163,7 +190,7 @@ static void sl_cpc_system_cmd_abort(sl_cpc_system_command_handle_t *command_hand
 {
   // Stop the re_transmit timer
   if (command_handle->re_transmit_timer_private_data.file_descriptor != 0) {
-    if (command_handle->is_uframe || command_handle->acked == true) {
+    if (command_handle->frame_type == SYSTEM_EP_UFRAME || command_handle->acked == true) {
       epoll_unregister(&command_handle->re_transmit_timer_private_data);
     }
     close(command_handle->re_transmit_timer_private_data.file_descriptor);
@@ -174,22 +201,22 @@ static void sl_cpc_system_cmd_abort(sl_cpc_system_command_handle_t *command_hand
 
   switch (command_handle->command->command_id) {
     case CMD_SYSTEM_NOOP:
-      ((sl_cpc_system_noop_cmd_callback_t)command_handle->on_final)(command_handle, command_handle->error_status);
+      ((sl_cpc_system_noop_cmd_callback_t)command_handle->on_final)(command_handle->error_status);
       break;
 
     case CMD_SYSTEM_RESET:
-      ((sl_cpc_system_reset_cmd_callback_t)command_handle->on_final)(command_handle, command_handle->error_status, STATUS_FAILURE);
+      ((sl_cpc_system_reset_cmd_callback_t)command_handle->on_final)(command_handle->error_status, STATUS_FAILURE);
       break;
 
     case CMD_SYSTEM_PROP_VALUE_GET:
     case CMD_SYSTEM_PROP_VALUE_SET:
     {
-      sl_cpc_system_property_cmd_t *tx_property_command = (sl_cpc_system_property_cmd_t *)command_handle->command->payload;
+      sli_cpc_system_property_cmd_t *tx_property_command = (sli_cpc_system_property_cmd_t *)command_handle->command->payload;
 
-      ((sl_cpc_system_property_get_set_cmd_callback_t) command_handle->on_final)(command_handle,
-                                                                                 tx_property_command->property_id,
+      ((sl_cpc_system_property_get_set_cmd_callback_t) command_handle->on_final)(tx_property_command->property_id,
                                                                                  NULL,
                                                                                  0,
+                                                                                 command_handle->on_final_arg,
                                                                                  command_handle->error_status);
     }
     break;
@@ -210,11 +237,11 @@ static void sl_cpc_system_cmd_abort(sl_cpc_system_command_handle_t *command_hand
 static void sl_cpc_system_cmd_timed_out(const void *frame_data)
 {
   sl_cpc_system_command_handle_t *command_handle;
-  sl_cpc_system_cmd_t *timed_out_command;
+  sli_cpc_system_cmd_t *timed_out_command;
 
   FATAL_ON(frame_data == NULL);
 
-  timed_out_command = (sl_cpc_system_cmd_t *)frame_data;
+  timed_out_command = (sli_cpc_system_cmd_t *)frame_data;
 
   /* Go through the list of pending requests to find the one for which this reply applies */
   SL_SLIST_FOR_EACH_ENTRY(commands, command_handle, sl_cpc_system_command_handle_t, node_commands) {
@@ -248,7 +275,7 @@ void sl_cpc_system_cmd_poll_acknowledged(const void *frame_data)
   int timer_fd, ret;
   sl_cpc_system_command_handle_t *command_handle;
   FATAL_ON(frame_data == NULL);
-  sl_cpc_system_cmd_t *acked_command = (sl_cpc_system_cmd_t *)frame_data;
+  sli_cpc_system_cmd_t *acked_command = (sli_cpc_system_cmd_t *)frame_data;
 
   // Go through the command list to figure out which command just got acknowledged
   SL_SLIST_FOR_EACH_ENTRY(commands, command_handle, sl_cpc_system_command_handle_t, node_commands) {
@@ -303,20 +330,28 @@ void sl_cpc_system_cmd_noop(sl_cpc_system_noop_cmd_callback_t on_noop_reply,
     command_handle = zalloc(sizeof(sl_cpc_system_command_handle_t));
     FATAL_ON(command_handle == NULL);
 
-    command_handle->command = zalloc(sizeof(sl_cpc_system_cmd_t)); //noop had nothing in the 'payload field'
+    command_handle->command = zalloc(sizeof(sli_cpc_system_cmd_t)); //noop has nothing in the 'payload field'
     FATAL_ON(command_handle->command == NULL);
   }
 
-  sl_cpc_system_init_command_handle(command_handle, (void*)on_noop_reply, retry_count_max,
-                                    retry_timeout_us, false);
+  sl_cpc_system_init_command_handle(command_handle,
+                                    (void*)on_noop_reply,
+                                    NULL,
+                                    retry_count_max,
+                                    retry_timeout_us,
+                                    SYSTEM_EP_IFRAME);
 
   /* Fill the system endpoint command buffer */
   {
-    sl_cpc_system_cmd_t *tx_command = command_handle->command;
+    sli_cpc_system_cmd_t *tx_command = command_handle->command;
 
     tx_command->command_id = CMD_SYSTEM_NOOP;
     tx_command->command_seq = command_handle->command_seq;
-    u16_to_le(0, (uint8_t *)(&tx_command->length));
+    tx_command->length = 0;
+
+    command_handle->command_length = (uint16_t) SIZEOF_SYSTEM_COMMAND(command_handle->command);
+
+    u16_to_le(tx_command->length, (uint8_t *)(&tx_command->length));
   }
 
   write_command(command_handle);
@@ -338,20 +373,28 @@ void sl_cpc_system_cmd_reboot(sl_cpc_system_reset_cmd_callback_t on_reset_reply,
     command_handle = zalloc(sizeof(sl_cpc_system_command_handle_t));
     FATAL_ON(command_handle == NULL);
 
-    command_handle->command = zalloc(sizeof(sl_cpc_system_cmd_t)); //reset had nothing in the 'payload field'
+    command_handle->command = zalloc(sizeof(sli_cpc_system_cmd_t)); // reset has nothing in the 'payload field'
     FATAL_ON(command_handle->command == NULL);
   }
 
-  sl_cpc_system_init_command_handle(command_handle, (void*)on_reset_reply, retry_count_max,
-                                    retry_timeout_us, true);
+  sl_cpc_system_init_command_handle(command_handle,
+                                    (void*)on_reset_reply,
+                                    NULL,
+                                    retry_count_max,
+                                    retry_timeout_us,
+                                    SYSTEM_EP_UFRAME);
 
   /* Fill the system endpoint command buffer */
   {
-    sl_cpc_system_cmd_t *tx_command = command_handle->command;
+    sli_cpc_system_cmd_t *tx_command = command_handle->command;
 
     tx_command->command_id = CMD_SYSTEM_RESET;
     tx_command->command_seq = command_handle->command_seq;
-    u16_to_le(0, (uint8_t *)(&tx_command->length));
+    tx_command->length = 0;
+
+    command_handle->command_length = (uint16_t) SIZEOF_SYSTEM_COMMAND(command_handle->command);
+
+    u16_to_le(tx_command->length, (uint8_t *)(&tx_command->length));
   }
 
   write_command(command_handle);
@@ -392,6 +435,7 @@ void sl_cpc_system_on_unnumbered_acknowledgement(void)
  ******************************************************************************/
 static void on_unnumbered_acknowledgement_timeout(epoll_private_data_t *private_data)
 {
+  int ret;
   sl_slist_node_t *item;
   int timer_fd = private_data->file_descriptor;
   sl_cpc_system_command_handle_t *command_handle = container_of(private_data,
@@ -437,7 +481,8 @@ static void on_unnumbered_acknowledgement_timeout(epoll_private_data_t *private_
     item = sl_slist_pop(&pending_commands);
   }
 
-  core_write(SL_CPC_ENDPOINT_SYSTEM, NULL, 0, SL_CPC_FLAG_UNNUMBERED_RESET_COMMAND);
+  ret = core_write(SL_CPC_ENDPOINT_SYSTEM, NULL, 0, SL_CPC_FLAG_UNNUMBERED_RESET_COMMAND);
+  FATAL_ON(ret != 0);
 }
 
 /***************************************************************************//**
@@ -451,7 +496,8 @@ void sl_cpc_system_request_sequence_reset(void)
   sl_cpc_system_reset_system_endpoint();
 
   TRACE_SYSTEM("Requesting reset of sequence numbers on the remote");
-  core_write(SL_CPC_ENDPOINT_SYSTEM, NULL, 0, SL_CPC_FLAG_UNNUMBERED_RESET_COMMAND);
+  ret = core_write(SL_CPC_ENDPOINT_SYSTEM, NULL, 0, SL_CPC_FLAG_UNNUMBERED_RESET_COMMAND);
+  FATAL_ON(ret != 0);
 
   // Push the command right away
   core_process_transmit_queue();
@@ -517,16 +563,17 @@ void sl_cpc_system_reset_system_endpoint(void)
  * Send a property-get query
  ******************************************************************************/
 void sl_cpc_system_cmd_property_get(sl_cpc_system_property_get_set_cmd_callback_t on_property_get_reply,
-                                    sl_cpc_property_id_t property_id,
+                                    sli_cpc_property_id_t property_id,
+                                    void *user_arg,
                                     uint8_t retry_count_max,
                                     uint32_t retry_timeout_us,
-                                    bool is_uframe)
+                                    sl_cpc_system_ep_frame_type_t frame_type)
 {
   sl_cpc_system_command_handle_t *command_handle;
 
   /* Malloc the command handle and the command buffer */
   {
-    const size_t property_get_buffer_size = sizeof(sl_cpc_system_cmd_t) + sizeof(sl_cpc_property_id_t);
+    const size_t property_get_buffer_size = sizeof(sli_cpc_system_cmd_t) + sizeof(sli_cpc_property_id_t);
 
     command_handle = zalloc(sizeof(sl_cpc_system_command_handle_t));
     FATAL_ON(command_handle == NULL);
@@ -537,18 +584,26 @@ void sl_cpc_system_cmd_property_get(sl_cpc_system_property_get_set_cmd_callback_
     FATAL_ON(command_handle->command == NULL);
   }
 
-  sl_cpc_system_init_command_handle(command_handle, (void*)on_property_get_reply, retry_count_max,
-                                    retry_timeout_us, is_uframe);
+  sl_cpc_system_init_command_handle(command_handle,
+                                    (void*)on_property_get_reply,
+                                    user_arg,
+                                    retry_count_max,
+                                    retry_timeout_us,
+                                    frame_type);
 
   /* Fill the system endpoint command buffer */
   {
-    sl_cpc_system_cmd_t *tx_command = command_handle->command;
-    sl_cpc_system_property_cmd_t *tx_property_command = (sl_cpc_system_property_cmd_t *) tx_command->payload;
+    sli_cpc_system_cmd_t *tx_command = command_handle->command;
+    sli_cpc_system_property_cmd_t *tx_property_command = (sli_cpc_system_property_cmd_t *) tx_command->payload;
 
     tx_command->command_id = CMD_SYSTEM_PROP_VALUE_GET;
     tx_command->command_seq = command_handle->command_seq;
+    tx_command->length = (uint16_t) sizeof(property_id);
+
+    command_handle->command_length = (uint16_t) SIZEOF_SYSTEM_COMMAND(command_handle->command);
+
     u32_to_le(property_id, (uint8_t *)(&tx_property_command->property_id));
-    u16_to_le(sizeof(property_id), (uint8_t *)(&tx_command->length));
+    u16_to_le(tx_command->length, (uint8_t *)(&tx_command->length));
   }
 
   write_command(command_handle);
@@ -560,19 +615,21 @@ void sl_cpc_system_cmd_property_get(sl_cpc_system_property_get_set_cmd_callback_
  * Send a property-set query
  ******************************************************************************/
 void sl_cpc_system_cmd_property_set(sl_cpc_system_property_get_set_cmd_callback_t on_property_set_reply,
+                                    sli_cpc_property_id_t property_id,
+                                    const void *property_value,
+                                    size_t property_length,
+                                    void *user_arg,
                                     uint8_t retry_count_max,
                                     uint32_t retry_timeout_us,
-                                    sl_cpc_property_id_t property_id,
-                                    const void *value,
-                                    size_t value_length,
-                                    bool is_uframe)
+                                    sl_cpc_system_ep_frame_type_t frame_type)
 {
   sl_cpc_system_command_handle_t *command_handle;
 
   BUG_ON(on_property_set_reply == NULL);
+  BUG_ON(property_length == 0);
 
   {
-    const size_t property_get_buffer_size = sizeof(sl_cpc_system_cmd_t) + sizeof(sl_cpc_property_id_t) + value_length;
+    const size_t property_get_buffer_size = sizeof(sli_cpc_system_cmd_t) + sizeof(sli_cpc_property_id_t) + property_length;
 
     command_handle = zalloc(sizeof(sl_cpc_system_command_handle_t));
     FATAL_ON(command_handle == NULL);
@@ -583,53 +640,29 @@ void sl_cpc_system_cmd_property_set(sl_cpc_system_property_get_set_cmd_callback_
     FATAL_ON(command_handle->command == NULL);
   }
 
-  sl_cpc_system_init_command_handle(command_handle, (void *)on_property_set_reply,
-                                    retry_count_max, retry_timeout_us, is_uframe);
+  sl_cpc_system_init_command_handle(command_handle,
+                                    (void *)on_property_set_reply,
+                                    user_arg,
+                                    retry_count_max,
+                                    retry_timeout_us,
+                                    frame_type);
 
   /* Fill the system endpoint command buffer */
   {
-    sl_cpc_system_cmd_t *tx_command = command_handle->command;
-    sl_cpc_system_property_cmd_t *tx_property_command = (sl_cpc_system_property_cmd_t *) tx_command->payload;;
+    sli_cpc_system_cmd_t *tx_command = command_handle->command;
+    sli_cpc_system_property_cmd_t *tx_property_command = (sli_cpc_system_property_cmd_t *) tx_command->payload;
 
     tx_command->command_id = CMD_SYSTEM_PROP_VALUE_SET;
     tx_command->command_seq = command_handle->command_seq;
     u32_to_le(property_id, (uint8_t *)(&tx_property_command->property_id));
 
-    /* Adapt the property value in function of the endianess of the system.
-     * We make the assumption here that if a property's length value is 2, 4 or 8 then
-     * we wanted to send a property value that was a u/int16_t, a u/int32_t or a u/int64_t
-     * respectively to begin with. System endpoint protocol doesn't have any other properties that have
-     * length other than those anyway (plus then unit 1 byte length, which doesn't need endianness
-     * awareness anyway). */
-    {
-      switch (value_length) {
-        case 0:
-          FATAL("Can't send a property-set request with value of length 0");
-          break;
+    memcpy(tx_property_command->payload, property_value, property_length);
 
-        case 1:
-          memcpy(tx_property_command->payload, value, value_length);
-          break;
+    tx_command->length = (uint16_t)(sizeof(property_id) + property_length);
 
-        case 2:
-          u16_to_le(*(const uint16_t *)value, tx_property_command->payload);
-          break;
+    command_handle->command_length = (uint16_t) SIZEOF_SYSTEM_COMMAND(command_handle->command);
 
-        case 4:
-          u32_to_le(*(const uint32_t *)value, tx_property_command->payload);
-          break;
-
-        case 8:
-          u64_to_le(*(const uint64_t *)value, tx_property_command->payload);
-          break;
-
-        default:
-          memcpy(tx_property_command->payload, value, value_length);
-          break;
-      }
-    }
-
-    u16_to_le((uint16_t)(sizeof(property_id) + value_length), (uint8_t *)(&tx_command->length));
+    u16_to_le(tx_command->length, (uint8_t *)(&tx_command->length));
   }
 
   write_command(command_handle);
@@ -643,7 +676,7 @@ void sl_cpc_system_cmd_property_set(sl_cpc_system_property_get_set_cmd_callback_
  *   The SECONDARY will send back a no-op in response to the one sent by the PRIMARY.
  ******************************************************************************/
 static void on_final_noop(sl_cpc_system_command_handle_t *command_handle,
-                          sl_cpc_system_cmd_t *system_cmd,
+                          sli_cpc_system_cmd_t *system_cmd,
                           const uint8_t *system_cmd_payload,
                           size_t system_cmd_payload_length)
 {
@@ -651,8 +684,7 @@ static void on_final_noop(sl_cpc_system_command_handle_t *command_handle,
 
   TRACE_SYSTEM("on_final_noop()");
 
-  ((sl_cpc_system_noop_cmd_callback_t)command_handle->on_final)(command_handle,
-                                                                command_handle->error_status);
+  ((sl_cpc_system_noop_cmd_callback_t)command_handle->on_final)(command_handle->error_status);
 }
 
 /***************************************************************************//**
@@ -671,14 +703,13 @@ static void on_final_reset(sl_cpc_system_command_handle_t * command_handle,
   ignore_reset_reason = false;
 
   if (system_cmd_payload_length < sizeof(reset_status)) {
-    WARN("on_final_reset: payload too short");
+    WARN("Payload too short for reset_status");
     return;
   }
 
   reset_status = u32_from_le(system_cmd_payload);
 
-  ((sl_cpc_system_reset_cmd_callback_t)command_handle->on_final)(command_handle,
-                                                                 command_handle->error_status,
+  ((sl_cpc_system_reset_cmd_callback_t)command_handle->on_final)(command_handle->error_status,
                                                                  reset_status);
 }
 
@@ -688,14 +719,14 @@ static void on_final_reset(sl_cpc_system_command_handle_t * command_handle,
  *   The SECONDARY emits a property-is in response to a property-get/set.
  ******************************************************************************/
 static void on_final_property_is(sl_cpc_system_command_handle_t * command_handle,
-                                 sl_cpc_system_cmd_t *system_cmd,
+                                 sli_cpc_system_cmd_t *system_cmd,
                                  const uint8_t *system_cmd_payload,
                                  size_t system_cmd_payload_length,
                                  bool is_uframe)
 {
   sl_cpc_system_property_get_set_cmd_callback_t callback = (sl_cpc_system_property_get_set_cmd_callback_t)command_handle->on_final;
 
-  sl_cpc_system_property_cmd_t system_property_cmd;
+  sli_cpc_system_property_cmd_t system_property_cmd;
   const uint8_t *system_property_cmd_payload;
 
   if (system_cmd_payload_length < sizeof(system_property_cmd)) {
@@ -724,6 +755,7 @@ static void on_final_property_is(sl_cpc_system_command_handle_t * command_handle
       case PROP_BUS_MAX_BITRATE_VALUE:
       case PROP_PROTOCOL_VERSION:
       case PROP_BOOTLOADER_INFO:
+      case PROP_PRIMARY_VERSION_VALUE:
       case PROP_SECONDARY_CPC_VERSION:
       case PROP_SECONDARY_APP_VERSION:
       case PROP_BOOTLOADER_REBOOT_MODE:
@@ -735,12 +767,12 @@ static void on_final_property_is(sl_cpc_system_command_handle_t * command_handle
     }
   }
 
-  size_t value_length = system_cmd->length - sizeof(sl_cpc_system_property_cmd_t);
+  size_t value_length = system_cmd->length - sizeof(sli_cpc_system_property_cmd_t);
 
-  callback(command_handle,
-           system_property_cmd.property_id,
+  callback(system_property_cmd.property_id,
            (uint8_t *)system_property_cmd_payload, /* discard const qualifier */
            value_length,
+           command_handle->on_final_arg,
            command_handle->error_status);
 }
 
@@ -750,22 +782,24 @@ static void on_final_property_is(sl_cpc_system_command_handle_t * command_handle
 static void on_reply(uint8_t endpoint_id,
                      void *arg,
                      void *answer,
-                     uint32_t answer_lenght)
+                     uint32_t answer_length)
 {
   sl_cpc_system_command_handle_t *command_handle;
   size_t frame_type = (size_t)arg;
-  const uint8_t *frame_payload;
-  sl_cpc_system_cmd_t system_cmd;
+  sli_cpc_system_cmd_t system_cmd;
+  const sli_cpc_system_cmd_t *system_cmd_answer;
   const uint8_t *system_cmd_payload;
   size_t system_cmd_payload_length;
 
-  frame_payload = (const uint8_t *)answer;
-
-  memcpy(&system_cmd, frame_payload, sizeof(system_cmd));
-  system_cmd_payload = frame_payload + sizeof(system_cmd);
-  system_cmd_payload_length = answer_lenght - sizeof(system_cmd);
-
   BUG_ON(endpoint_id != 0);
+
+  system_cmd_answer = (const sli_cpc_system_cmd_t *)answer;
+  system_cmd.command_id = system_cmd_answer->command_id;
+  system_cmd.command_seq = system_cmd_answer->command_seq;
+  system_cmd.length = u16_from_le((const uint8_t *)&system_cmd_answer->length);
+
+  system_cmd_payload = (const uint8_t *)system_cmd_answer + sizeof(system_cmd);
+  system_cmd_payload_length = answer_length - sizeof(system_cmd);
   FATAL_ON(system_cmd.length != system_cmd_payload_length);
 
   /* Go through the list of pending requests to find the one for which this reply applies */
@@ -784,7 +818,7 @@ static void on_reply(uint8_t endpoint_id,
 
       /* Call the appropriate callback */
       if (frame_type == SLI_CPC_HDLC_FRAME_TYPE_UNNUMBERED) {
-        BUG_ON(command_handle->is_uframe == false);
+        BUG_ON(command_handle->frame_type == SYSTEM_EP_IFRAME);
         switch (system_cmd.command_id) {
           case CMD_SYSTEM_RESET:
             on_final_reset(command_handle, system_cmd_payload, system_cmd_payload_length);
@@ -793,11 +827,11 @@ static void on_reply(uint8_t endpoint_id,
             on_final_property_is(command_handle, &system_cmd, system_cmd_payload, system_cmd_payload_length, true);
             break;
           default:
-            FATAL("system endpoint command id not recognized for u-frame");
+            WARN("System endpoint command id (%d) not recognized for u-frame", system_cmd.command_id);
             break;
         }
       } else if (frame_type == SLI_CPC_HDLC_FRAME_TYPE_INFORMATION) {
-        BUG_ON(command_handle->is_uframe == true);
+        BUG_ON(command_handle->frame_type == SYSTEM_EP_UFRAME);
         switch (system_cmd.command_id) {
           case CMD_SYSTEM_NOOP:
             on_final_noop(command_handle, &system_cmd, system_cmd_payload, system_cmd_payload_length);
@@ -813,7 +847,7 @@ static void on_reply(uint8_t endpoint_id,
             break;
 
           default:
-            FATAL("system endpoint command id not recognized for i-frame");
+            WARN("System endpoint command id (%d) not recognized for i-frame", system_cmd.command_id);
             break;
         }
       } else {
@@ -835,7 +869,7 @@ static void on_reply(uint8_t endpoint_id,
 static void on_uframe_receive(uint8_t endpoint_id, const void* data, size_t data_len)
 {
   const uint8_t *u8_data;
-  sl_cpc_system_cmd_t system_cmd;
+  sli_cpc_system_cmd_t system_cmd;
 
   FATAL_ON(endpoint_id != SL_CPC_ENDPOINT_SYSTEM);
 
@@ -845,7 +879,7 @@ static void on_uframe_receive(uint8_t endpoint_id, const void* data, size_t data
   PRINT_INFO("STATUS_OK\n");
 #endif
 
-  if (data_len < sizeof(sl_cpc_system_cmd_t)) {
+  if (data_len < sizeof(system_cmd)) {
     WARN("System endpoint received a uframe with not enough bytes to properly parse");
     return;
   }
@@ -864,7 +898,7 @@ static void on_uframe_receive(uint8_t endpoint_id, const void* data, size_t data
   }
 
   if (system_cmd.command_id == CMD_SYSTEM_PROP_VALUE_IS) {
-    sl_cpc_system_property_cmd_t system_property_cmd;
+    sli_cpc_system_property_cmd_t system_property_cmd;
 
     if (data_len < sizeof(system_property_cmd)) {
       WARN("Payload too short for system_property_cmd");
@@ -895,8 +929,8 @@ static void on_uframe_receive(uint8_t endpoint_id, const void* data, size_t data
 
 static void on_iframe_unsolicited(uint8_t endpoint_id, const void* data, size_t data_len)
 {
+  sli_cpc_system_cmd_t system_cmd;
   const uint8_t *u8_data;
-  sl_cpc_system_cmd_t system_cmd;
 
   FATAL_ON(endpoint_id != SL_CPC_ENDPOINT_SYSTEM);
 
@@ -926,7 +960,7 @@ static void on_iframe_unsolicited(uint8_t endpoint_id, const void* data, size_t 
   }
 
   if (system_cmd.command_id == CMD_SYSTEM_PROP_VALUE_IS) {
-    sl_cpc_system_property_cmd_t system_property_cmd;
+    sli_cpc_system_property_cmd_t system_property_cmd;
 
     if (data_len < sizeof(system_property_cmd)) {
       WARN("Payload too short for system_property_cmd");
@@ -938,45 +972,9 @@ static void on_iframe_unsolicited(uint8_t endpoint_id, const void* data, size_t 
     data_len -= 4;
 
     if (system_property_cmd.property_id >= PROP_ENDPOINT_STATE_0 && system_property_cmd.property_id <= PROP_ENDPOINT_STATE_255) {
-      uint8_t closed_endpoint_id;
-      cpc_endpoint_state_t endpoint_state;
+      uint8_t endpoint_id = PROPERTY_ID_TO_EP_ID(system_property_cmd.property_id);
 
-      closed_endpoint_id = PROPERTY_ID_TO_EP_ID(system_property_cmd.property_id);
-
-      if (data_len < 1) {
-        WARN("Payload too short for endpoint_state");
-        return;
-      }
-      endpoint_state = core_state_mapper(u8_data[0]);
-
-      if (endpoint_state == SL_CPC_STATE_CLOSING) {
-        TRACE_SYSTEM("Secondary closed the endpoint #%d", closed_endpoint_id);
-        // The secondary notified us this endpoint will be closed
-        if (!server_listener_list_empty(closed_endpoint_id) && core_get_endpoint_state(closed_endpoint_id) == SL_CPC_STATE_OPEN) {
-          // There are still clients connected to the endpoint
-          // We set this endpoint in error so clients are aware
-          core_set_endpoint_in_error(closed_endpoint_id, SL_CPC_STATE_ERROR_DESTINATION_UNREACHABLE);
-          // And we acknowledge this notification
-          sl_cpc_system_cmd_property_set(reply_to_closing_endpoint_on_secondary_async_callback,
-                                         ENDPOINT_CLOSE_RETRIES,
-                                         ENDPOINT_CLOSE_RETRY_TIMEOUT,
-                                         system_property_cmd.property_id,
-                                         &endpoint_state,
-                                         sizeof(cpc_endpoint_state_t),
-                                         false);
-        } else {
-          // We acknowledge this notification and close the endpoint in the callback
-          sl_cpc_system_cmd_property_set(reply_to_closing_endpoint_on_secondary_callback,
-                                         ENDPOINT_CLOSE_RETRIES,
-                                         ENDPOINT_CLOSE_RETRY_TIMEOUT,
-                                         system_property_cmd.property_id,
-                                         &endpoint_state,
-                                         sizeof(cpc_endpoint_state_t),
-                                         false);
-        }
-      } else {
-        FATAL("Invalid property id");
-      }
+      core_on_unsolicited_endpoint_state(endpoint_id, u8_data, data_len);
     }
   }
 }
@@ -1033,8 +1031,9 @@ static void on_timer_expired(epoll_private_data_t *private_data)
  ******************************************************************************/
 static void write_command(sl_cpc_system_command_handle_t *command_handle)
 {
-  int timer_fd;
   uint8_t flags = SL_CPC_FLAG_INFORMATION_POLL;
+  int timer_fd;
+  int ret;
 
   if (command_handle->retry_count == 0) {
     command_handle->retry_forever = true;
@@ -1042,13 +1041,13 @@ static void write_command(sl_cpc_system_command_handle_t *command_handle)
     command_handle->retry_forever = false;
   }
 
-  if (command_handle->is_uframe) {
+  if (command_handle->frame_type == SYSTEM_EP_UFRAME) {
     flags = SL_CPC_FLAG_UNNUMBERED_POLL;
   }
 
 #if !defined(UNIT_TESTING)
   // Can't send iframe commands on the system endpoint until the sequence numbers are reset
-  if (!command_handle->is_uframe) {
+  if (command_handle->frame_type == SYSTEM_EP_IFRAME) {
     if (!sl_cpc_system_received_unnumbered_acknowledgement()) {
       sl_slist_push_back(&pending_commands, &command_handle->node_commands);
       return;
@@ -1060,14 +1059,15 @@ static void write_command(sl_cpc_system_command_handle_t *command_handle)
 
   command_handle->acked = false;
 
-  core_write(SL_CPC_ENDPOINT_SYSTEM,
-             (void *)command_handle->command,
-             SIZEOF_SYSTEM_COMMAND(command_handle->command),
-             flags);
+  ret = core_write(SL_CPC_ENDPOINT_SYSTEM,
+                   (void *)command_handle->command,
+                   command_handle->command_length,
+                   flags);
+  FATAL_ON(ret != 0);
 
   TRACE_SYSTEM("Submitted command_id #%d command_seq #%d", command_handle->command->command_id, command_handle->command_seq);
 
-  if (command_handle->is_uframe) {
+  if (command_handle->frame_type == SYSTEM_EP_UFRAME) {
     /* Setup timeout timer.*/
     {
       const struct itimerspec timeout = { .it_interval = { .tv_sec = 0, .tv_nsec = 0 },
