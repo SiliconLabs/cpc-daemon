@@ -105,6 +105,8 @@ void security_xfer_rollback(sl_cpc_endpoint_t *ep);
 
 size_t security_encrypt_get_extra_buffer_size(void);
 
+void security_set_state_disabled(void);
+
 bool security_session_has_reset(void);
 
 void security_session_reset_clear_flag(void);

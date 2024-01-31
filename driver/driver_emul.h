@@ -23,6 +23,7 @@
 
 #include <stdbool.h>
 
+#include "cpcd/core.h"
 #include "cpcd/sl_status.h"
 
 #include "server_core/core/core.h"
@@ -35,7 +36,8 @@
 pthread_t driver_emul_init(int* fd_core_driver, int *fd_notify_core);
 sl_status_t sli_cpc_drv_read_data(frame_t *handle, uint16_t *payload_rx_len);
 void sli_cpc_drv_emul_submit_pkt_for_rx(void *header_buf, void *payload_buf, uint16_t payload_buf_len);
-void sli_cpc_drv_emul_set_ep_state(uint8_t id, cpc_endpoint_state_t state);
+sli_cpc_endpoint_state_t sli_cpc_drv_emul_get_ep_state(uint8_t id);
+void sli_cpc_drv_emul_set_ep_state(uint8_t id, sli_cpc_endpoint_state_t state);
 
 void sli_cpc_drv_emul_set_frame_counter(uint8_t id, uint32_t frame_counter, bool tx);
 uint32_t sli_cpc_drv_emul_get_frame_counter(uint8_t id, bool tx);

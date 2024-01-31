@@ -88,5 +88,5 @@ fn main() {
     );
 
     // https://doc.rust-lang.org/cargo/reference/build-scripts.html#cargorerun-if-changedpath
-    println!("cargo:rerun-if-changed=build.rs")
+    println!("cargo:rerun-if-changed=build.rs");
 }

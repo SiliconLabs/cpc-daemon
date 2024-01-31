@@ -34,15 +34,11 @@
 #include "cpcd/sleep.h"
 #include "cpcd/utils.h"
 #include "cpcd/xmodem.h"
+#include "cpcd/endianness.h"
 
 #include "server_core/core/crc.h"
 #include "driver/driver_spi.h"
 #include "driver/driver_ezsp.h"
-
-#define START_BTL_FRAME   0xFD
-#define END_BTL_FRAME     0xA7
-#define SPI_STATUS        0x0B
-#define SPI_VERSION       0x0A
 
 #define BOOTLOADER_TIMEOUT      (20)
 #define MAX_RETRANSMIT_ATTEMPTS (5)
@@ -53,6 +49,10 @@
 #define BLOCKOK     0x19
 #define QUERY       0x51
 #define QUERYFOUND  0x1A
+
+// Since it is unknown which of the USART or EUSART the bootloader is using, pick
+// a reasonable common lower denominator between the USART and EUSART max bitrate
+#define FWU_MAX_BITRATE 4000000
 
 static cpc_spi_dev_t spi_dev;
 
@@ -74,7 +74,7 @@ static void driver_ezsp_spi_open(const char   *device,
 
 sl_status_t send_firmware(const char   * image_file,
                           const char   *device,
-                          unsigned int speed,
+                          unsigned int bitrate,
                           const char *irq_gpio_chip,
                           unsigned int irq_gpio_pin)
 {
@@ -100,9 +100,13 @@ sl_status_t send_firmware(const char   * image_file,
     CLEAN_UP
   } state = GET_INFO;
 
+  // Since it can't be  known whether the bootloader uses the USART or EUSART,
+  // clip the bitrate to the maximum supported by the USART, which is the lowest
+  uint32_t chosen_bitrate = (bitrate > FWU_MAX_BITRATE) ? FWU_MAX_BITRATE : bitrate;
+
   // open connection to secondary
   driver_ezsp_spi_open(device,
-                       speed,
+                       chosen_bitrate,
                        irq_gpio_chip,
                        irq_gpio_pin);
 
@@ -157,7 +161,7 @@ sl_status_t send_firmware(const char   * image_file,
         // 0x1A padding
         memset(frame.data + z, 0x1A, sizeof(frame.data) - z);
 
-        frame.crc = __builtin_bswap16(sli_cpc_get_crc_sw(frame.data, sizeof(frame.data)));
+        u16_to_be(sli_cpc_get_crc_sw(frame.data, sizeof(frame.data)), (uint8_t *)&frame.crc);
 
         frame.seq_neg = (uint8_t)(0xff - frame.seq);
 
@@ -228,7 +232,6 @@ sl_status_t send_firmware(const char   * image_file,
         } else {
           return SL_STATUS_OK;
         }
-        break;
     }
     sleep_ms(1);
   }
@@ -270,7 +273,7 @@ static void driver_ezsp_spi_open(const char   *device,
   spi_dev.spi_dev_descriptor = fd;
 
   // Setup IRQ gpio
-  FATAL_ON(gpio_init(&spi_dev.irq_gpio, irq_gpio_chip, irq_gpio_pin, IN, FALLING) < 0);
+  spi_dev.irq_gpio = gpio_init(irq_gpio_chip, irq_gpio_pin, GPIO_DIRECTION_IN, GPIO_EDGE_FALLING);
   TRACE_EZSP_SPI("EZSP interface opened successfully.");
 }
 
@@ -323,7 +326,7 @@ static bool wait_irq_line(void)
 {
   int timeout = BOOTLOADER_TIMEOUT;
 
-  while ((gpio_read(&spi_dev.irq_gpio) != 0)
+  while ((gpio_read(spi_dev.irq_gpio) != GPIO_VALUE_LOW)
          && timeout-- > 0) {
     sleep_ms(10);
   }

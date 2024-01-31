@@ -39,6 +39,7 @@ bool security_initialized = false;
 
 #define SECURITY_READ_TIMEOUT_SEC 10
 
+int cpc_deinit(cpc_handle_t *handle);
 static void security_open_security_endpoint(void);
 static void security_reconnect(void);
 
@@ -116,6 +117,7 @@ void* security_thread_func(void* param)
           security_initialized = false;
         }
         security_set_state(SECURITY_STATE_NOT_READY);
+        cpc_deinit(&lib_handle);
         pthread_exit(NULL);
         break;
 

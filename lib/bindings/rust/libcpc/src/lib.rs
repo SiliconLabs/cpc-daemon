@@ -406,6 +406,20 @@ impl cpc_endpoint {
             Ok(encrypted)
         }
     }
+
+    pub fn get_session_id(&self) -> Result<u32, Error> {
+        let mut session_id = 0;
+
+        let err = unsafe {
+            libcpc_sys::cpc_get_endpoint_session_id(self.endpoint, &mut session_id as *mut u32)
+        };
+
+        if err < 0 {
+            Err(Error::Errno(std::io::Error::from_raw_os_error(-err)))
+        } else {
+            Ok(session_id)
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone)]

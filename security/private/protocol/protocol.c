@@ -278,13 +278,13 @@ void security_initialize_session(void)
   status = security_send_session_init_request(random1, &protocol_response);
 
   if (status != SL_STATUS_OK) {
-    FATAL("Sending session init request failed.");
+    FATAL("Sending session init request failed. Status = %d.", status);
     return;
   }
 
   session_init_response.status = u32_from_le(protocol_response.payload + 0);
   if (session_init_response.status != SL_STATUS_OK) {
-    FATAL("The secondary failed to initialize its session");
+    FATAL("The secondary failed to initialize its session: Status = %d. Make sure the device is first bound.", session_init_response.status);
     return;
   }
 

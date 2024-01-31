@@ -70,17 +70,14 @@ extern "C"
  * ## Connection Management
  *
  * The application can register a callback of type #cpc_reset_callback_t when it calls
- * `cpc_init()`. If the secondary unexpectedly restarts, the daemon will send an event SIGUSR1 to
- * all connected clients. The callback will execute in the context of the signal handler.
+ * `cpc_init()`. If the library is not connected to a daemon anymore, all connected clients
+ * will have their callbacks called. The callback will execute in the context of a separate thread.
  * The application can call `cpc_restart()` to reconnect to the daemon. The endpoints
  * must be closed and re-configured as well. @n
  *
  *  * must be closed, re-opened and re-configured as well.
  *
- * `cpc_restart()` is not a re-entrant API and should not be called from within
- * the reset callback since , as previouly mentionned, this callback is in a signal context.
- * No calls to CPC APIs are allowed during this signal context.
- * This limitation is in place to prevent re-entrancy issues.
+ * `cpc_restart()` is not a re-entrant API and should not be called from within the reset callback.
  *
  * The recommended usage of the reset callback is to set a flag that will then notify
  * your application to call `cpc_restart`.
@@ -90,11 +87,10 @@ extern "C"
  *
  *  static cpc_handle_t cpc_handle;
  *  static cpc_endpoint_t endpoint_0;
- *  static volatile sig_atomic_t secondary_reset = false;
+ *  static bool secondary_reset = false;
  *
- *  // if the secondary resets unexpectedly, the daemon will send a SIGUSR1 to the client
- *  // application. This callback will execute in the context of the signal handler.
- *  // CPC APIs are not allowed in signal context since they are non-rentrant.
+ *  // if the secondary resets unexpectedly, the callback will execute in the context of a separate thread.
+ *  // CPC API calls are not allowed in this context since they are non-reentrant by design.
  *  void reset_callback(void)
  *  {
  *    // the application thread can monitor this flag for reset events
@@ -280,8 +276,8 @@ typedef struct {
 /***************************************************************************//**
  * @brief Callback to notify the application that the secondary has crashed/reset itself.
  *
- * @warning This callback is called in a signal context. The user must be
- *          careful of what is done in this callback.
+ * @warning This callback is called in a separate thread. The user must not call
+ *          any CPC API in this context.
  ******************************************************************************/
 typedef void (*cpc_reset_callback_t) (void);
 
@@ -299,9 +295,8 @@ typedef void (*cpc_endpoint_state_callback_t) (uint8_t endpoint_id, cpc_endpoint
  *                              This value can be NULL, and so the default "cpcd_0" value will be used. If running a single instance, this can
  *                              be left to NULL, but when running simultaneous instances, it will need to be supplied.
  * @param[in]  enable_tracing   Enable tracing over stderr
- * @param[in]  reset_callback   Optional callback for when the secondary unexpectedly restarts.
- *                              In the event that the secondary restarts, the daemon will send a SIGUSR1 to any connected lipcpc client.
- *                              If a reset_callback is configured, it will execute in the context of the signal handler.
+ * @param[in]  reset_callback   Optional callback for when the library is not connected to a daemon anymore.
+ *                              The callback will execute in the context of a separate thread.
  *
  * @return On error, a negative value of errno is returned.
  *         On success, 0 is returned.
@@ -320,6 +315,7 @@ int cpc_init(cpc_handle_t *handle, const char *instance_name, bool enable_tracin
  * @param[out] handle           CPC library handle
  *
  * @return On error, a negative value of errno is returned.
+ *         On success, 0 is returned.
  ******************************************************************************/
 int cpc_restart(cpc_handle_t *handle);
 
@@ -738,6 +734,20 @@ int cpc_set_endpoint_event_blocking(cpc_endpoint_event_handle_t event_handle, bo
  *         On success, 0 is returned
  ******************************************************************************/
 int cpc_get_endpoint_event_blocking_mode(cpc_endpoint_event_handle_t event_handle, bool *is_blocking);
+
+/***************************************************************************//**
+ * @brief Get a session id associated to this instance. This id is guaranteed to be
+ * unique between all of the clients of a single endpoint on a single CPCd instance.
+ *
+ * @param[in]  endpoint CPC library handle
+ * @param[out] session_id The unique id associated to this handle
+ *
+ * @return On error, a negative value of errno is returned.
+ *         On success, 0 is returned
+ *
+ * @note This unique id may change if CPCd restarts
+ ******************************************************************************/
+int cpc_get_endpoint_session_id(cpc_endpoint_t endpoint, uint32_t *session_id);
 
 /** @} (end addtogroup cpc) */
 

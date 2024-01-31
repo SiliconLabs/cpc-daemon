@@ -1,0 +1,21 @@
+# .gitignore
+
+# Debian files
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/*.substvars
+debian/python-cpc-daemon-doc/
+debian/python3-cpc-daemon/
+
+# Emacs files
+*~
+
+# Python files
+.pybuild/
+
+# Other files
+tmp/
+
+build/*
+build_*/

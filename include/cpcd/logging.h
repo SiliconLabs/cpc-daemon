@@ -80,7 +80,7 @@ extern core_debug_counters_t secondary_core_debug_counters;
 
 #define TRACE_DRIVER(string, ...)     TRACE("Driver : "  string "\n", ##__VA_ARGS__)
 
-#define TRACE_GPIOD(string, ...)      TRACE("Gpiod : "  string "\n", ##__VA_ARGS__)
+#define TRACE_GPIO(string, ...)       TRACE("Gpio : "  string "\n", ##__VA_ARGS__)
 
 #define TRACE_CORE(string, ...)       TRACE("Core : "  string "\n", ##__VA_ARGS__)
 
