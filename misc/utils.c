@@ -98,3 +98,17 @@ int recursive_mkdir(const char *dir, size_t len, const mode_t mode)
   free(tmp);
   return ret;
 }
+
+bool is_valid_extension(const char *filename, const char *extension)
+{
+  const char *dot = strrchr(filename, '.');    // Find the last dot in the filename
+
+  if (dot != NULL) {
+    // Compare the extension with the validExtension
+    if (strcmp(dot + 1, extension) == 0) {
+      return true;        // Valid extension
+    }
+  }
+
+  return false;    // Invalid extension
+}

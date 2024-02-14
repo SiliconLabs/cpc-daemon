@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <stdbool.h>
 
 #define sizeof_member(T, m) (sizeof(((T *)0)->m))
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
@@ -51,5 +52,7 @@ static inline void* zalloc(size_t size)
 }
 
 int recursive_mkdir(const char *dir, size_t len, const mode_t mode);
+
+bool is_valid_extension(const char *filename, const char *extension);
 
 #endif

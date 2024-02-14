@@ -18,12 +18,15 @@
 #ifndef DRIVER_KILL_H
 #define DRIVER_KILL_H
 
-int driver_kill_init(void);
+/***************************************************************************//**
+ * Set driver kill callback. The kill callback should return only when all driver
+ * threads have exited.
+ ******************************************************************************/
+void driver_kill_init(void (*driver_kill_callback)(void));
 
-void driver_kill_signal(void);
-
-int driver_kill_join(void);
-
-int driver_kill_signal_and_join(void);
+/***************************************************************************//**
+ * Call the driver kill callback.
+ ******************************************************************************/
+void driver_kill(void);
 
 #endif //DRIVER_KILL_H

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 
 project(cpcd
-  VERSION "4.4.0.0"
+  VERSION "4.4.1.0"
   LANGUAGES C)
 set(CPC_LIBRARY_API_VERSION "3")
 set(CPC_PROTOCOL_VERSION "5")
@@ -22,10 +22,6 @@ option(USE_LEGACY_GPIO_SYSFS "Use the legacy GPIO sysfs instead of GPIO device" 
 option(COMPILE_LTTNG "Enable LTTng tracing")
 option(ENABLE_VALGRIND "Enable Valgrind in tests")
 option(TARGET_TESTING "Enable some features used only in testing")
-
-if (USE_LEGACY_GPIO_SYSFS)
-  message( WARNING "The legacy GPIO sysfs is deprecated, remove the option altogether.")
-endif()
 
 # Includes
 include(cmake/GetGitRevisionDescription.cmake)
@@ -150,6 +146,13 @@ else()
   message(WARNING "Building CPCd with encryption disabled, removing MbedTLS dependency")
 endif()
 
+# Enable gpiod support if the user requested it
+if(USE_LEGACY_GPIO_SYSFS)
+  message(STATUS "Building CPCd with GPIO sysfs")
+else()
+  message(STATUS "Building CPCd with GPIO device")
+endif()
+
 if(TARGET_TESTING)
   add_definitions(-DTARGET_TESTING)
 endif()
@@ -204,7 +207,7 @@ if((TARGET_GROUP STREQUAL release) OR
                       driver/driver_xmodem.c
                       driver/driver_ezsp.c
                       driver/driver_kill.c
-                      misc/gpio.c
+                      misc/exit.c
                       misc/logging.c
                       misc/config.c
                       misc/utils.c
@@ -238,6 +241,13 @@ if((TARGET_GROUP STREQUAL release) OR
       security/private/thread/command_synchronizer.c
       security/private/thread/security_thread.c
       security/security.c)
+  endif()
+
+  if(USE_LEGACY_GPIO_SYSFS)
+    target_compile_definitions(cpcd PRIVATE USE_LEGACY_GPIO_SYSFS)
+    target_sources(cpcd PRIVATE misc/gpio_sysfs.c)
+  else()
+    target_sources(cpcd PRIVATE misc/gpio.c)
   endif()
 
   # Hash all files except those in the output folder
@@ -309,6 +319,7 @@ elseif((TARGET_GROUP STREQUAL unit_test) OR (TARGET_GROUP STREQUAL unit_test_wit
                             driver/driver_uart.c
                             lib/sl_cpc.c
                             modes/uart_validation.c
+                            misc/exit.c
                             misc/logging.c
                             misc/config.c
                             misc/utils.c

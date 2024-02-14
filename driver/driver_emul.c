@@ -42,10 +42,12 @@
 #include "security/security.h"
 #include "security/private/keys/keys.h"
 #include "test/unity/cpc_unity_common.h"
+#include "driver/driver_kill.h"
 
 static int fd_socket_drv;
 static int fd_notification_socket_drv;
 static pthread_t drv_thread;
+static bool drv_thread_started = false;
 static sl_slist_node_t *sli_rx_pending_list_head;
 static sli_cpc_endpoint_state_t ep_states[SL_CPC_ENDPOINT_MAX_COUNT];
 static uint32_t ep_frame_counters_tx[SL_CPC_ENDPOINT_MAX_COUNT];
@@ -59,7 +61,15 @@ typedef struct {
 
 static void* driver_thread_func(void* param);
 
-pthread_t driver_emul_init(int* fd_core, int *fd_notify_core)
+void driver_emul_kill(void)
+{
+  if (drv_thread_started) {
+    pthread_cancel(drv_thread);
+    drv_thread_started = false;
+  }
+}
+
+void driver_emul_init(int* fd_core, int *fd_notify_core)
 {
   int fd_sockets[2];
   int fd_notify_sockets[2];
@@ -73,10 +83,14 @@ pthread_t driver_emul_init(int* fd_core, int *fd_notify_core)
 
   fd_socket_drv  = fd_sockets[0];
 
+  /* setup driver kill */
+  driver_kill_init(driver_emul_kill);
+
   /* create driver thread */
   if (pthread_create(&drv_thread, NULL, driver_thread_func, NULL)) {
     FATAL("Error creating driver thread");
   }
+  drv_thread_started = true;
 
   for (i = 0; i < SL_CPC_ENDPOINT_MAX_COUNT; i++) {
     ep_states[i] = SLI_CPC_STATE_OPEN;
@@ -91,7 +105,7 @@ pthread_t driver_emul_init(int* fd_core, int *fd_notify_core)
   fd_notification_socket_drv  = fd_notify_sockets[0];
   *fd_notify_core = fd_notify_sockets[1];
 
-  return drv_thread;
+  TRACE_DRIVER("Emulation driver initialized");
 }
 
 // -----------------------------------------------------------------------------

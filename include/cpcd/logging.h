@@ -76,6 +76,8 @@ extern core_debug_counters_t secondary_core_debug_counters;
 
 #define TRACE_FORCE_STDOUT(string, ...)       do { LTTNG_TRACE(string, ##__VA_ARGS__); trace(true, string, ##__VA_ARGS__); } while (0)
 
+#define TRACE_NAKED(string)           trace_no_timestamp(string)
+
 #define PRINT_INFO(string, ...)       TRACE_FORCE_STDOUT("Info : "  string "\n", ##__VA_ARGS__)
 
 #define TRACE_DRIVER(string, ...)     TRACE("Driver : "  string "\n", ##__VA_ARGS__)

@@ -21,6 +21,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <errno.h>
 
 #include "cpcd/logging.h"
 #include "cpcd/sleep.h"
@@ -59,7 +60,7 @@ static bool wait_for_bootloader_string(int fd, char *string)
     FATAL_SYSCALL_ON(ret != sizeof(carriage_return));
 
     ret = read(fd, btl_chunk, (size_t)remaining);
-    FATAL_SYSCALL_ON(ret == -1);
+    FATAL_SYSCALL_ON(ret == -1 && errno != EAGAIN);
 
     btl_chunk += ret;
 
@@ -72,7 +73,7 @@ static bool wait_for_bootloader_string(int fd, char *string)
   return true;
 }
 
-sl_status_t xmodem_send(const char* image_file, const char *dev_name, unsigned  int bitrate, bool hardflow)
+sl_status_t xmodem_uart_firmware_upgrade(const char* image_file, const char *dev_name, unsigned  int bitrate, bool hardflow)
 {
   int uart_fd;
   int image_file_fd;
@@ -85,15 +86,20 @@ sl_status_t xmodem_send(const char* image_file, const char *dev_name, unsigned  
   /* Open the uart and memory map the firmware update file */
   {
     struct stat stat;
-    int ret_fstat;
+    int ret;
 
     uart_fd = driver_uart_open(dev_name, bitrate, hardflow);
+
+    // make sure the file ends with .gbl
+    if (is_valid_extension(image_file, "gbl") == false) {
+      FATAL("The firmware upgrade file '%s' is not a .gbl file", image_file);
+    }
 
     image_file_fd = open(image_file, O_RDONLY | O_CLOEXEC);
     FATAL_SYSCALL_ON(image_file_fd < 0);
 
-    ret_fstat = fstat(image_file_fd, &stat);
-    FATAL_SYSCALL_ON(ret_fstat < 0);
+    ret = fstat(image_file_fd, &stat);
+    FATAL_SYSCALL_ON(ret < 0);
 
     mmapped_image_file_len = (size_t) stat.st_size;
 
@@ -103,6 +109,10 @@ sl_status_t xmodem_send(const char* image_file, const char *dev_name, unsigned  
 
   /* Wait for the "C" character meaning the secondary is ready for XMODEM-CRC transfer */
   {
+    // wait_for_bootloader_string implements a timeout, so fd must be non-blocking
+    ret = fcntl(uart_fd, F_SETFL, O_NONBLOCK);
+    FATAL_SYSCALL_ON(ret < 0);
+
     {
       TRACE_XMODEM("Connecting to bootloader...");
       if (!wait_for_bootloader_string(uart_fd, BTL_MENU_PROMPT)) {
@@ -122,6 +132,13 @@ sl_status_t xmodem_send(const char* image_file, const char *dev_name, unsigned  
 
     TRACE_XMODEM("Waiting for receiver ping ...");
 
+    // Connection to the bootloader successful. Set the fd back to blocking so
+    // it can wait for data from the remote.
+    int flags = fcntl(uart_fd, F_GETFL);
+    FATAL_SYSCALL_ON(flags < 0);
+    flags &= ~O_NONBLOCK;
+    ret = fcntl(uart_fd, F_SETFL, flags);
+    FATAL_SYSCALL_ON(ret < 0);
     do {
       ret = read(uart_fd, &answer, sizeof(answer));
       FATAL_SYSCALL_ON(ret != sizeof(answer));

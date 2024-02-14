@@ -25,11 +25,11 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
-#include <unistd.h>
 #include <sys/ioctl.h>
 #include <linux/spi/spidev.h>
 #include <signal.h>
 #include <string.h>
+#include <sys/eventfd.h>
 
 #include "cpcd/logging.h"
 #include "cpcd/sleep.h"
@@ -48,22 +48,25 @@
 static int fd_core;
 static int fd_core_notify;
 static int fd_epoll;
+static int fd_event_kill;
 static pthread_t drv_thread;
+static bool drv_thread_started = false;
 static int spi_dev_descriptor;
 static gpio_t irq_gpio;
 static bool secondary_started = false;
 
 typedef void (*driver_epoll_callback_t)(void);
 
-static int get_data_size(uint8_t *header);
 static bool wait_for_irq_assert_or_timeout(size_t timeout_us);
 static void driver_spi_event_core(void);
 static void driver_spi_event_irq(void);
 static void driver_spi_transaction(bool initiated_by_irq_line_event);
 static void* driver_thread_func(void* param);
+static void driver_spi_cleanup(void);
 
 static void driver_spi_cleanup(void)
 {
+  // Clean the internal structures of the SPI driver thread
   close(spi_dev_descriptor);
   close(fd_core);
   close(fd_core_notify);
@@ -73,7 +76,26 @@ static void driver_spi_cleanup(void)
 
   TRACE_DRIVER("SPI driver thread cancelled");
 
+  drv_thread_started = false;
   pthread_exit(NULL);
+}
+
+/***************************************************************************//**
+* Kill the SPI driver.
+*******************************************************************************/
+void driver_spi_kill(void)
+{
+  // signal threads to exit
+  ssize_t ret;
+  const uint64_t event_value = 1; // Doesn't matter what it is
+
+  if (drv_thread_started) {
+    // signal and wait for thread to exit
+    ret = write(fd_event_kill, &event_value, sizeof(event_value));
+    FATAL_SYSCALL_ON(ret != sizeof(event_value));
+
+    pthread_join(drv_thread, NULL);
+  }
 }
 
 static void spidev_setup(const char *device, uint32_t speed, const char *irq_gpio_chip, unsigned int irq_gpio_pin)
@@ -98,160 +120,12 @@ static void spidev_setup(const char *device, uint32_t speed, const char *irq_gpi
   irq_gpio = gpio_init(irq_gpio_chip, irq_gpio_pin, GPIO_DIRECTION_IN, GPIO_EDGE_FALLING);
 }
 
-/***************************************************************************//**
- * @brief
- *   Probes the secondary to see if the bootloader is running
- *
- * The goal of the probe maneuver is to detect if the secondary is currently
- * running the bootloader or not (else the CPC application, or perhaps nothing).
- *
- * There is an important detail to keep in mind : The SPI driver on the secondary
- * is very susceptible to deadlocking if the CPC SPI protocol is not strictly
- * followed. This means that if the secondary is currently running the CPC app and
- * we start sending things (i.e. talking EZSP-bootloader protocol to probe the
- * bootloader) on the SPI bus that do not follow the CPC-SPI protocol, we will
- * make the secondary driver fall out of sync, requiring a reboot.
- *
- * This function therefore sends what is essentially a CPC SPI Header in term
- * of electrical signal - ie 7 bytes - that would not make the CPC SPI driver
- * jam, but that header is also a valid EZSP transaction that the bootloader
- * would recognize as a probe. This way, no matter what the secondary is currently
- * running, it won't brick.
- *
- * @return
- *   true if the bootloader is running, false otherwise
- ******************************************************************************/
-bool driver_spi_is_bootloader_running(const char *device,
-                                      unsigned int speed,
-                                      const char *irq_gpio_chip,
-                                      unsigned int irq_gpio_pin)
-{
-  bool bootloader_alive = false; // The return value
-  struct spi_ioc_transfer spi_transfer = { 0 };
-  uint8_t rx_buffer[7];
-  int ret;
-
-  spidev_setup(device, speed, irq_gpio_chip, irq_gpio_pin);
-
-  // Always go with a conservative value of 1MHz for the probing sequence
-  spi_transfer.speed_hz = 1000000;
-
-  // Send the SPI status bootloader command
-  // and keep CS asserted at the end of the transfer
-  {
-    const uint8_t spi_status_tx_buffer[2] = { SPI_STATUS, END_BTL_FRAME };
-
-    spi_transfer.tx_buf = (unsigned long) spi_status_tx_buffer;
-    spi_transfer.rx_buf = (unsigned long) &rx_buffer[0];
-    spi_transfer.len = sizeof(spi_status_tx_buffer);
-    spi_transfer.cs_change = 1; // Keep CS asserted after the transfer per EZSP
-
-    ret = ioctl(spi_dev_descriptor, SPI_IOC_MESSAGE(1), &spi_transfer);
-    FATAL_ON(ret != (int)spi_transfer.len);
-  }
-
-  if (gpio_read(irq_gpio) == GPIO_VALUE_HIGH) {
-    // If after sending two bytes the IRQ line is high, it ***could*** mean we are talking to the
-    // bootloader.
-    // In this case, per EZSP, we need to wait until the IRQ line is asserted before clocking the
-    // response. The bootlaoder would not take more than 1ms to assert IRQ if its active though.
-    // A typical response time is around 600us.
-    (void) wait_for_irq_assert_or_timeout(1000);
-  } else {
-    // If after sending two bytes the IRQ line is still low, it surely means the bootloader
-    // is not active since that would break the EZSP protocol. Do no wait and go straight
-    // to the completion of clocking the pseudo-header
-  }
-
-  // Clock 5 more 0x00 bytes and de-assert CS.
-  {
-    spi_transfer.tx_buf = (unsigned long) NULL;
-    spi_transfer.rx_buf = (unsigned long) &rx_buffer[2];
-    spi_transfer.len = 5;
-    spi_transfer.cs_change = 0; // De-assert CS after transfer
-
-    ret = ioctl(spi_dev_descriptor, SPI_IOC_MESSAGE(1), &spi_transfer);
-    FATAL_ON(ret != (int)spi_transfer.len);
-  }
-
-  // Analyze the receive buffer to see if a valid bootloader response is detected
-  {
-    // There are 3 possible responses the bootloader could reply to the SPI-Status command
-    const uint8_t btl_response_reset_reason[]  = { 0xFF, 0xFF, 0x00, 0x09, END_BTL_FRAME, 0xFF, 0xFF };
-    const uint8_t btl_response_spi_status[]    = { 0xFF, 0xFF, 0xC1, END_BTL_FRAME, 0xFF, 0xFF, 0xFF };
-    const uint8_t btl_response_spi_status2[]   = { 0xFF, 0xFF, 0xC0, END_BTL_FRAME, 0xFF, 0xFF, 0xFF };
-
-    if (   0 == memcmp(rx_buffer, btl_response_reset_reason, sizeof(btl_response_reset_reason))
-           || 0 == memcmp(rx_buffer, btl_response_spi_status, sizeof(btl_response_spi_status))
-           || 0 == memcmp(rx_buffer, btl_response_spi_status2, sizeof(btl_response_spi_status2))) {
-      // A positive bootloader response has been received. It is safe to return now without
-      // purging a CPC payload. Since CPC is not running there is no risk of de-synchronizing the
-      // SPI driver.
-      bootloader_alive = true;
-      goto ret;
-    }
-  }
-
-  // At this point, we know the bootloader is NOT running.
-  // It could still very well be CPC, or nothing.
-  // Analyzing the header for a NULL header (i.e. 7 0s) is not a sufficient criteria to know whether CPC
-  // is running or not. We cannot take the chance of stopping here and brick the driver,
-  // we have to complete this operation as if it was a real CPC frame.
-
-  // Analyze the received buffer to see if it was a CPC header the secondary sent us
-  int header_len_field = get_data_size(rx_buffer);
-
-  if (header_len_field < 0) {
-    // The header was not a valid CPC header. For the purpose or the procedure, treat it as if the length was 0
-    header_len_field = 0;
-  }
-
-  // In case CPC is running, per the SPI protocol, wait for IRQ to be asserted
-  (void) wait_for_irq_assert_or_timeout(10 * MAXIMUM_REASONABLE_INTERRUPT_LATENCY_US);
-
-  // The secondary, if running CPC, expects the primary to clock out the payload
-  {
-    uint8_t *zero_buffer;
-
-    // We don't care about the received data
-    spi_transfer.rx_buf = (unsigned long) NULL;
-
-    if (header_len_field > 0) {
-      // If we did clock a valid CPC header with a payload length that was greater than 0,
-      // we need to clock that number of bytes. We don't care about what we transmit nor
-      // receive. rx_buf is already NULL, but we cannot set tx_buf to NULL as well, it needs
-      // to be a valid buffer. Here we want to send all 0s.
-      zero_buffer = calloc(1, (size_t)header_len_field);
-      spi_transfer.tx_buf = (unsigned long) zero_buffer;
-    } else {
-      // Produce the CS empty notch
-      spi_transfer.tx_buf = (unsigned long) NULL;
-    }
-
-    spi_transfer.len = (unsigned) header_len_field;
-    spi_transfer.cs_change = 0;
-
-    ret = ioctl(spi_dev_descriptor, SPI_IOC_MESSAGE(1), &spi_transfer);
-    FATAL_ON(ret != (int)spi_transfer.len);
-
-    if (header_len_field > 0) {
-      free(zero_buffer);
-    }
-  }
-
-  ret:
-  close(spi_dev_descriptor);
-  gpio_deinit(irq_gpio);
-
-  return bootloader_alive;
-}
-
-pthread_t driver_spi_init(int *fd_to_core,
-                          int *fd_notify_core,
-                          const char *device,
-                          unsigned int speed,
-                          const char *irq_gpio_chip,
-                          unsigned int irq_gpio_pin)
+void driver_spi_init(int *fd_to_core,
+                     int *fd_notify_core,
+                     const char *device,
+                     unsigned int speed,
+                     const char *irq_gpio_chip,
+                     unsigned int irq_gpio_pin)
 {
   int fd_sockets[2];
   int fd_sockets_notify[2];
@@ -281,7 +155,7 @@ pthread_t driver_spi_init(int *fd_to_core,
       FATAL_SYSCALL_ON(fd_epoll < 0);
     }
 
-    // Setup the socket to the core
+    // Setup the core event
     {
       event.events = EPOLLIN; // Level-triggered read() availability
       event.data.ptr = driver_spi_event_core;
@@ -289,7 +163,7 @@ pthread_t driver_spi_init(int *fd_to_core,
       FATAL_SYSCALL_ON(ret < 0);
     }
 
-    // Setup the spi
+    // Setup the IRQ GPIO event
     {
       event.events = GPIO_EPOLL_EVENT; // Level-triggered read() availability
       event.data.ptr = driver_spi_event_irq;
@@ -297,12 +171,17 @@ pthread_t driver_spi_init(int *fd_to_core,
       FATAL_SYSCALL_ON(ret < 0);
     }
 
-    // Setup the kill file descriptor
+    // Setup the kill event file descriptor and callback
     {
-      int eventfd_kill = driver_kill_init();
+      fd_event_kill = eventfd(0, // Start with 0 value
+                              EFD_CLOEXEC);
+      FATAL_SYSCALL_ON(fd_event_kill == -1);
+      // Set driver kill callback
+      driver_kill_init(driver_spi_kill);
+
       event.events = EPOLLIN; // Level-triggered read() availability
       event.data.ptr = driver_spi_cleanup;
-      ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, eventfd_kill, &event);
+      ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, fd_event_kill, &event);
       FATAL_SYSCALL_ON(ret < 0);
     }
   }
@@ -310,6 +189,7 @@ pthread_t driver_spi_init(int *fd_to_core,
   // create driver thread
   ret = pthread_create(&drv_thread, NULL, driver_thread_func, NULL);
   FATAL_ON(ret != 0);
+  drv_thread_started = true;
 
   ret = pthread_setname_np(drv_thread, "drv_thread");
   FATAL_ON(ret != 0);
@@ -317,8 +197,6 @@ pthread_t driver_spi_init(int *fd_to_core,
   TRACE_DRIVER("Opening spi file %s", device);
 
   TRACE_DRIVER("Init done");
-
-  return drv_thread;
 }
 
 static void* driver_thread_func(void* param)
@@ -356,26 +234,6 @@ static void* driver_thread_func(void* param)
     driver_epoll_callback_t callback = (driver_epoll_callback_t) event.data.ptr;
     callback();
   } //while(1)
-}
-
-/***************************************************************************//**
- * @brief Extracts the payload size from a HDLC header
- *
- * @return
- *   The extracted payload size, or -1 if the header is invalid
- ******************************************************************************/
-static int get_data_size(uint8_t *header)
-{
-  if (header[SLI_CPC_HDLC_FLAG_POS] != SLI_CPC_HDLC_FLAG_VAL) {
-    return -1;
-  }
-
-  if (sli_cpc_get_crc_sw(header, SLI_CPC_HDLC_HEADER_SIZE) != hdlc_get_hcs(header)) {
-    TRACE_DRIVER_INVALID_HEADER_CHECKSUM();
-    return -1;
-  }
-
-  return (int) hdlc_get_length(header);
 }
 
 static void driver_spi_event_core(void)
@@ -537,7 +395,7 @@ static void driver_spi_transaction(bool initiated_by_irq_line_event)
     return;
   }
 
-  // Pull transmit it from the core data socket.
+  // Pull the frame from the core data socket.
   if (want_to_transmit) {
     ssize_t read_retval = read(fd_core, tx_buffer, sizeof(tx_buffer));
     FATAL_SYSCALL_ON(read_retval < 0);
@@ -549,7 +407,7 @@ static void driver_spi_transaction(bool initiated_by_irq_line_event)
     if (want_to_transmit) {
       local_spi_transfer.tx_buf = (unsigned long) tx_buffer;
     } else {
-      local_spi_transfer.tx_buf = (unsigned long) NULL; // Send 0s in case we just to a read
+      local_spi_transfer.tx_buf = (unsigned long) NULL; // Send 0s in case we just do a read
     }
 
     local_spi_transfer.rx_buf = (unsigned long) rx_buffer;
@@ -601,7 +459,7 @@ static void driver_spi_transaction(bool initiated_by_irq_line_event)
   // Compute the size of the next payload we are going to clock
   {
     if (want_to_receive) {
-      int rx_payload_size = get_data_size(rx_buffer);
+      int rx_payload_size = hdlc_extract_payload_size(rx_buffer);
 
       if (rx_payload_size == -1) {
         rx_header_checksum_error = true;

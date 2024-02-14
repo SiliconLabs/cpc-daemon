@@ -22,14 +22,11 @@
 #include "cpcd/modes.h"
 #include "cpcd/security.h"
 #include "cpcd/server_core.h"
+#include "cpcd/exit.h"
 
 #include "driver/driver_uart.h"
 #include "driver/driver_spi.h"
-
-extern pthread_t driver_thread;
-extern pthread_t server_core_thread;
-
-void main_wait_crash_or_graceful_exit(void);
+#include "driver/driver_ezsp.h"
 
 void run_normal_mode(void)
 {
@@ -39,24 +36,24 @@ void run_normal_mode(void)
   // Init the driver
   {
     if (config.bus == UART) {
-      driver_thread = driver_uart_init(&fd_socket_driver_core,
-                                       &fd_socket_driver_core_notify,
-                                       config.uart_file,
-                                       config.uart_baudrate,
-                                       config.uart_hardflow);
+      driver_uart_init(&fd_socket_driver_core,
+                       &fd_socket_driver_core_notify,
+                       config.uart_file,
+                       config.uart_baudrate,
+                       config.uart_hardflow);
     } else if (config.bus == SPI) {
-      driver_thread = driver_spi_init(&fd_socket_driver_core,
-                                      &fd_socket_driver_core_notify,
-                                      config.spi_file,
-                                      config.spi_bitrate,
-                                      config.spi_irq_chip,
-                                      config.spi_irq_pin);
+      driver_spi_init(&fd_socket_driver_core,
+                      &fd_socket_driver_core_notify,
+                      config.spi_file,
+                      config.spi_bitrate,
+                      config.spi_irq_chip,
+                      config.spi_irq_pin);
     } else {
       BUG();
     }
   }
 
-  server_core_thread = server_core_init(fd_socket_driver_core, fd_socket_driver_core_notify, SERVER_CORE_MODE_NORMAL);
+  server_core_init(fd_socket_driver_core, fd_socket_driver_core_notify, SERVER_CORE_MODE_NORMAL);
 
 #if defined(ENABLE_ENCRYPTION)
   if (config.use_encryption == true) {
@@ -64,7 +61,8 @@ void run_normal_mode(void)
   }
 #endif
 
-  main_wait_crash_or_graceful_exit();
+  // Block until exit event
+  wait_crash_or_graceful_exit();
 }
 
 /*
@@ -81,15 +79,17 @@ bool is_bootloader_running(void)
     return secondary_running_bootloader;
   }
 
+  secondary_already_probed = true;
+
   if (config.bus == UART) {
     secondary_running_bootloader = driver_uart_is_bootloader_running(config.uart_file,
                                                                      config.uart_baudrate,
                                                                      config.uart_hardflow);
   } else if (config.bus == SPI) {
-    secondary_running_bootloader = driver_spi_is_bootloader_running(config.spi_file,
-                                                                    config.spi_bitrate,
-                                                                    config.spi_irq_chip,
-                                                                    config.spi_irq_pin);
+    secondary_running_bootloader = ezsp_spi_is_bootloader_running(config.spi_file,
+                                                                  config.spi_bitrate,
+                                                                  config.spi_irq_chip,
+                                                                  config.spi_irq_pin);
   } else {
     BUG();
   }

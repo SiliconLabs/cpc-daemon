@@ -563,7 +563,7 @@ static void core_process_rx_driver_notification(epoll_private_data_t *event_priv
   frame_type = hdlc_get_frame_type(frame->control);
 
   if (frame_type == SLI_CPC_HDLC_FRAME_TYPE_INFORMATION) {
-    if (frame->endpoint->state == SLI_CPC_STATE_CONNECTED) {
+    if (is_endpoint_connection_active(frame->endpoint)) {
       // Remember when we sent this i-frame in order to calculate round trip time
       // Only do so if this is not a re_transmit
       if (frame->re_transmit_count == 0u) {
@@ -831,7 +831,7 @@ static void core_process_rx_i_frame(frame_t *rx_frame)
 
   TRACE_ENDPOINT_RXD_DATA_FRAME(endpoint);
 
-  if (endpoint->id != 0 && (endpoint->state != SLI_CPC_STATE_CONNECTED || server_listener_list_empty(endpoint->id))) {
+  if (endpoint->id != 0 && (!is_endpoint_connection_active(endpoint) || server_listener_list_empty(endpoint->id))) {
     transmit_reject(endpoint, address, 0, HDLC_REJECT_UNREACHABLE_ENDPOINT);
     return;
   }
@@ -2074,7 +2074,7 @@ static void start_re_transmit_timer(sl_cpc_endpoint_t* endpoint, struct timespec
     offset_in_ms = 0;
   }
 
-  if (endpoint->state != SLI_CPC_STATE_CONNECTED) {
+  if (!is_endpoint_connection_active(endpoint)) {
     return; // Don't start the timer if we're not open.
             // This can happen if a packet was still not sent to the bus
             // and an endpoint closed right after.
