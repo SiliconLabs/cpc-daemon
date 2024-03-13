@@ -34,6 +34,7 @@
 #include "cpcd/sleep.h"
 #include "cpcd/utils.h"
 #include "cpcd/xmodem.h"
+#include "cpcd/endianness.h"
 
 #include "server_core/core/crc.h"
 #include "driver/driver_spi.h"
@@ -157,7 +158,7 @@ sl_status_t send_firmware(const char   * image_file,
         // 0x1A padding
         memset(frame.data + z, 0x1A, sizeof(frame.data) - z);
 
-        frame.crc = __builtin_bswap16(sli_cpc_get_crc_sw(frame.data, sizeof(frame.data)));
+        u16_to_be(sli_cpc_get_crc_sw(frame.data, sizeof(frame.data)), (uint8_t *)&frame.crc);
 
         frame.seq_neg = (uint8_t)(0xff - frame.seq);
 

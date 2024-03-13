@@ -44,7 +44,7 @@
  * Used to return the size of a system command buffer, primarily to pass to
  * sl_cpc_write.
  ******************************************************************************/
-#define SIZEOF_SYSTEM_COMMAND(command) (sizeof(sl_cpc_system_cmd_t) + command->length)
+#define SIZEOF_SYSTEM_COMMAND(command) (uint16_t)((sizeof(sl_cpc_system_cmd_t) + command->length))
 
 /***************************************************************************//**
  * Number of retries for set property endpoint closed.
@@ -74,7 +74,7 @@ static sl_slist_node_t *prop_last_status_callbacks;
 
 static void on_iframe_unsolicited(uint8_t endpoint_id, const void* data, size_t data_len);
 static void on_uframe_receive(uint8_t endpoint_id, const void* data, size_t data_len);
-static void on_reply(uint8_t endpoint_id, void *arg, void *answer, uint32_t answer_lenght);
+static void on_reply(uint8_t endpoint_id, void *arg, void *answer, uint32_t answer_length);
 static void on_timer_expired(epoll_private_data_t *private_data);
 static void write_command(sl_cpc_system_command_handle_t *command_handle);
 
@@ -316,7 +316,11 @@ void sl_cpc_system_cmd_noop(sl_cpc_system_noop_cmd_callback_t on_noop_reply,
 
     tx_command->command_id = CMD_SYSTEM_NOOP;
     tx_command->command_seq = command_handle->command_seq;
-    u16_to_le(0, (uint8_t *)(&tx_command->length));
+    tx_command->length = 0;
+
+    command_handle->command_length = SIZEOF_SYSTEM_COMMAND(command_handle->command);
+
+    u16_to_le(tx_command->length, (uint8_t *)(&tx_command->length));
   }
 
   write_command(command_handle);
@@ -351,7 +355,11 @@ void sl_cpc_system_cmd_reboot(sl_cpc_system_reset_cmd_callback_t on_reset_reply,
 
     tx_command->command_id = CMD_SYSTEM_RESET;
     tx_command->command_seq = command_handle->command_seq;
-    u16_to_le(0, (uint8_t *)(&tx_command->length));
+    tx_command->length = 0;
+
+    command_handle->command_length = SIZEOF_SYSTEM_COMMAND(command_handle->command);
+
+    u16_to_le(tx_command->length, (uint8_t *)(&tx_command->length));
   }
 
   write_command(command_handle);
@@ -547,8 +555,12 @@ void sl_cpc_system_cmd_property_get(sl_cpc_system_property_get_set_cmd_callback_
 
     tx_command->command_id = CMD_SYSTEM_PROP_VALUE_GET;
     tx_command->command_seq = command_handle->command_seq;
+    tx_command->length = (uint16_t) sizeof(property_id);
+
+    command_handle->command_length = SIZEOF_SYSTEM_COMMAND(command_handle->command);
+
     u32_to_le(property_id, (uint8_t *)(&tx_property_command->property_id));
-    u16_to_le(sizeof(property_id), (uint8_t *)(&tx_command->length));
+    u16_to_le(tx_command->length, (uint8_t *)(&tx_command->length));
   }
 
   write_command(command_handle);
@@ -570,6 +582,7 @@ void sl_cpc_system_cmd_property_set(sl_cpc_system_property_get_set_cmd_callback_
   sl_cpc_system_command_handle_t *command_handle;
 
   BUG_ON(on_property_set_reply == NULL);
+  BUG_ON(value_length == 0);
 
   {
     const size_t property_get_buffer_size = sizeof(sl_cpc_system_cmd_t) + sizeof(sl_cpc_property_id_t) + value_length;
@@ -589,47 +602,19 @@ void sl_cpc_system_cmd_property_set(sl_cpc_system_property_get_set_cmd_callback_
   /* Fill the system endpoint command buffer */
   {
     sl_cpc_system_cmd_t *tx_command = command_handle->command;
-    sl_cpc_system_property_cmd_t *tx_property_command = (sl_cpc_system_property_cmd_t *) tx_command->payload;;
+    sl_cpc_system_property_cmd_t *tx_property_command = (sl_cpc_system_property_cmd_t *) tx_command->payload;
 
     tx_command->command_id = CMD_SYSTEM_PROP_VALUE_SET;
     tx_command->command_seq = command_handle->command_seq;
     u32_to_le(property_id, (uint8_t *)(&tx_property_command->property_id));
 
-    /* Adapt the property value in function of the endianess of the system.
-     * We make the assumption here that if a property's length value is 2, 4 or 8 then
-     * we wanted to send a property value that was a u/int16_t, a u/int32_t or a u/int64_t
-     * respectively to begin with. System endpoint protocol doesn't have any other properties that have
-     * length other than those anyway (plus then unit 1 byte length, which doesn't need endianness
-     * awareness anyway). */
-    {
-      switch (value_length) {
-        case 0:
-          FATAL("Can't send a property-set request with value of length 0");
-          break;
+    memcpy(tx_property_command->payload, value, value_length);
 
-        case 1:
-          memcpy(tx_property_command->payload, value, value_length);
-          break;
+    tx_command->length = (uint16_t)(sizeof(property_id) + value_length);
 
-        case 2:
-          u16_to_le(*(const uint16_t *)value, tx_property_command->payload);
-          break;
+    command_handle->command_length = SIZEOF_SYSTEM_COMMAND(command_handle->command);
 
-        case 4:
-          u32_to_le(*(const uint32_t *)value, tx_property_command->payload);
-          break;
-
-        case 8:
-          u64_to_le(*(const uint64_t *)value, tx_property_command->payload);
-          break;
-
-        default:
-          memcpy(tx_property_command->payload, value, value_length);
-          break;
-      }
-    }
-
-    u16_to_le((uint16_t)(sizeof(property_id) + value_length), (uint8_t *)(&tx_command->length));
+    u16_to_le(tx_command->length, (uint8_t *)(&tx_command->length));
   }
 
   write_command(command_handle);
@@ -750,22 +735,24 @@ static void on_final_property_is(sl_cpc_system_command_handle_t * command_handle
 static void on_reply(uint8_t endpoint_id,
                      void *arg,
                      void *answer,
-                     uint32_t answer_lenght)
+                     uint32_t answer_length)
 {
   sl_cpc_system_command_handle_t *command_handle;
   size_t frame_type = (size_t)arg;
-  const uint8_t *frame_payload;
   sl_cpc_system_cmd_t system_cmd;
+  const sl_cpc_system_cmd_t *system_cmd_answer;
   const uint8_t *system_cmd_payload;
   size_t system_cmd_payload_length;
 
-  frame_payload = (const uint8_t *)answer;
-
-  memcpy(&system_cmd, frame_payload, sizeof(system_cmd));
-  system_cmd_payload = frame_payload + sizeof(system_cmd);
-  system_cmd_payload_length = answer_lenght - sizeof(system_cmd);
-
   BUG_ON(endpoint_id != 0);
+
+  system_cmd_answer = (const sl_cpc_system_cmd_t *)answer;
+  system_cmd.command_id = system_cmd_answer->command_id;
+  system_cmd.command_seq = system_cmd_answer->command_seq;
+  system_cmd.length = u16_from_le((const uint8_t *)&system_cmd_answer->length);
+
+  system_cmd_payload = (const uint8_t *)system_cmd_answer + sizeof(system_cmd);
+  system_cmd_payload_length = answer_length - sizeof(system_cmd);
   FATAL_ON(system_cmd.length != system_cmd_payload_length);
 
   /* Go through the list of pending requests to find the one for which this reply applies */
@@ -1062,7 +1049,7 @@ static void write_command(sl_cpc_system_command_handle_t *command_handle)
 
   core_write(SL_CPC_ENDPOINT_SYSTEM,
              (void *)command_handle->command,
-             SIZEOF_SYSTEM_COMMAND(command_handle->command),
+             command_handle->command_length,
              flags);
 
   TRACE_SYSTEM("Submitted command_id #%d command_seq #%d", command_handle->command->command_id, command_handle->command_seq);

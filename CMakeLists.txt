@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 
 project(cpcd
-  VERSION "4.3.2.0"
+  VERSION "4.3.3.0"
   LANGUAGES C)
 set(CPC_LIBRARY_API_VERSION "3")
 set(CPC_PROTOCOL_VERSION "4")

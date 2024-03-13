@@ -467,10 +467,14 @@ static void server_process_epoll_fd_ctrl_data_socket(epoll_private_data_t *priva
     case EXCHANGE_MAX_WRITE_SIZE_QUERY:
       /* Client requested maximum write size */
     {
+      uint32_t rx_capability;
+
       TRACE_SERVER("Received an maximum write size query");
 
       BUG_ON(buffer_len != sizeof(cpcd_exchange_buffer_t) + sizeof(uint32_t));
-      size_t rx_capability = (size_t)server_core_get_secondary_rx_capability();
+
+      rx_capability = server_core_get_secondary_rx_capability();
+
       memcpy(interface_buffer->payload, &rx_capability, sizeof(uint32_t));
 
       ssize_t ret = send(fd_ctrl_data_socket, interface_buffer, buffer_len, 0);

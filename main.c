@@ -131,20 +131,20 @@ int main(int argc, char *argv[])
     /* Block signals so that they aren't handled
        according to their default dispositions. */
     ret = sigprocmask(SIG_BLOCK, &mask, NULL);
-    FATAL_ON(ret == -1);
+    FATAL_SYSCALL_ON(ret == -1);
 
     /* Create crash fd and signal fd */
     {
       main_crash_eventfd = eventfd(0, //Start with 0 value
                                    EFD_CLOEXEC);
-      FATAL_ON(main_crash_eventfd == -1);
+      FATAL_SYSCALL_ON(main_crash_eventfd == -1);
 
       main_graceful_exit_eventfd = eventfd(0, //Start with 0 value
                                            EFD_CLOEXEC);
-      FATAL_ON(main_graceful_exit_eventfd == -1);
+      FATAL_SYSCALL_ON(main_graceful_exit_eventfd == -1);
 
       main_graceful_exit_signalfd = signalfd(-1, &mask, SFD_CLOEXEC);
-      FATAL_ON(main_graceful_exit_signalfd == -1);
+      FATAL_SYSCALL_ON(main_graceful_exit_signalfd == -1);
     }
 
     /* Setup epoll for those fds */

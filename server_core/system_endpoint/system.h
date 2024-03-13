@@ -508,6 +508,7 @@ typedef struct __attribute__((packed)) {
 typedef struct  {
   sl_slist_node_t node_commands;
   sl_cpc_system_cmd_t *command; // has to be malloc'ed
+  uint16_t command_length;
   void *on_final;
   uint8_t retry_count;
   bool retry_forever;
@@ -560,11 +561,11 @@ typedef void (*sl_cpc_system_reset_cmd_callback_t) (sl_cpc_system_command_handle
  *
  * @param
  *   [in] property_id
- *     The id of the property from the previously issued property-get/set
+ *     The id of the property from the previously issued property-get/set.
  *
  *   [in] property_value
- *     A pointer to the value returned by the SECONDARY. Has to be casted to an
- *     appropriate value in function of the property id.
+ *     A pointer to the property value returned by the Secondary.
+ *     Note that the content is in Little-Endian.
  *
  *   [in] property_length
  *     The length of the property value in bytes.
@@ -597,6 +598,23 @@ void sl_cpc_system_cmd_reboot(sl_cpc_system_reset_cmd_callback_t on_reset_reply,
 
 /***************************************************************************//**
  * Sends a property-get query
+ *
+ * @param
+ *   [in] on_property_get_reply
+ *     Callback for the property-get command.
+ *
+ *   [in] property_id
+ *     The id of the property.
+ *
+ *   [in] retry_count_max
+ *     The number of retry attempts.
+ *
+ *   [in] retry_timeout_us
+ *     The timeout value in microseconds for each retry attempt.
+ *
+ *   [in] frame_type
+ *     The type of the frame.
+ *
  ******************************************************************************/
 void sl_cpc_system_cmd_property_get(sl_cpc_system_property_get_set_cmd_callback_t on_property_get_reply,
                                     sl_cpc_property_id_t property_id,
@@ -606,6 +624,30 @@ void sl_cpc_system_cmd_property_get(sl_cpc_system_property_get_set_cmd_callback_
 
 /***************************************************************************//**
  * Sends a property-set query
+ *
+ * @param
+ *   [in] on_property_set_reply
+ *     Callback for the property-set command.
+ *
+ *   [in] property_id
+ *     The id of the property.
+ *
+ *   [in] retry_count_max
+ *     The number of retry attempts.
+ *
+ *   [in] retry_timeout_us
+ *     The timeout value in microseconds for each retry attempt.
+ *
+ *   [in] value
+ *     A pointer to the properly value.
+ *     Note that the content must be converted to Little-Endian.
+ *
+ *   [in] value_length
+ *     The length of the property value in bytes.
+ *
+ *   [in] frame_type
+ *     The type of the frame.
+ *
  ******************************************************************************/
 void sl_cpc_system_cmd_property_set(sl_cpc_system_property_get_set_cmd_callback_t on_property_set_reply,
                                     uint8_t retry_count_max,

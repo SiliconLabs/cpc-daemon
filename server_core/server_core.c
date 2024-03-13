@@ -351,9 +351,9 @@ static void property_set_reset_mode_callback(sl_cpc_system_command_handle_t *han
 
       BUG_ON(property_length != sizeof(sl_cpc_system_reboot_mode_t));
 
-      sl_cpc_system_reboot_mode_t* mode = (sl_cpc_system_reboot_mode_t*) property_value;
+      sl_cpc_system_reboot_mode_t mode = (sl_cpc_system_reboot_mode_t) u32_from_le((const uint8_t *)property_value);
 
-      switch (*mode) {
+      switch (mode) {
         case REBOOT_APPLICATION:
           if (pending_mode == REBOOT_BOOTLOADER) {
             FATAL("The secondary does not support rebooting into bootloader mode: application reboot received as a confirmation instead of bootloader.");
@@ -537,7 +537,7 @@ static void property_get_secondary_bootloader_info(sl_cpc_system_command_handle_
     //  [0]: bootloader type
     //  [1]: version (unused for now)
     //  [2]: capability mask (unused for now)
-    server_core_secondary_bootloader_type = u32_from_le((const uint8_t *)property_value + 0);
+    server_core_secondary_bootloader_type = u32_from_le((const uint8_t *)property_value);
 
     BUG_ON(server_core_secondary_bootloader_type >= SL_CPC_BOOTLOADER_UNKNOWN);
 
@@ -560,9 +560,9 @@ static void property_get_secondary_cpc_version_callback(sl_cpc_system_command_ha
                                                         size_t property_length,
                                                         sl_status_t status)
 {
-  uint32_t version[3];
-
   (void) handle;
+
+  uint32_t version[3];
 
   if ( (property_id != PROP_SECONDARY_CPC_VERSION)
        || (status != SL_STATUS_OK && status != SL_STATUS_IN_PROGRESS)
@@ -759,6 +759,7 @@ static void process_reset_sequence(bool firmware_reset_mode)
 
         pending_mode = reboot_mode;
 
+        u32_to_le(reboot_mode, (uint8_t *)&reboot_mode);
         sl_cpc_system_cmd_property_set(property_set_reset_mode_callback,
                                        1,       /* retry once */
                                        2000000, /* 2s between retries*/
@@ -962,6 +963,7 @@ static void process_reboot_enter_bootloader(void)
 
       pending_mode = reboot_mode;
 
+      u32_to_le(reboot_mode, (uint8_t *)&reboot_mode);
       sl_cpc_system_cmd_property_set(property_set_reset_mode_callback,
                                      1,         /* retry once */
                                      2000000,   /* 2s between retries*/

@@ -281,7 +281,7 @@ void property_get_single_endpoint_encryption_state_and_reply_to_pending_open_cal
     } else if (property_id == PROP_LAST_STATUS) {
       sl_cpc_system_status_t status;
 
-      status = *((sl_cpc_system_status_t*)property_value);
+      status = (sl_cpc_system_status_t) u32_from_le((const uint8_t *)property_value);
       FATAL_ON(status != STATUS_PROP_NOT_FOUND);
 
       encryption = true;

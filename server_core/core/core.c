@@ -470,7 +470,49 @@ static void core_update_secondary_debug_counter(sl_cpc_system_command_handle_t *
   FATAL_ON(property_id != PROP_CORE_DEBUG_COUNTERS);
   FATAL_ON(property_value == NULL || property_length > sizeof(core_debug_counters_t));
 
-  memcpy(&secondary_core_debug_counters, property_value, property_length);
+  secondary_core_debug_counters.endpoint_opened = u32_from_le((const uint8_t *)property_value);
+  property_value = property_value + sizeof(secondary_core_debug_counters.endpoint_opened);
+
+  secondary_core_debug_counters.endpoint_closed = u32_from_le((const uint8_t *)property_value);
+  property_value = property_value + sizeof(secondary_core_debug_counters.endpoint_closed);
+
+  secondary_core_debug_counters.rxd_frame = u32_from_le((const uint8_t *)property_value);
+  property_value = property_value + sizeof(secondary_core_debug_counters.rxd_frame);
+
+  secondary_core_debug_counters.rxd_valid_iframe = u32_from_le((const uint8_t *)property_value);
+  property_value = property_value + sizeof(secondary_core_debug_counters.rxd_valid_iframe);
+
+  secondary_core_debug_counters.rxd_valid_uframe = u32_from_le((const uint8_t *)property_value);
+  property_value = property_value + sizeof(secondary_core_debug_counters.rxd_valid_uframe);
+
+  secondary_core_debug_counters.rxd_valid_sframe = u32_from_le((const uint8_t *)property_value);
+  property_value = property_value + sizeof(secondary_core_debug_counters.rxd_valid_sframe);
+
+  secondary_core_debug_counters.rxd_data_frame_dropped = u32_from_le((const uint8_t *)property_value);
+  property_value = property_value + sizeof(secondary_core_debug_counters.rxd_data_frame_dropped);
+
+  secondary_core_debug_counters.txd_reject_destination_unreachable = u32_from_le((const uint8_t *)property_value);
+  property_value = property_value + sizeof(secondary_core_debug_counters.txd_reject_destination_unreachable);
+
+  secondary_core_debug_counters.txd_reject_error_fault = u32_from_le((const uint8_t *)property_value);
+  property_value = property_value + sizeof(secondary_core_debug_counters.txd_reject_error_fault);
+
+  secondary_core_debug_counters.txd_completed = u32_from_le((const uint8_t *)property_value);
+  property_value = property_value + sizeof(secondary_core_debug_counters.txd_completed);
+
+  secondary_core_debug_counters.retxd_data_frame = u32_from_le((const uint8_t *)property_value);
+  property_value = property_value + sizeof(secondary_core_debug_counters.retxd_data_frame);
+
+  secondary_core_debug_counters.driver_error = u32_from_le((const uint8_t *)property_value);
+  property_value = property_value + sizeof(secondary_core_debug_counters.driver_error);
+
+  secondary_core_debug_counters.driver_packet_dropped = u32_from_le((const uint8_t *)property_value);
+  property_value = property_value + sizeof(secondary_core_debug_counters.driver_packet_dropped);
+
+  secondary_core_debug_counters.invalid_header_checksum = u32_from_le((const uint8_t *)property_value);
+  property_value = property_value + sizeof(secondary_core_debug_counters.invalid_header_checksum);
+
+  secondary_core_debug_counters.invalid_payload_checksum = u32_from_le((const uint8_t *)property_value);
 }
 
 static void core_fetch_secondary_debug_counters(epoll_private_data_t *event_private_data)

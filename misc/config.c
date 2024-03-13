@@ -437,6 +437,10 @@ static void config_parse_cli_arg(int argc, char *argv[])
     opt = getopt_long(argc, argv, "c:hupvrs:f:k:a:b:t:w:el", argv_opt_list, NULL);
 
     if (opt == -1) {
+      if (optind < argc) {
+        fprintf(stderr, "Unknown option: %s\n", argv[optind]);
+        config_print_help(stderr, 1);
+      }
       break;
     }
 
@@ -523,6 +527,7 @@ static void config_parse_cli_arg(int argc, char *argv[])
         break;
       case '?':
       default:
+        fprintf(stderr, "Unknown option: %s", argv[optind]);
         config_print_help(stderr, 1);
         break;
     }
