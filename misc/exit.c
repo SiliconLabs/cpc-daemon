@@ -65,20 +65,20 @@ void exit_init(pthread_t main_thread_id)
   // Block signals so that they aren't handled
   // according to their default dispositions.
   ret = sigprocmask(SIG_BLOCK, &mask, NULL);
-  FATAL_ON(ret == -1);
+  FATAL_SYSCALL_ON(ret == -1);
 
   // Create crash fd and signal fd
   {
     crash_eventfd = eventfd(0,   // Start with 0 value
                             EFD_CLOEXEC);
-    FATAL_ON(crash_eventfd == -1);
+    FATAL_SYSCALL_ON(crash_eventfd == -1);
 
     graceful_exit_eventfd = eventfd(0,   // Start with 0 value
                                     EFD_CLOEXEC);
-    FATAL_ON(graceful_exit_eventfd == -1);
+    FATAL_SYSCALL_ON(graceful_exit_eventfd == -1);
 
     graceful_exit_signalfd = signalfd(-1, &mask, SFD_CLOEXEC);
-    FATAL_ON(graceful_exit_signalfd == -1);
+    FATAL_SYSCALL_ON(graceful_exit_signalfd == -1);
   }
 
   // Setup epoll for those fds

@@ -86,8 +86,8 @@ static bool delimit_and_push_frames_to_core(uint8_t *buffer, size_t *buffer_head
 /*
  * Insures the start of the buffer is aligned with the start of a valid checksum
  * and re-synch in case the buffer starts with garbage.
- */
-static bool header_re_synch(uint8_t *buffer, size_t *buffer_head);
+ ******************************************************************************/
+static bool header_synch(uint8_t *buffer, size_t *buffer_head);
 
 void driver_uart_init(int *fd_to_core, int *fd_notify_core, const char *device, unsigned int baudrate, bool hardflow)
 {
@@ -521,9 +521,9 @@ static void driver_uart_process_uart(void)
   while (1) {
     switch (state) {
       case EXPECTING_HEADER:
-        /* Synchronize the start of 'buffer' with the start of a valid header with valid checksum. */
-        if (header_re_synch(buffer, &buffer_head)) {
-          /* We are synchronized on a valid header, start delimiting the data that follows into a frame. */
+        // Synchronize the start of 'buffer' with the start of a valid header with valid checksum.
+        if (header_synch(buffer, &buffer_head)) {
+          // We are synchronized on a valid header, start delimiting the data that follows into a frame.
           state = EXPECTING_PAYLOAD;
         } else {
           /* We went through all the data contained in 'buffer' and haven't synchronized on a header.
@@ -588,10 +588,10 @@ static bool validate_header(uint8_t *header_start)
   return true;
 }
 
-static bool header_re_synch(uint8_t *buffer, size_t *buffer_head)
+static bool header_synch(uint8_t *buffer, size_t *buffer_head)
 {
   if (*buffer_head < SLI_CPC_HDLC_HEADER_RAW_SIZE) {
-    /* There's not enough data for a header, nothing to re-synch */
+    // There's not enough data for a header, nothing to synch
     return false;
   }
 
@@ -599,15 +599,12 @@ static bool header_re_synch(uint8_t *buffer, size_t *buffer_head)
    * then we can slide it 'num_header_combination' times over the data. */
   const size_t num_header_combination = *buffer_head - SLI_CPC_HDLC_HEADER_RAW_SIZE + 1;
 
-  TRACE_DRIVER("re-sync : Will test %i header combination", num_header_combination);
-
   size_t i;
 
   for (i = 0; i != num_header_combination; i++) {
     if (validate_header(&buffer[i])) {
       if (i == 0) {
-        /* The start of the buffer is aligned with a good header, don't do anything */
-        TRACE_DRIVER("re-sync : The start of the buffer is aligned with a good header");
+        // The start of the buffer is aligned with a good header, don't do anything
       } else {
         /* We had 'i' number of bad bytes until we struck a good header, move back the data
          * to the beginning of the buffer */
@@ -615,7 +612,6 @@ static bool header_re_synch(uint8_t *buffer, size_t *buffer_head)
 
         /* We crushed 'i' bytes at the start of the buffer */
         *buffer_head -= i;
-        TRACE_DRIVER("re-sync : had '%u' number of bad bytes until we struck a good header", i);
       }
       return true;
     } else {

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 
 project(cpcd
-  VERSION "4.4.1.0"
+  VERSION "4.4.2.0"
   LANGUAGES C)
 set(CPC_LIBRARY_API_VERSION "3")
 set(CPC_PROTOCOL_VERSION "5")
@@ -88,6 +88,7 @@ endif()
 add_library(cpc SHARED)
 target_stds(cpc C 99 POSIX 2008)
 target_link_libraries(cpc PRIVATE Interface::Warnings)
+target_link_libraries(cpc PRIVATE Threads::Threads)
 target_sources(cpc PRIVATE misc/sleep.c)
 target_sources(cpc PRIVATE misc/sl_slist.c)
 target_sources(cpc PRIVATE lib/sl_cpc.c)
@@ -98,6 +99,7 @@ if(COMPILE_LTTNG)
   target_link_libraries(cpc PRIVATE LTTng::UST)
 endif()
 
+target_include_directories(cpc PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/lib")
 target_include_directories(cpc PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_include_directories(cpc PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_include_directories(cpc PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/autogen")
@@ -112,7 +114,7 @@ install(
 
 # CPCd Config file path
 if(NOT DEFINED CPCD_CONFIG_FILE_PATH)
-  set(CPCD_CONFIG_FILE_PATH ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_SYSCONFDIR}/cpcd.conf)
+  set(CPCD_CONFIG_FILE_PATH "${CMAKE_INSTALL_FULL_SYSCONFDIR}/cpcd.conf")
 endif()
 add_definitions(-DCPCD_CONFIG_FILE_PATH="${CPCD_CONFIG_FILE_PATH}")
 message(STATUS "CPCD_CONFIG_FILE_PATH=${CPCD_CONFIG_FILE_PATH}")

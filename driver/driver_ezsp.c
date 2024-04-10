@@ -675,8 +675,17 @@ static sl_status_t firmware_upgrade_fsm(struct fwu_image *image,
     status = wait_irq_falling_edge(spi, IRQ_FALLING_EDGE_TIMEOUT_MS);
 
     if (status == SL_STATUS_TIMEOUT) {
-      TRACE_EZSP_SPI("[FAIL] timeout");
-      return SL_STATUS_TIMEOUT;
+      if (gpio_read(spi->irq_gpio) == GPIO_VALUE_HIGH) {
+        TRACE_EZSP_SPI("[FAIL] timeout");
+        return SL_STATUS_TIMEOUT;
+      } else {
+        // On Series 1, the chip reset occurring when asking to reboot into bootloader
+        // seems to reset the GPIO peripheral way earlier than Series 2, resulting
+        // in the IRQ falling-edge happening before the SPI driver closes the IRQ
+        // pin and this EZSP driver opening it. This results in the event being lost.
+        // By doing a second check after the timeout, if the pin is low we can assume
+        // that the falling-edge occurred and it was just missed.
+      }
     }
 
     gpio_clear_irq(spi->irq_gpio);
