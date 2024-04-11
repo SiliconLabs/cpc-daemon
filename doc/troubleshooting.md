@@ -20,6 +20,16 @@ The secondary must have `SL_CPC_DEBUG_CORE_EVENT_COUNTERS` enabled.
 This can be done with the following configuration in the Secondary Device (Co-Processor) component:
 <br>![StudioCoreCounterConfig](img/StudioCoreCounters.jpg)
 
+## CPC Journal
+Adding the `cpc_journal` component enables efficient logging of CPC events. This component records events in a circular buffer. Once the buffer reaches its capacity, it automatically discards the oldest entry if it hasn't been consumed. Entries from this journal can be printed either through IOStream or the CLI.
+
+For projects with a command line interface, the `cpc_journal_cli` component introduces the `print_cpc_journal` command. This command prints the contents of the CPC Journal in a CSV format via the CLI.
+
+Additionally, projects with the `iostream` component can use `sl_cpc_journal_print`. 
+This function allows for printing the journal's contents.
+
+**Note: Entries are consumed when printed**
+
 ## CPCd Traces
 Traces are additional logs about the daemon events.
 The traces can be enabled in the CPCd configuration file.
@@ -35,6 +45,21 @@ To minimize performance impact, save files to volatile storage.
 #### Frame Tracing
 If the issue is reproduced fairly quickly, the `enable_frame_trace` configuration
 can be used to enable an additional level of information to the traces.
+
+#### Log Rotation
+When an issue takes a longer time to reproduce, trace files might occupy excessive space on the target. 
+To manage this, the [logrotate](https://linux.die.net/man/8/logrotate) tool can be utilized to consolidate logs. 
+
+Below is an example of a logrotate configuration, that will retain 10 log files,
+each up to 10 MB in size, and rotate them accordingly. 
+Log compression can be done by adding the `compress` option in the configuration.
+```
+/home/pi/cpcd_log/*.log {
+    size 10M
+    rotate 10
+    copytruncate
+}
+```
 
 ## Encryption Validation: Validate same behavior without encryption.
 Refer to the [Security](security.md) section for more information.

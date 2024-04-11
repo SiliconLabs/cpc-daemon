@@ -76,10 +76,10 @@ config_t config = {
   .binding_method = NULL,
 
   .stdout_tracing = false,
-  .file_tracing = true, /* Set to true to have the chance to catch early traces. It will be set to false after config file parsing. */
+  .file_tracing = true, // Set to true to have the chance to catch early traces. It will be set to false after config file parsing.
   .lttng_tracing = false,
   .enable_frame_trace = false,
-  .traces_folder = "/dev/shm/cpcd-traces", /* must be mounted on a tmpfs */
+  .traces_folder = "/dev/shm/cpcd-traces", // must be mounted on a tmpfs
 
   .bus = UNCHOSEN,
 
@@ -95,14 +95,14 @@ config_t config = {
   .spi_irq_pin = 0,
 
   // Firmware update
-  .fu_reset_chip = NULL,
-  .fu_spi_reset_pin = -1,
-  .fu_wake_chip = NULL,
-  .fu_spi_wake_pin = -1,
-  .fu_recovery_pins_enabled = false,
-  .fu_connect_to_bootloader = false,
-  .fu_enter_bootloader = false,
-  .fu_file = NULL,
+  .fwu_reset_chip = NULL,
+  .fwu_spi_reset_pin = -1,
+  .fwu_wake_chip = NULL,
+  .fwu_spi_wake_pin = -1,
+  .fwu_recovery_pins_enabled = false,
+  .fwu_connect_to_bootloader = false,
+  .fwu_enter_bootloader = false,
+  .fwu_file = NULL,
 
   .restart_cpcd = false,
 
@@ -120,7 +120,7 @@ config_t config = {
 
   .stats_interval = 0,
 
-  .rlimit_nofile = 2000, /* New number of concurrent opened file descriptor */
+  .rlimit_nofile = 2000, // New number of concurrent opened file descriptor
 };
 
 /*******************************************************************************
@@ -280,15 +280,15 @@ static void config_print(void)
   CONFIG_PRINT_STR_COND(config.spi_irq_chip, config.bus == SPI);
   CONFIG_PRINT_DEC_COND(config.spi_irq_pin, config.bus == SPI);
 
-  CONFIG_PRINT_BOOL_TO_STR(config.fu_recovery_pins_enabled);
-  CONFIG_PRINT_STR_COND(config.fu_reset_chip, config.fu_recovery_pins_enabled);
-  CONFIG_PRINT_DEC_COND(config.fu_spi_reset_pin, config.fu_recovery_pins_enabled);
-  CONFIG_PRINT_STR_COND(config.fu_wake_chip, config.fu_recovery_pins_enabled);
-  CONFIG_PRINT_DEC_COND(config.fu_spi_wake_pin, config.fu_recovery_pins_enabled);
+  CONFIG_PRINT_BOOL_TO_STR(config.fwu_recovery_pins_enabled);
+  CONFIG_PRINT_STR_COND(config.fwu_reset_chip, config.fwu_recovery_pins_enabled);
+  CONFIG_PRINT_DEC_COND(config.fwu_spi_reset_pin, config.fwu_recovery_pins_enabled);
+  CONFIG_PRINT_STR_COND(config.fwu_wake_chip, config.fwu_recovery_pins_enabled);
+  CONFIG_PRINT_DEC_COND(config.fwu_spi_wake_pin, config.fwu_recovery_pins_enabled);
 
-  CONFIG_PRINT_BOOL_TO_STR(config.fu_connect_to_bootloader);
-  CONFIG_PRINT_BOOL_TO_STR(config.fu_enter_bootloader);
-  CONFIG_PRINT_STR(config.fu_file);
+  CONFIG_PRINT_BOOL_TO_STR(config.fwu_connect_to_bootloader);
+  CONFIG_PRINT_BOOL_TO_STR(config.fwu_enter_bootloader);
+  CONFIG_PRINT_STR(config.fwu_file);
   CONFIG_PRINT_BOOL_TO_STR(config.restart_cpcd);
 
   CONFIG_PRINT_STR(config.board_controller_ip_addr);
@@ -437,6 +437,10 @@ static void config_parse_cli_arg(int argc, char *argv[])
     opt = getopt_long(argc, argv, "c:hupvrs:f:k:a:b:t:w:el", argv_opt_list, NULL);
 
     if (opt == -1) {
+      if (optind < argc) {
+        fprintf(stderr, "Unknown option: %s\n", argv[optind]);
+        config_print_help(stderr, 1);
+      }
       break;
     }
 
@@ -494,7 +498,7 @@ static void config_parse_cli_arg(int argc, char *argv[])
         FATAL_ON(config.binding_key_file == NULL);
         break;
       case 'f':
-        config.fu_file = optarg;
+        config.fwu_file = optarg;
         if (config.operation_mode == MODE_NORMAL) {
           config.operation_mode = MODE_FIRMWARE_UPDATE;
         } else {
@@ -516,13 +520,14 @@ static void config_parse_cli_arg(int argc, char *argv[])
         config.board_controller_ip_addr = optarg;
         break;
       case 'l':
-        config.fu_connect_to_bootloader = true;
+        config.fwu_connect_to_bootloader = true;
         break;
       case 'e':
-        config.fu_enter_bootloader = true;
+        config.fwu_enter_bootloader = true;
         break;
       case '?':
       default:
+        fprintf(stderr, "Unknown option: %s", argv[optind]);
         config_print_help(stderr, 1);
         break;
     }
@@ -704,13 +709,13 @@ static void config_parse_config_file(void)
     FATAL("Could not open the configuration file under: %s, please install the configuration file there or provide a valid path with --conf\n", config.file_path);
   }
 
-  /* Iterate through every line of the file*/
+  // Iterate through every line of the file
   while (fgets(line, sizeof(line), config_file) != NULL) {
     if (is_comment_or_newline(line)) {
       continue;
     }
 
-    /* Extract name=value pair */
+    // Extract name=value pair
     if (sscanf(line, "%127[^: ]: %127[^\r\n #]%*c", name, val) != 2) {
       FATAL("Config file line \"%s\" doesn't respect syntax. Expecting YAML format (key: value). Please refer to the provided cpcd.conf", line);
     }
@@ -743,23 +748,23 @@ static void config_parse_config_file(void)
       }
     } else if (0 == strcmp(name, "bootloader_recovery_pins_enabled")) {
       if (0 == strcmp(val, "true")) {
-        config.fu_recovery_pins_enabled = true;
+        config.fwu_recovery_pins_enabled = true;
       } else if (0 == strcmp(val, "false")) {
-        config.fu_recovery_pins_enabled = false;
+        config.fwu_recovery_pins_enabled = false;
       } else {
         FATAL("Config file error : bad bootloader_recovery_pins_enabled value");
       }
     } else if (0 == strcmp(name, "bootloader_wake_gpio_chip")) {
-      config.fu_wake_chip = strdup(val);
+      config.fwu_wake_chip = strdup(val);
     } else if (0 == strcmp(name, "bootloader_wake_gpio")) {
-      config.fu_spi_wake_pin = (int)strtol(val, &endptr, 10);
+      config.fwu_spi_wake_pin = (int)strtol(val, &endptr, 10);
       if (*endptr != '\0') {
         FATAL("Bad config line \"%s\"", line);
       }
     } else if (0 == strcmp(name, "bootloader_reset_gpio_chip")) {
-      config.fu_reset_chip = strdup(val);
+      config.fwu_reset_chip = strdup(val);
     } else if (0 == strcmp(name, "bootloader_reset_gpio")) {
-      config.fu_spi_reset_pin = (int)strtol(val, &endptr, 10);
+      config.fwu_spi_reset_pin = (int)strtol(val, &endptr, 10);
       if (*endptr != '\0') {
         FATAL("Bad config line \"%s\"", line);
       }
@@ -870,12 +875,12 @@ static void prevent_device_collision(const char* const device_name)
 {
   int tmp_fd = open(device_name, O_RDWR | O_CLOEXEC);
 
-  /* Try to apply a cooperative exclusive file lock on the device file. Don't block */
+  // Try to apply a cooperative exclusive file lock on the device file. Don't block
   int ret = flock(tmp_fd, LOCK_EX | LOCK_NB);
 
   if (ret == 0) {
-    /* The device file is free to use, leave this file descriptor open
-     * to preserve the lock. */
+    // The device file is free to use, leave this file descriptor open
+    // to preserve the lock.
   } else if (errno == EWOULDBLOCK) {
     FATAL("The device \"%s\" is locked by another cpcd instance", device_name);
   } else {
@@ -892,27 +897,27 @@ static void prevent_instance_collision(const char* const instance_name)
   struct sockaddr_un name;
   int ctrl_sock_fd;
 
-  /* Create datagram socket for control */
+  // Create datagram socket for control
   ctrl_sock_fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
   FATAL_SYSCALL_ON(ctrl_sock_fd < 0);
 
-  /* Clear struct for portability */
+  // Clear struct for portability
   memset(&name, 0, sizeof(name));
 
   name.sun_family = AF_UNIX;
 
-  /* Create the control socket path */
+  // Create the control socket path
   {
     int nchars;
     const size_t size = sizeof(name.sun_path) - sizeof('\0');
 
     nchars = snprintf(name.sun_path, size, "%s/cpcd/%s/ctrl.cpcd.sock", config.socket_folder, instance_name);
 
-    /* Make sure the path fitted entirely */
+    // Make sure the path fitted entirely
     FATAL_ON(nchars < 0 || (size_t) nchars >= size);
   }
 
-  /* Try to connect to the socket in order to see if we collide with another daemon */
+  // Try to connect to the socket in order to see if we collide with another daemon
   {
     int ret;
 
@@ -923,14 +928,14 @@ static void prevent_instance_collision(const char* const instance_name)
     if (ret == 0) {
       FATAL("Another daemon instance is already running with the same instance name : %s.", name.sun_path);
     } else {
-      /* good to go */
+      // good to go
     }
   }
 }
 
 static void config_validate_configuration(void)
 {
-  /* Validate bus configuration */
+  // Validate bus configuration
   {
     if (config.bus == SPI) {
       if (config.spi_file == NULL) {
@@ -956,10 +961,9 @@ static void config_validate_configuration(void)
   prevent_instance_collision(config.instance_name);
 
   if (config.operation_mode == MODE_FIRMWARE_UPDATE) {
-    if (access(config.fu_file, F_OK | R_OK) != 0) {
-      FATAL("Firmware update file (%s) : %s", config.fu_file, strerror(errno));
+    if (access(config.fwu_file, F_OK | R_OK) != 0) {
+      FATAL("Firmware update file (%s) : %s", config.fwu_file, strerror(errno));
     }
-    /* TODO : Test for proper file extension and/or whether it is a valid image file for the bootloader */
   }
 
   if (config.use_encryption) {
@@ -1005,32 +1009,32 @@ static void config_validate_configuration(void)
     }
   }
 
-  if (config.fu_connect_to_bootloader && config.operation_mode != MODE_FIRMWARE_UPDATE) {
+  if (config.fwu_connect_to_bootloader && config.operation_mode != MODE_FIRMWARE_UPDATE) {
     FATAL("--connect-to-bootloader only supported with --firmware-update");
   }
 
-  if (config.fu_connect_to_bootloader && config.fu_enter_bootloader) {
+  if (config.fwu_connect_to_bootloader && config.fwu_enter_bootloader) {
     FATAL("Cannot select both --enter-bootloader and --connect-to-bootloader");
   }
 
-  if (config.fu_recovery_pins_enabled) {
+  if (config.fwu_recovery_pins_enabled) {
     if (config.application_version_validation != NULL) {
       FATAL("-a/--app-version is not compatible with bootloader_recovery_pins_enabled");
     }
 
     // this is to support calls to reboot_secondary_with_pins_into_bootloader()
-    if (config.fu_spi_wake_pin == -1 || config.fu_spi_reset_pin == -1) {
+    if (config.fwu_spi_wake_pin == -1 || config.fwu_spi_reset_pin == -1) {
       FATAL("bootloader_wake_gpio and bootloader_reset_gpio required "
             "but not set in config");
     }
 
-    if (config.fu_wake_chip == NULL || config.fu_reset_chip == NULL) {
+    if (config.fwu_wake_chip == NULL || config.fwu_reset_chip == NULL) {
       FATAL("Recovery pins are enabled, values are required for "
             "bootloader_wake_gpio_chip and bootloader_reset_gpio_chip");
     }
   }
 
-  if (config.fu_enter_bootloader) {
+  if (config.fwu_enter_bootloader) {
     config.operation_mode = MODE_FIRMWARE_UPDATE;
   }
 
@@ -1048,8 +1052,8 @@ static void config_set_rlimit_nofile(void)
   struct rlimit limit;
   int ret;
 
-  /* Make sure RLIMIT_NOFILE (number of concurrent opened file descriptor)
-   * is at least rlimit_nofile  */
+  // Make sure RLIMIT_NOFILE (number of concurrent opened file descriptor)
+  // is at least rlimit_nofile
 
   ret = getrlimit(RLIMIT_NOFILE, &limit);
   FATAL_SYSCALL_ON(ret < 0);

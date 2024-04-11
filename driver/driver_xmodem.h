@@ -22,9 +22,9 @@
 
 #include "cpcd/sl_status.h"
 
-sl_status_t xmodem_send(const char   *image_file,
-                        const char   *dev_name,
-                        unsigned int bitrate,
-                        bool         hardflow);
+sl_status_t xmodem_uart_firmware_upgrade(const char   *image_file,
+                                         const char   *dev_name,
+                                         unsigned int bitrate,
+                                         bool         hardflow);
 
 #endif //DRIVER_XMODEM_H

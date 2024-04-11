@@ -18,6 +18,7 @@
 #include <sys/epoll.h>
 #include <unistd.h>
 #include <string.h>
+#include <errno.h>
 
 #include "cpcd/config.h"
 #include "cpcd/gpio.h"
@@ -34,27 +35,12 @@
 #include "driver/driver_ezsp.h"
 #include "version.h"
 
-#define MAX_EPOLL_EVENTS 10
-#define RESET_TIMEOUT_MS 5000
-
-extern pthread_t driver_thread;
-extern pthread_t server_core_thread;
+#define RESET_TIMEOUT_MS 500
 
 extern char *server_core_secondary_app_version;
 extern uint8_t server_core_secondary_protocol_version;
 extern sl_cpc_bootloader_t server_core_secondary_bootloader_type;
 extern bool secondary_already_running_bootloader;
-
-static gpio_t wake_gpio;
-static gpio_t irq_gpio;
-static gpio_t reset_gpio;
-
-static void process_irq(void);
-
-static void assert_reset(void);
-static void deassert_reset(void);
-static void assert_wake(void);
-static void deassert_wake(void);
 
 static void reboot_secondary_with_pins_into_bootloader(void);
 static void reboot_secondary_by_cpc(server_core_mode_t mode);
@@ -66,7 +52,7 @@ void run_firmware_update(void)
   sl_status_t status;
   bool secondary_already_running_bootloader = is_bootloader_running();
 
-  if (config.fu_enter_bootloader && secondary_already_running_bootloader) {
+  if (config.fwu_enter_bootloader && secondary_already_running_bootloader) {
     PRINT_INFO("Invoking CPCd with -e option places the secondary in bootloader mode, but the bootloader is already running. Nothing to be done.");
 
     config_exit_cpcd(EXIT_SUCCESS);
@@ -74,12 +60,12 @@ void run_firmware_update(void)
 
   if (secondary_already_running_bootloader) {
     PRINT_INFO("Performing a firmware upgrade while the bootloader is already running, skipping placing the secondary in bootloader mode");
-  } else if (config.fu_connect_to_bootloader) {
+  } else if (config.fwu_connect_to_bootloader) {
     PRINT_INFO("Performing a firmware upgrade while assuming the bootloader is already running, skipping placing the secondary in bootloader mode");
   } else {
     // Placing the secondary in bootloader monde :
 
-    if (config.fu_recovery_pins_enabled) {
+    if (config.fwu_recovery_pins_enabled) {
       PRINT_INFO("Requesting reboot into bootloader via Pins...");
       reboot_secondary_with_pins_into_bootloader();
       PRINT_INFO("Secondary is in bootloader");
@@ -87,7 +73,7 @@ void run_firmware_update(void)
       bool protocol_version_mismatch = true;
       bool application_version_mismatch = true;
 
-      if (!config.fu_enter_bootloader) {
+      if (!config.fwu_enter_bootloader) {
         PRINT_INFO("Requesting versions via CPC...");
         reboot_secondary_by_cpc(SERVER_CORE_MODE_FIRMWARE_RESET);
 
@@ -121,7 +107,7 @@ void run_firmware_update(void)
         }
       }
 
-      if (config.fu_enter_bootloader || protocol_version_mismatch || application_version_mismatch) {
+      if (config.fwu_enter_bootloader || protocol_version_mismatch || application_version_mismatch) {
         PRINT_INFO("Requesting reboot into bootloader via CPC...");
         reboot_secondary_by_cpc(SERVER_CORE_MODE_FIRMWARE_BOOTLOADER);
       } else {
@@ -136,9 +122,9 @@ void run_firmware_update(void)
     }
   }
 
-  // If fu_enter_bootloader is true, exit
+  // If fwu_enter_bootloader is true, exit
   // without transferring the firmware.
-  if (config.fu_enter_bootloader) {
+  if (config.fwu_enter_bootloader) {
     config_exit_cpcd(EXIT_SUCCESS);
   }
 
@@ -164,16 +150,16 @@ static sl_status_t transfer_firmware(void)
   PRINT_INFO("Transferring firmware...");
 
   if (config.bus == UART) {
-    status = xmodem_send(config.fu_file,
-                         config.uart_file,
-                         config.uart_baudrate,
-                         config.uart_hardflow);
+    status = xmodem_uart_firmware_upgrade(config.fwu_file,
+                                          config.uart_file,
+                                          config.uart_baudrate,
+                                          config.uart_hardflow);
   } else if (config.bus == SPI) {
-    status = send_firmware(config.fu_file,
-                           config.spi_file,
-                           config.spi_bitrate,
-                           config.spi_irq_chip,
-                           config.spi_irq_pin);
+    status = ezsp_spi_firmware_upgrade(config.fwu_file,
+                                       config.spi_file,
+                                       config.spi_bitrate,
+                                       config.spi_irq_chip,
+                                       config.spi_irq_pin);
   } else {
     BUG();
   }
@@ -185,32 +171,28 @@ static void reboot_secondary_by_cpc(server_core_mode_t mode)
 {
   int fd_socket_driver_core;
   int fd_socket_driver_core_notify;
-  void* join_value;
-  int ret;
 
   // Init the driver
   if (config.bus == UART) {
-    driver_thread = driver_uart_init(&fd_socket_driver_core,
-                                     &fd_socket_driver_core_notify,
-                                     config.uart_file,
-                                     config.uart_baudrate,
-                                     config.uart_hardflow);
+    driver_uart_init(&fd_socket_driver_core,
+                     &fd_socket_driver_core_notify,
+                     config.uart_file,
+                     config.uart_baudrate,
+                     config.uart_hardflow);
   } else if (config.bus == SPI) {
-    driver_thread = driver_spi_init(&fd_socket_driver_core,
-                                    &fd_socket_driver_core_notify,
-                                    config.spi_file,
-                                    config.spi_bitrate,
-                                    config.spi_irq_chip,
-                                    config.spi_irq_pin);
+    driver_spi_init(&fd_socket_driver_core,
+                    &fd_socket_driver_core_notify,
+                    config.spi_file,
+                    config.spi_bitrate,
+                    config.spi_irq_chip,
+                    config.spi_irq_pin);
   } else {
     BUG();
   }
 
-  server_core_thread = server_core_init(fd_socket_driver_core, fd_socket_driver_core_notify, mode);
+  server_core_init(fd_socket_driver_core, fd_socket_driver_core_notify, mode);
 
-  ret = pthread_join(server_core_thread, &join_value);
-  FATAL_ON(ret != 0);
-  FATAL_ON(join_value != 0);
+  server_core_wait();
 
   close(fd_socket_driver_core);
   close(fd_socket_driver_core_notify);
@@ -218,23 +200,17 @@ static void reboot_secondary_by_cpc(server_core_mode_t mode)
 
 static void reboot_secondary_with_pins_into_bootloader(void)
 {
+  gpio_t wake_gpio;
+  gpio_t irq_gpio;
+  gpio_t reset_gpio;
   int ret;
-  int fds;
-  int n;
   struct epoll_event ev;
-  struct epoll_event events[MAX_EPOLL_EVENTS] = {};
   static int fd_epoll;
 
-  // Setup WAKE gpio
-  wake_gpio = gpio_init(config.fu_wake_chip, (unsigned int)config.fu_spi_wake_pin, GPIO_DIRECTION_OUT, GPIO_EDGE_NO_EDGE);
-  gpio_write(wake_gpio, GPIO_VALUE_HIGH);
-
-  // Setup RESET gpio
-  reset_gpio = gpio_init(config.fu_reset_chip, (unsigned int)config.fu_spi_reset_pin, GPIO_DIRECTION_OUT, GPIO_EDGE_NO_EDGE);
-  gpio_write(reset_gpio, GPIO_VALUE_HIGH);
+  reset_gpio = gpio_init(config.fwu_reset_chip, (unsigned int)config.fwu_spi_reset_pin, GPIO_DIRECTION_OUT, GPIO_EDGE_NO_EDGE);
+  wake_gpio  = gpio_init(config.fwu_wake_chip, (unsigned int)config.fwu_spi_wake_pin, GPIO_DIRECTION_OUT, GPIO_EDGE_NO_EDGE);
 
   if (config.bus == SPI) {
-    // Setup IRQ gpio
     irq_gpio = gpio_init(config.spi_irq_chip, config.spi_irq_pin, GPIO_DIRECTION_IN, GPIO_EDGE_FALLING);
 
     // Create the epoll set
@@ -248,37 +224,55 @@ static void reboot_secondary_with_pins_into_bootloader(void)
     FATAL_SYSCALL_ON(ret < 0);
   }
 
-  // To reboot into bootloader, assert nWAKE and
-  // then reset the device using nRESET. When the
-  // bootloader starts (in SPI), it will handshake by asserting
-  // nHOST_INT, at which point nWAKE should be deasserted
-  assert_wake();
-  sleep_us(100);
-  assert_reset();
-  sleep_us(100);
-  deassert_reset();
+  // Assert reset and wake
+  gpio_write(reset_gpio, GPIO_VALUE_LOW);
+  gpio_write(wake_gpio, GPIO_VALUE_LOW);
+
+  // Make sure the reset signal is asserted for long enough
   sleep_us(100);
 
+  // De-assert reset to let the secondary boot, but keep the wake pin asserted
+  // so when the bootloader checks the wake pin, instead of booting the app it
+  // will stay in bootloader mode
+  gpio_write(reset_gpio, GPIO_VALUE_HIGH);
+
   if (config.bus == SPI) {
-    // wait for host interrupt
-    bool irq = false;
-    do {
-      fds = epoll_wait(fd_epoll, events, MAX_EPOLL_EVENTS, RESET_TIMEOUT_MS);
-      FATAL_SYSCALL_ON(fds == -1);  // epoll failed
-      FATAL_ON(fds == 0);           // reset timed out
-      for (n = 0; n < fds; n++) {
-        if (events[n].data.fd == gpio_get_epoll_fd(irq_gpio)) {
-          if (gpio_read(irq_gpio) == GPIO_VALUE_LOW) {
-            irq = true;
-          }
-        }
+    // Make sure the falling-edge caused by the chip entering reset is cleared
+    gpio_clear_irq(irq_gpio);
+
+    // Wait for the low-high-low transition on IRQ meaning the bootloader is alive
+    while (1) {
+      struct epoll_event event;
+
+      // The bootloader takes slightly under 40ms to boot up and read the wake pin
+      int event_count = epoll_wait(fd_epoll,
+                                   &event,
+                                   1,
+                                   RESET_TIMEOUT_MS);
+
+      if (event_count == -1 && errno == EINTR) {
+        continue;
       }
-    } while (!irq);
-    process_irq();
+
+      FATAL_SYSCALL_ON(event_count == -1);
+      BUG_ON(event_count > 1);
+      if (event_count == 0) {
+        FATAL("While using the bootloader recovery pins to reset the secondary, "
+              "no following transition on the IRQ pin was detected in time. "
+              "This means there might be a problem with the pins or the "
+              "bootloader (or absence of)");
+      }
+
+      break;
+    }
+
+    // The bootloader is alive, de-assert the wake pin
+    gpio_write(wake_gpio, GPIO_VALUE_HIGH);
   } else {
-    // uart-xmodem bootloader does not trigger host interrupt
-    sleep_s(1);
-    deassert_wake();
+    // With the UART bootloader, there is no way to know when the bootloader
+    // started and read the value of the wake pin, just wait and assume
+    sleep_us(RESET_TIMEOUT_MS * 1000);
+    gpio_write(wake_gpio, GPIO_VALUE_HIGH);
   }
 
   gpio_deinit(wake_gpio);
@@ -288,31 +282,4 @@ static void reboot_secondary_with_pins_into_bootloader(void)
   }
 
   return;
-}
-
-static void assert_reset(void)
-{
-  gpio_write(reset_gpio, GPIO_VALUE_LOW);
-}
-
-static void deassert_reset(void)
-{
-  gpio_write(reset_gpio, GPIO_VALUE_HIGH);
-}
-
-static void assert_wake(void)
-{
-  gpio_write(wake_gpio, GPIO_VALUE_LOW);
-}
-
-static void deassert_wake(void)
-{
-  gpio_write(wake_gpio, GPIO_VALUE_HIGH);
-}
-
-static void process_irq(void)
-{
-  gpio_clear_irq(irq_gpio);
-
-  deassert_wake();
 }

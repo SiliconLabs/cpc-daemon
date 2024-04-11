@@ -56,6 +56,9 @@ static const sli_cpc_system_primary_version_t primary_version = {
   .patch = PROJECT_VER_PATCH,
   .tweak = PROJECT_VER_TWEAK
 };
+
+static pthread_t server_core_thread;
+static bool server_core_thread_started = false;
 static bool set_reset_mode_ack = false;
 static bool reset_ack = false;
 static bool secondary_cpc_version_received = false;
@@ -177,7 +180,7 @@ uint32_t server_core_get_secondary_rx_capability(void)
   return rx_capability;
 }
 
-void server_core_kill_signal(void)
+void server_core_kill(void)
 {
   ssize_t ret;
   const uint64_t event_value = 1; //doesn't matter what it is
@@ -186,8 +189,19 @@ void server_core_kill_signal(void)
     return;
   }
 
-  ret = write(kill_eventfd, &event_value, sizeof(event_value));
-  FATAL_ON(ret != sizeof(event_value));
+  if (server_core_thread_started) {
+    // Signal and wait for thread to exit
+    ret = write(kill_eventfd, &event_value, sizeof(event_value));
+    FATAL_ON(ret != sizeof(event_value));
+
+    pthread_join(server_core_thread, NULL);
+  }
+
+  #if defined(ENABLE_ENCRYPTION)
+  if (config.operation_mode != MODE_UART_VALIDATION) {
+    security_kill();
+  }
+  #endif
 }
 
 void server_core_notify_security_ready(void)
@@ -203,11 +217,10 @@ void server_core_notify_security_ready(void)
   FATAL_ON(ret != sizeof(event_value));
 }
 
-pthread_t server_core_init(int fd_socket_driver_core, int fd_socket_driver_core_notify, server_core_mode_t mode)
+void server_core_init(int fd_socket_driver_core, int fd_socket_driver_core_notify, server_core_mode_t mode)
 {
   char* socket_folder = NULL;
   struct stat sb = { 0 };
-  pthread_t server_core_thread = { 0 };
   int ret = 0;
 
   core_init(fd_socket_driver_core, fd_socket_driver_core_notify);
@@ -300,11 +313,19 @@ pthread_t server_core_init(int fd_socket_driver_core, int fd_socket_driver_core_
   server_core_mode = mode;
   ret = pthread_create(&server_core_thread, NULL, server_core_thread_func, NULL);
   FATAL_ON(ret != 0);
+  server_core_thread_started = true;
 
   ret = pthread_setname_np(server_core_thread, "server_core");
   FATAL_ON(ret != 0);
+}
 
-  return server_core_thread;
+void server_core_wait(void)
+{
+  void* join_value;
+  int ret;
+  ret = pthread_join(server_core_thread, &join_value);
+  FATAL_ON(ret != 0);
+  FATAL_ON(join_value != NULL);
 }
 
 static void* server_core_thread_func(void* param)
@@ -442,13 +463,10 @@ static void on_unsolicited_status(sl_cpc_system_status_t status)
     if (reset_sequence_state == WAIT_RESET_REASON) {
       reset_reason_received = true;
     } else {
-      int ret;
-
       PRINT_INFO("Secondary has reset, reset the daemon.");
 
       /* Stop driver immediately */
-      ret = driver_kill_signal_and_join();
-      FATAL_ON(ret != 0);
+      driver_kill();
 
       /* Notify lib connected */
       server_notify_connected_libs_of_secondary_reset();
@@ -734,8 +752,7 @@ static void property_get_protocol_version_callback(sli_cpc_property_id_t propert
 
 static void exit_server_core(void)
 {
-  int ret = driver_kill_signal_and_join();
-  FATAL_ON(ret != 0);
+  driver_kill();
 
   server_core_cleanup(NULL);
 }
@@ -1073,6 +1090,10 @@ static void server_core_cleanup(epoll_private_data_t *private_data)
   PRINT_INFO("Server core cleanup");
 
   sl_cpc_system_cleanup();
+
+  #if defined(ENABLE_ENCRYPTION)
+  security_kill();
+  #endif
 
   pthread_exit(NULL);
 }

@@ -303,6 +303,14 @@ static inline void hdlc_set_control_ack(uint8_t *control,
   *control |= ack;
 }
 
+/***************************************************************************//**
+ * @brief Extracts the payload size from a HDLC header
+ *
+ * @return
+ *   The extracted payload size, or -1 if the header is invalid
+ ******************************************************************************/
+int hdlc_extract_payload_size(const uint8_t *header);
+
 /** @} (end addtogroup cpc) */
 
 #endif // SLI_CPC_HDLC_H

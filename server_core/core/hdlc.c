@@ -35,3 +35,22 @@ void hdlc_create_header(uint8_t *header_buf,
     u16_to_le(crc, header_buf + SLI_CPC_HDLC_HEADER_SIZE);
   }
 }
+
+/***************************************************************************//**
+ * @brief Extracts the payload size from a HDLC header
+ *
+ * @return
+ *   The extracted payload size, or -1 if the header is invalid
+ ******************************************************************************/
+int hdlc_extract_payload_size(const uint8_t *header)
+{
+  if (header[SLI_CPC_HDLC_FLAG_POS] != SLI_CPC_HDLC_FLAG_VAL) {
+    return -1;
+  }
+
+  if (sli_cpc_get_crc_sw(header, SLI_CPC_HDLC_HEADER_SIZE) != hdlc_get_hcs(header)) {
+    return -1;
+  }
+
+  return (int) hdlc_get_length(header);
+}

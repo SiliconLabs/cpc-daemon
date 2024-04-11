@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 
 project(cpcd
-  VERSION "4.4.0.0"
+  VERSION "4.4.2.0"
   LANGUAGES C)
 set(CPC_LIBRARY_API_VERSION "3")
 set(CPC_PROTOCOL_VERSION "5")
@@ -22,10 +22,6 @@ option(USE_LEGACY_GPIO_SYSFS "Use the legacy GPIO sysfs instead of GPIO device" 
 option(COMPILE_LTTNG "Enable LTTng tracing")
 option(ENABLE_VALGRIND "Enable Valgrind in tests")
 option(TARGET_TESTING "Enable some features used only in testing")
-
-if (USE_LEGACY_GPIO_SYSFS)
-  message( WARNING "The legacy GPIO sysfs is deprecated, remove the option altogether.")
-endif()
 
 # Includes
 include(cmake/GetGitRevisionDescription.cmake)
@@ -92,6 +88,7 @@ endif()
 add_library(cpc SHARED)
 target_stds(cpc C 99 POSIX 2008)
 target_link_libraries(cpc PRIVATE Interface::Warnings)
+target_link_libraries(cpc PRIVATE Threads::Threads)
 target_sources(cpc PRIVATE misc/sleep.c)
 target_sources(cpc PRIVATE misc/sl_slist.c)
 target_sources(cpc PRIVATE lib/sl_cpc.c)
@@ -102,6 +99,7 @@ if(COMPILE_LTTNG)
   target_link_libraries(cpc PRIVATE LTTng::UST)
 endif()
 
+target_include_directories(cpc PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/lib")
 target_include_directories(cpc PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_include_directories(cpc PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_include_directories(cpc PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/autogen")
@@ -116,7 +114,7 @@ install(
 
 # CPCd Config file path
 if(NOT DEFINED CPCD_CONFIG_FILE_PATH)
-  set(CPCD_CONFIG_FILE_PATH ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_SYSCONFDIR}/cpcd.conf)
+  set(CPCD_CONFIG_FILE_PATH "${CMAKE_INSTALL_FULL_SYSCONFDIR}/cpcd.conf")
 endif()
 add_definitions(-DCPCD_CONFIG_FILE_PATH="${CPCD_CONFIG_FILE_PATH}")
 message(STATUS "CPCD_CONFIG_FILE_PATH=${CPCD_CONFIG_FILE_PATH}")
@@ -148,6 +146,13 @@ if(ENABLE_ENCRYPTION)
   message(STATUS "Building CPCd with encryption enabled")
 else()
   message(WARNING "Building CPCd with encryption disabled, removing MbedTLS dependency")
+endif()
+
+# Enable gpiod support if the user requested it
+if(USE_LEGACY_GPIO_SYSFS)
+  message(STATUS "Building CPCd with GPIO sysfs")
+else()
+  message(STATUS "Building CPCd with GPIO device")
 endif()
 
 if(TARGET_TESTING)
@@ -204,7 +209,7 @@ if((TARGET_GROUP STREQUAL release) OR
                       driver/driver_xmodem.c
                       driver/driver_ezsp.c
                       driver/driver_kill.c
-                      misc/gpio.c
+                      misc/exit.c
                       misc/logging.c
                       misc/config.c
                       misc/utils.c
@@ -238,6 +243,13 @@ if((TARGET_GROUP STREQUAL release) OR
       security/private/thread/command_synchronizer.c
       security/private/thread/security_thread.c
       security/security.c)
+  endif()
+
+  if(USE_LEGACY_GPIO_SYSFS)
+    target_compile_definitions(cpcd PRIVATE USE_LEGACY_GPIO_SYSFS)
+    target_sources(cpcd PRIVATE misc/gpio_sysfs.c)
+  else()
+    target_sources(cpcd PRIVATE misc/gpio.c)
   endif()
 
   # Hash all files except those in the output folder
@@ -309,6 +321,7 @@ elseif((TARGET_GROUP STREQUAL unit_test) OR (TARGET_GROUP STREQUAL unit_test_wit
                             driver/driver_uart.c
                             lib/sl_cpc.c
                             modes/uart_validation.c
+                            misc/exit.c
                             misc/logging.c
                             misc/config.c
                             misc/utils.c

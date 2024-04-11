@@ -27,28 +27,18 @@
 #define SPI_BUFFER_SIZE  4096
 #define SPI_INITIAL_BITRATE 1000000
 
-typedef struct {
-  int spi_dev_descriptor;
-  char *spi_dev_name;
-  gpio_t irq_gpio;
-  gpio_t wake_gpio;
-} cpc_spi_dev_t;
-
 /*
  * Initialize the spi driver. Crashes the app if the init fails.
  * Returns the file descriptor of the paired socket to the driver
  * to use in a select() call.
  */
-pthread_t driver_spi_init(int *fd_to_core,
-                          int *fd_notify_core,
-                          const char *device,
-                          unsigned int speed,
-                          const char *irq_gpio_chip,
-                          unsigned int irq_gpio_pin);
+void driver_spi_init(int *fd_to_core,
+                     int *fd_notify_core,
+                     const char *device,
+                     unsigned int speed,
+                     const char *irq_gpio_chip,
+                     unsigned int irq_gpio_pin);
 
-bool driver_spi_is_bootloader_running(const char *device,
-                                      unsigned int speed,
-                                      const char *irq_gpio_chip,
-                                      unsigned int irq_gpio_pin);
+void driver_spi_kill(void);
 
-#endif//DRIVER_SPI_H
+#endif // DRIVER_SPI_H

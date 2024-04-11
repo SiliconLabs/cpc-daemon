@@ -112,7 +112,10 @@ static async_logger_t file_logger;
 static async_logger_t stdout_logger;
 
 static pthread_t file_logger_thread;
+static bool file_logger_thread_started = false;
+
 static pthread_t stdout_logger_thread;
+static bool stdout_logger_thread_started = false;
 
 static epoll_private_data_t* logging_private_data;
 
@@ -163,6 +166,7 @@ static void stdout_logging_init(void)
                        async_logger_thread_func,
                        &stdout_logger);
   NO_LOGGING_FATAL_ON(ret != 0);
+  stdout_logger_thread_started = true;
 
   pthread_setname_np(stdout_logger_thread, "stdout_logger");
 }
@@ -218,6 +222,7 @@ static void file_logging_init(void)
                        async_logger_thread_func,
                        &file_logger);
   NO_LOGGING_FATAL_ON(ret != 0);
+  file_logger_thread_started = true;
 
   pthread_setname_np(file_logger_thread, "file_logger");
 }
@@ -519,11 +524,15 @@ void logging_kill(void)
   gracefully_exit = true;
 
   pthread_cond_signal(&stdout_logger.condition);
-  pthread_join(stdout_logger_thread, NULL);
+  if (stdout_logger_thread_started) {
+    pthread_join(stdout_logger_thread, NULL);
+    stdout_logger_thread_started = false;
+  }
 
-  if (config.file_tracing) {
+  if (config.file_tracing && file_logger_thread_started) {
     pthread_cond_signal(&file_logger.condition);
     pthread_join(file_logger_thread, NULL);
+    file_logger_thread_started = false;
   }
 
   free(logging_private_data);

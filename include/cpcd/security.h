@@ -55,7 +55,10 @@ typedef void (*sl_cpc_security_on_state_change_t)(sl_cpc_security_state_t old,
  ******************************************************************************/
 void security_init(void);
 
-void security_kill_signal(void);
+/***************************************************************************//**
+ * Kill the security thread and close the endpoint.
+ ******************************************************************************/
+void security_kill(void);
 
 /***************************************************************************//**
  * Unblock thread blocked on security_post_command

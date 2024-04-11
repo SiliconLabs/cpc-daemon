@@ -1,2 +1,3 @@
 [workspace]
 members = ["libcpc", "libcpc-sys"]
+resolver = "2"
