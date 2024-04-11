@@ -71,14 +71,14 @@ typedef struct __attribute__((packed)) {
   const char *spi_irq_chip;
   unsigned int spi_irq_pin;
 
-  const char *fu_reset_chip;
-  int fu_spi_reset_pin;
-  const char *fu_wake_chip;
-  int fu_spi_wake_pin;
-  bool fu_recovery_pins_enabled;
-  bool fu_connect_to_bootloader;
-  bool fu_enter_bootloader;
-  const char *fu_file;
+  const char *fwu_reset_chip;
+  int fwu_spi_reset_pin;
+  const char *fwu_wake_chip;
+  int fwu_spi_wake_pin;
+  bool fwu_recovery_pins_enabled;
+  bool fwu_connect_to_bootloader;
+  bool fwu_enter_bootloader;
+  const char *fwu_file;
 
   bool restart_cpcd;
 

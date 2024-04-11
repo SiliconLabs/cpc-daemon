@@ -34,9 +34,11 @@ uint32_t server_core_get_secondary_rx_capability(void);
 
 bool server_core_max_bitrate_received(void);
 
-pthread_t server_core_init(int fd_socket_driver_core, int fd_socket_driver_core_notify, server_core_mode_t mode);
+void server_core_init(int fd_socket_driver_core, int fd_socket_driver_core_notify, server_core_mode_t mode);
 
-void server_core_kill_signal(void);
+void server_core_wait(void);
+
+void server_core_kill(void);
 
 void server_core_notify_security_ready(void);
 

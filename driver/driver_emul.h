@@ -33,7 +33,7 @@
  * Returns the file descriptor of the paired socket to the driver
  * to use in a select() call.
  */
-pthread_t driver_emul_init(int* fd_core_driver, int *fd_notify_core);
+void driver_emul_init(int* fd_core_driver, int *fd_notify_core);
 sl_status_t sli_cpc_drv_read_data(frame_t *handle, uint16_t *payload_rx_len);
 void sli_cpc_drv_emul_submit_pkt_for_rx(void *header_buf, void *payload_buf, uint16_t payload_buf_len);
 sli_cpc_endpoint_state_t sli_cpc_drv_emul_get_ep_state(uint8_t id);

@@ -20,9 +20,21 @@
 
 #include "sl_cpc.h"
 
-typedef int gpio_t;
+#ifdef USE_LEGACY_GPIO_SYSFS
+typedef struct {
+  unsigned int pin;
+  int value_fd;
+  int irq_fd;
+} gpio_sysfs_t;
 
+typedef gpio_sysfs_t* gpio_t;
+
+#define GPIO_EPOLL_EVENT EPOLLPRI
+
+#else
+typedef int gpio_t;
 #define GPIO_EPOLL_EVENT EPOLLIN
+#endif
 
 SL_ENUM(gpio_direction_t){
   GPIO_DIRECTION_IN,

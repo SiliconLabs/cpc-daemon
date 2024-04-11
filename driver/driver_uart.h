@@ -27,7 +27,9 @@
  * Returns the file descriptor of the paired socket to the driver
  * to use in a select() call.
  */
-pthread_t driver_uart_init(int *fd_to_core, int *fd_notify_core, const char *device, unsigned int baudrate, bool hardflow);
+void driver_uart_init(int *fd_to_core, int *fd_notify_core, const char *device, unsigned int baudrate, bool hardflow);
+
+void driver_uart_kill(void);
 
 bool driver_uart_is_bootloader_running(const char *device, unsigned int baudrate, bool hardflow);
 

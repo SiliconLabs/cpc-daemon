@@ -25,12 +25,12 @@
 #include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <sys/ioctl.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include <sys/timerfd.h>
 #include <signal.h>
 #include <linux/serial.h>
+#include <sys/eventfd.h>
 
 #include "cpcd/board_controller.h"
 #include "cpcd/config.h"
@@ -51,9 +51,12 @@ static int fd_core;
 static int fd_core_notify;
 static int fd_stop_drv;
 static unsigned int device_baudrate = 0;
+
 static pthread_t rx_drv_thread;
+static bool rx_drv_thread_started = false;
+
 static pthread_t tx_drv_thread;
-static pthread_t cleanup_thread;
+static bool tx_drv_thread_started = false;
 
 static void* receive_driver_thread_func(void* param);
 
@@ -83,12 +86,10 @@ static bool delimit_and_push_frames_to_core(uint8_t *buffer, size_t *buffer_head
 /*
  * Insures the start of the buffer is aligned with the start of a valid checksum
  * and re-synch in case the buffer starts with garbage.
- */
-static bool header_re_synch(uint8_t *buffer, size_t *buffer_head);
+ ******************************************************************************/
+static bool header_synch(uint8_t *buffer, size_t *buffer_head);
 
-static void* driver_uart_cleanup(void *param);
-
-pthread_t driver_uart_init(int *fd_to_core, int *fd_notify_core, const char *device, unsigned int baudrate, bool hardflow)
+void driver_uart_init(int *fd_to_core, int *fd_notify_core, const char *device, unsigned int baudrate, bool hardflow)
 {
   int fd_sockets[2];
   int fd_sockets_notify[2];
@@ -115,19 +116,21 @@ pthread_t driver_uart_init(int *fd_to_core, int *fd_notify_core, const char *dev
    * Create stop driver event, this file descriptor will be used by
    * receive and transmit thread to exit gracefully
    */
-  fd_stop_drv = driver_kill_init();
+  fd_stop_drv = eventfd(0, // Start with 0 value
+                        EFD_CLOEXEC);
+  FATAL_SYSCALL_ON(fd_stop_drv == -1);
+  // Set driver kill callback
+  driver_kill_init(driver_uart_kill);
 
   /* create transmitter driver thread */
   ret = pthread_create(&tx_drv_thread, NULL, transmit_driver_thread_func, NULL);
   FATAL_ON(ret != 0);
+  tx_drv_thread_started = true;
 
   /* create receiver driver thread */
   ret = pthread_create(&rx_drv_thread, NULL, receive_driver_thread_func, NULL);
   FATAL_ON(ret != 0);
-
-  /* create cleanup thread */
-  ret = pthread_create(&cleanup_thread, NULL, driver_uart_cleanup, NULL);
-  FATAL_ON(ret != 0);
+  rx_drv_thread_started = true;
 
   ret = pthread_setname_np(tx_drv_thread, "tx_drv_thread");
   FATAL_ON(ret != 0);
@@ -138,8 +141,6 @@ pthread_t driver_uart_init(int *fd_to_core, int *fd_notify_core, const char *dev
   TRACE_DRIVER("Opening uart file %s", device);
 
   TRACE_DRIVER("Init done");
-
-  return cleanup_thread;
 }
 
 /***************************************************************************//**
@@ -249,23 +250,33 @@ void driver_uart_print_overruns(void)
   TRACE_DRIVER("Overruns %d,%d", counters.overrun, counters.buf_overrun);
 }
 
-static void* driver_uart_cleanup(void *param)
+/***************************************************************************//**
+ * Kill the UART driver and free its resources.
+ ******************************************************************************/
+void driver_uart_kill(void)
 {
-  (void) param;
+  // signal threads to exit
+  ssize_t ret;
+  const uint64_t event_value = 1; // Doesn't matter what it is
+  ret = write(fd_stop_drv, &event_value, sizeof(event_value));
+  FATAL_SYSCALL_ON(ret != sizeof(event_value));
 
   // wait for threads to exit
-  pthread_join(tx_drv_thread, NULL);
-  pthread_join(rx_drv_thread, NULL);
+  if (tx_drv_thread_started) {
+    pthread_join(tx_drv_thread, NULL);
+    tx_drv_thread_started = false;
+  }
+  if (rx_drv_thread_started) {
+    pthread_join(rx_drv_thread, NULL);
+    rx_drv_thread_started = false;
+  }
 
-  TRACE_DRIVER("Uart driver threads cancelled");
+  TRACE_DRIVER("UART driver threads cancelled");
 
   close(fd_uart);
   close(fd_core);
   close(fd_core_notify);
   close(fd_stop_drv);
-
-  pthread_exit(NULL);
-  return NULL;
 }
 
 static void* receive_driver_thread_func(void* param)
@@ -510,9 +521,9 @@ static void driver_uart_process_uart(void)
   while (1) {
     switch (state) {
       case EXPECTING_HEADER:
-        /* Synchronize the start of 'buffer' with the start of a valid header with valid checksum. */
-        if (header_re_synch(buffer, &buffer_head)) {
-          /* We are synchronized on a valid header, start delimiting the data that follows into a frame. */
+        // Synchronize the start of 'buffer' with the start of a valid header with valid checksum.
+        if (header_synch(buffer, &buffer_head)) {
+          // We are synchronized on a valid header, start delimiting the data that follows into a frame.
           state = EXPECTING_PAYLOAD;
         } else {
           /* We went through all the data contained in 'buffer' and haven't synchronized on a header.
@@ -577,10 +588,10 @@ static bool validate_header(uint8_t *header_start)
   return true;
 }
 
-static bool header_re_synch(uint8_t *buffer, size_t *buffer_head)
+static bool header_synch(uint8_t *buffer, size_t *buffer_head)
 {
   if (*buffer_head < SLI_CPC_HDLC_HEADER_RAW_SIZE) {
-    /* There's not enough data for a header, nothing to re-synch */
+    // There's not enough data for a header, nothing to synch
     return false;
   }
 
@@ -588,15 +599,12 @@ static bool header_re_synch(uint8_t *buffer, size_t *buffer_head)
    * then we can slide it 'num_header_combination' times over the data. */
   const size_t num_header_combination = *buffer_head - SLI_CPC_HDLC_HEADER_RAW_SIZE + 1;
 
-  TRACE_DRIVER("re-sync : Will test %i header combination", num_header_combination);
-
   size_t i;
 
   for (i = 0; i != num_header_combination; i++) {
     if (validate_header(&buffer[i])) {
       if (i == 0) {
-        /* The start of the buffer is aligned with a good header, don't do anything */
-        TRACE_DRIVER("re-sync : The start of the buffer is aligned with a good header");
+        // The start of the buffer is aligned with a good header, don't do anything
       } else {
         /* We had 'i' number of bad bytes until we struck a good header, move back the data
          * to the beginning of the buffer */
@@ -604,7 +612,6 @@ static bool header_re_synch(uint8_t *buffer, size_t *buffer_head)
 
         /* We crushed 'i' bytes at the start of the buffer */
         *buffer_head -= i;
-        TRACE_DRIVER("re-sync : had '%u' number of bad bytes until we struck a good header", i);
       }
       return true;
     } else {

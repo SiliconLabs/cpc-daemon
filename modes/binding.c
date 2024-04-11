@@ -22,14 +22,10 @@
 #include "cpcd/modes.h"
 #include "cpcd/security.h"
 #include "cpcd/server_core.h"
+#include "cpcd/exit.h"
 
 #include "driver/driver_spi.h"
 #include "driver/driver_uart.h"
-
-extern pthread_t driver_thread;
-extern pthread_t server_core_thread;
-
-void main_wait_crash_or_graceful_exit(void);
 
 void run_binding_mode(void)
 {
@@ -49,24 +45,24 @@ void run_binding_mode(void)
   // Init the driver
   {
     if (config.bus == UART) {
-      driver_thread = driver_uart_init(&fd_socket_driver_core,
-                                       &fd_socket_driver_core_notify,
-                                       config.uart_file,
-                                       config.uart_baudrate,
-                                       config.uart_hardflow);
+      driver_uart_init(&fd_socket_driver_core,
+                       &fd_socket_driver_core_notify,
+                       config.uart_file,
+                       config.uart_baudrate,
+                       config.uart_hardflow);
     } else if (config.bus == SPI) {
-      driver_thread = driver_spi_init(&fd_socket_driver_core,
-                                      &fd_socket_driver_core_notify,
-                                      config.spi_file,
-                                      config.spi_bitrate,
-                                      config.spi_irq_chip,
-                                      config.spi_irq_pin);
+      driver_spi_init(&fd_socket_driver_core,
+                      &fd_socket_driver_core_notify,
+                      config.spi_file,
+                      config.spi_bitrate,
+                      config.spi_irq_chip,
+                      config.spi_irq_pin);
     } else {
       BUG();
     }
   }
 
-  server_core_thread = server_core_init(fd_socket_driver_core, fd_socket_driver_core_notify, SERVER_CORE_MODE_NORMAL);
+  server_core_init(fd_socket_driver_core, fd_socket_driver_core_notify, SERVER_CORE_MODE_NORMAL);
 
   switch (config.operation_mode) {
     case MODE_BINDING_PLAIN_TEXT:
@@ -85,5 +81,5 @@ void run_binding_mode(void)
       FATAL("Unsupported operation mode");
   }
 
-  main_wait_crash_or_graceful_exit();
+  wait_crash_or_graceful_exit();
 }

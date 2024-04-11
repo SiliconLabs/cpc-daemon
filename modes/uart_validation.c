@@ -32,9 +32,6 @@
 #define TIMEOUT_SECONDS         5
 #define TIME_BETWEEN_RETRIES_US 1000000
 
-extern pthread_t driver_thread;
-extern pthread_t server_core_thread;
-
 /* Flag set when waiting on external reset */
 static bool wait_on_reset_external;
 
@@ -261,14 +258,14 @@ static void open_uart_port_subtest(bool flowcontrol)
   int fd_socket_driver_core_notify;
   if (config.bus == UART) {
     // Bypass configuration for flow control: set to true to determine that RTS/CTS pins are not connected properly
-    driver_thread = driver_uart_init(&fd_socket_driver_core, &fd_socket_driver_core_notify, config.uart_file, config.uart_baudrate, flowcontrol);
+    driver_uart_init(&fd_socket_driver_core, &fd_socket_driver_core_notify, config.uart_file, config.uart_baudrate, flowcontrol);
   } else {
     BUG("Invalid bus_type, should be UART, see cpcd.conf");
   }
 
   // Disable reset sequence because we want to do it ourselves
   config.reset_sequence = false;
-  server_core_thread = server_core_init(fd_socket_driver_core, fd_socket_driver_core_notify, SERVER_CORE_MODE_NORMAL);
+  server_core_init(fd_socket_driver_core, fd_socket_driver_core_notify, SERVER_CORE_MODE_NORMAL);
 }
 
 static void reset_external_subtest(void)

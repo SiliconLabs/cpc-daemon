@@ -28,8 +28,7 @@
 #include "security/private/thread/security_thread.h"
 #include "security/security.h"
 
-extern pthread_t security_thread;
-
+static pthread_t security_thread;
 volatile bool security_session_initialized = false;
 
 void security_init(void)
@@ -51,9 +50,18 @@ void security_init(void)
   TRACE_SECURITY("Thread created");
 }
 
-void security_kill_signal(void)
+void security_kill(void)
 {
-  security_post_command(SECURITY_COMMAND_KILL_THREAD);
+  if (config.use_encryption == false) {
+    TRACE_SECURITY("Encryption is disabled");
+    return;
+  }
+
+  if (security_initialized) {
+    security_post_command(SECURITY_COMMAND_KILL_THREAD);
+    pthread_join(security_thread, NULL);
+    security_initialized = false;
+  }
 }
 
 void security_unblock_post_command(void)

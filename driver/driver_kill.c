@@ -25,45 +25,18 @@
 
 #include "driver_kill.h"
 
-static int kill_eventfd = -1;
+static void (*kill_callback)(void) = NULL;
 
-int driver_kill_init(void)
+void driver_kill_init(void (*driver_kill_callback)(void))
 {
-  kill_eventfd = eventfd(0, //Start with 0 value
-                         EFD_CLOEXEC);
-
-  FATAL_ON(kill_eventfd == -1);
-
-  return kill_eventfd;
-}
-
-void driver_kill_signal(void)
-{
-  ssize_t ret;
-  const uint64_t event_value = 1; //doesn't matter what it is
-
-  if (kill_eventfd == -1) {
-    return;
+  if (kill_callback == NULL) {
+    kill_callback = (void (*)(void))driver_kill_callback;
   }
-
-  ret = write(kill_eventfd, &event_value, sizeof(event_value));
-  FATAL_ON(ret != sizeof(event_value));
 }
 
-int driver_kill_join(void)
+void driver_kill(void)
 {
-  void *join_value;
-  int ret;
-
-  extern pthread_t driver_thread;
-  ret = pthread_join(driver_thread, &join_value);
-
-  return ret;
-}
-
-int driver_kill_signal_and_join(void)
-{
-  driver_kill_signal();
-
-  return driver_kill_join();
+  if (kill_callback != NULL) {
+    kill_callback();
+  }
 }

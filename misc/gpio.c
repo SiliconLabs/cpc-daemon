@@ -11,10 +11,6 @@
 #include "cpcd/gpio.h"
 #include "cpcd/logging.h"
 
-#ifdef USE_LEGACY_GPIO_SYSFS
-#warning "The use of sysfs had been deprecated. CPCd now always uses the gpio char device. Remove USE_LEGACY_GPIO_SYSFS go get rid of this warning"
-#endif
-
 static const char* direction_to_str(gpio_direction_t direction)
 {
   switch (direction) {
@@ -89,7 +85,9 @@ gpio_t gpio_init(const char *gpio_chip, unsigned int gpio_pin, gpio_direction_t 
     }
 
     ret = ioctl(chip_fd, GPIO_GET_LINEEVENT_IOCTL, &rq);
-    FATAL_SYSCALL_ON(ret < 0);
+    if (ret < 0) {
+      FATAL("%s : The kernel must be configured with CONFIG_GPIO_CDEV_V1=y", strerror(errno));
+    }
 
     gpio = (gpio_t) rq.fd;
 
@@ -102,7 +100,9 @@ gpio_t gpio_init(const char *gpio_chip, unsigned int gpio_pin, gpio_direction_t 
     rq.lines = 1;
 
     ret = ioctl(chip_fd, GPIO_GET_LINEHANDLE_IOCTL, &rq);
-    FATAL_SYSCALL_ON(ret < 0);
+    if (ret < 0) {
+      FATAL("%s : The kernel must be configured with CONFIG_GPIO_CDEV_V1=y", strerror(errno));
+    }
 
     gpio = (gpio_t) rq.fd;
   }
