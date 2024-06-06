@@ -15,6 +15,8 @@
  *
  ******************************************************************************/
 
+#include "config.h"
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -42,7 +44,7 @@ struct sl_cpc_transmit_queue_item {
  ******************************************************************************/
 sl_cpc_buffer_handle_t* buffer_new(sl_cpc_endpoint_t *ep,
                                    const uint8_t ep_id,
-                                   const void *data,
+                                   const uint8_t *data,
                                    const size_t data_len,
                                    const uint8_t control)
 {
@@ -58,16 +60,12 @@ sl_cpc_buffer_handle_t* buffer_new(sl_cpc_endpoint_t *ep,
   buffer->control = control;
 
   if ((data != NULL) && (data_len > 0)) {
-    uint16_t fcs;
-
     FATAL_ON(data_len > UINT16_MAX);
 
     buffer->data = data;
     buffer->data_length = (uint16_t)data_len;
 
-    fcs = sli_cpc_get_crc_sw(buffer->data, buffer->data_length);
-    buffer->fcs[0] = (uint8_t)fcs;
-    buffer->fcs[1] = (uint8_t)(fcs >> 8);
+    buffer->fcs = sli_cpc_get_crc_sw(buffer->data, buffer->data_length);
   }
 
   // explicitely set ref_cnt to 0, even though

@@ -14,7 +14,8 @@
  * sections of the MSLA applicable to Source Code.
  *
  ******************************************************************************/
-#define _GNU_SOURCE
+
+#include "config.h"
 
 #include <stdio.h>
 #include <stdlib.h>

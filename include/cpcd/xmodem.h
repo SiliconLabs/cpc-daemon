@@ -46,4 +46,4 @@ typedef struct {
   uint16_t crc;                     ///< CRC
 } __attribute__((packed)) XmodemFrame_t;
 
-#endif /* XMODEM_H */
+#endif // XMODEM_H

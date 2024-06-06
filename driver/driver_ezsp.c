@@ -14,6 +14,9 @@
  * sections of the MSLA applicable to Source Code.
  *
  ******************************************************************************/
+
+#include "config.h"
+
 #include <unistd.h>
 #include <sys/epoll.h>
 #include <fcntl.h>
@@ -469,7 +472,7 @@ static sl_status_t send_command(struct spi_interface *spi, uint8_t command, uint
 
 static sl_status_t send_command_with_retries(struct spi_interface *spi, uint8_t command, uint8_t * const rx_buffer)
 {
-  sl_status_t status;
+  sl_status_t status = SL_STATUS_OK;
   size_t retries =  MAX_RETRANSMIT_ATTEMPTS;
 
   while (retries--) {

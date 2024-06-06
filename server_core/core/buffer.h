@@ -25,10 +25,10 @@
 #include "cpcd/sl_slist.h"
 
 typedef struct {
-  void *hdlc_header;
-  const void *data;
+  uint8_t *hdlc_header;
+  const uint8_t *data;
   uint16_t data_length;
-  uint8_t fcs[2];
+  uint16_t fcs;
   uint8_t control;
   uint8_t address;
   uint8_t ref_cnt;
@@ -45,7 +45,7 @@ typedef struct sl_cpc_transmit_queue_item sl_cpc_transmit_queue_item_t;
 
 sl_cpc_buffer_handle_t* buffer_new(sl_cpc_endpoint_t *ep,
                                    const uint8_t ep_id,
-                                   const void *data,
+                                   const uint8_t *data,
                                    const size_t data_len,
                                    const uint8_t control);
 

@@ -22,17 +22,17 @@
 #include <stdint.h>
 
 /***************************************************************************//**
- * Computes CRC-16 CCITT on given buffer. Software implementation.
+ * Computes CRC-16 XMODEM on given buffer. Software implementation.
  *
  * @param buffer Pointer to the buffer on which the CRC must be computed.
  * @param buffer_length Length of the buffer, in bytes.
  *
  * @return CRC value.
  ******************************************************************************/
-uint16_t sli_cpc_get_crc_sw(const void* buffer, uint16_t buffer_length);
+uint16_t sli_cpc_get_crc_sw(const uint8_t* buffer, uint16_t buffer_length);
 
 /***************************************************************************//**
- * Validates CRC-16 CCITT on given buffer. Software implementation.
+ * Validates CRC-16 XMODEM on given buffer. Software implementation.
  *
  * @param buffer Pointer to the buffer on which the CRC must be computed.
  * @param buffer_length Length of the buffer, in bytes.
@@ -40,6 +40,6 @@ uint16_t sli_cpc_get_crc_sw(const void* buffer, uint16_t buffer_length);
  *
  * @return true if CRC matches. False otherwise.
  ******************************************************************************/
-bool sli_cpc_validate_crc_sw(const void* buffer, uint16_t buffer_length, uint16_t expected_crc);
+bool sli_cpc_validate_crc_sw(const uint8_t* buffer, uint16_t buffer_length, uint16_t expected_crc);
 
-#endif //CRC_H
+#endif // CRC_H

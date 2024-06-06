@@ -15,6 +15,8 @@
  *
  ******************************************************************************/
 
+#include "config.h"
+
 #include <signal.h>
 #include <sys/epoll.h>
 #include <sys/signalfd.h>
@@ -134,7 +136,9 @@ __attribute__((noreturn)) void signal_crash(void)
   if (pthread_equal(pthread_self(), main_thread)) {
     exit_daemon();
   } else {
-    write(crash_eventfd, &event_value, sizeof(event_value));
+    ssize_t wc;
+    wc = write(crash_eventfd, &event_value, sizeof(event_value));
+    (void)wc;
   }
 
   pthread_exit(NULL);
@@ -165,7 +169,9 @@ __attribute__((noreturn)) void software_graceful_exit(void)
   if (pthread_self() == main_thread) {
     exit_daemon();
   } else {
-    write(graceful_exit_eventfd, &event_value, sizeof(event_value));
+    ssize_t wc;
+    wc = write(graceful_exit_eventfd, &event_value, sizeof(event_value));
+    (void)wc;
   }
 
   pthread_exit(NULL);

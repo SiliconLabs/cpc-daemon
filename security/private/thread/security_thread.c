@@ -15,6 +15,8 @@
  *
  ******************************************************************************/
 
+#include "config.h"
+
 #include <errno.h>
 #include <stdbool.h>
 
@@ -30,7 +32,7 @@
 #include "security/security.h"
 #include "sl_cpc.h"
 
-/* Library handles */
+// Library handles
 static cpc_handle_t lib_handle;
 
 cpc_endpoint_t security_ep;
@@ -52,13 +54,13 @@ void* security_thread_func(void* param)
 
   security_keys_init();
 
-  /* The server can take time to be up; try to to load the key first
-   * to crash early if its bad. */
+  // The server can take time to be up; try to to load the key first
+  // to crash early if its bad.
   if (config.operation_mode != MODE_BINDING_ECDH && config.operation_mode != MODE_BINDING_UNBIND) {
     security_load_binding_key_from_file();
   }
 
-  /* Block until the server is up and running */
+  // Block until the server is up and running
   server_ready_wait();
 
   ret = cpc_init(&lib_handle, config.instance_name, false, NULL);
@@ -74,7 +76,7 @@ void* security_thread_func(void* param)
   while (1) {
     sl_cpc_security_command_t command = security_wait_for_command();
 
-    /* An event request is pending, act on it */
+    // An event request is pending, act on it
     switch (command) {
       case SECURITY_COMMAND_NONE:
         WARN("SECURITY_EVENT_NONE has no effect");

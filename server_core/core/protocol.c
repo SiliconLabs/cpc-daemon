@@ -15,6 +15,8 @@
  *
  ******************************************************************************/
 
+#include "config.h"
+
 #include "cpcd/logging.h"
 #include "cpcd/utils.h"
 
@@ -40,6 +42,9 @@ static struct protocol_ops protocol_v5_ops = {
   .connect              = connect_endpoint_v5,
   .disconnect           = disconnect_endpoint_v5,
   .terminate            = terminate_endpoint_v5,
+#if defined(ENABLE_ENCRYPTION)
+  .set_security_counters = set_security_counters_v5,
+#endif
 };
 
 /***************************************************************************//**

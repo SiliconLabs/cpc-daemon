@@ -28,4 +28,4 @@ extern bool security_initialized;
 
 void* security_thread_func(void* param);
 
-#endif //SECURITY_THREAD_H
+#endif // SECURITY_THREAD_H

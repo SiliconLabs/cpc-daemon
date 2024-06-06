@@ -114,9 +114,7 @@ void core_remote_ep_is_opened(uint8_t ep_id,
                               on_is_open_query_completion_t server_callback,
                               void *server_ctx);
 
-/*
- * Internal state for the endpoints. Will be filled by cpc_register_endpoint()
- */
+// Internal state for the endpoints. Will be filled by cpc_register_endpoint()
 typedef struct endpoint {
   uint8_t id;
   uint8_t flags;
@@ -136,6 +134,7 @@ typedef struct endpoint {
   struct timespec last_iframe_sent_timestamp;
   uint32_t smoothed_rtt;
   uint32_t rtt_variation;
+  bool closed_by_server;
 #if defined(ENABLE_ENCRYPTION)
   bool encrypted;
   uint32_t frame_counter_tx;

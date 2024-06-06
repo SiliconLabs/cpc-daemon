@@ -15,6 +15,8 @@
  *
  ******************************************************************************/
 
+#include "config.h"
+
 #include <stddef.h>
 #include <ctype.h>
 #include <string.h>
@@ -79,11 +81,9 @@ static nonce_t nonce_secondary;
 static bool security_session_reset_triggered;
 
 #if defined(UNIT_TESTING)
-/*
- * Emulate nonces as they should be on the secondary:
- *  - secondary_nonce_primary:   packets sent from host to secondary
- *  - secondary_nonce_secondary: packets sent from secondary to host
- */
+// Emulate nonces as they should be on the secondary:
+//  - secondary_nonce_primary:   packets sent from host to secondary
+//  - secondary_nonce_secondary: packets sent from secondary to host
 static nonce_t secondary_nonce_primary;
 static nonce_t secondary_nonce_secondary;
 #endif
@@ -101,11 +101,9 @@ static FILE* security_open_or_create_plaintext_binding_key_file(const char *file
 
 static void security_nonce_init(nonce_t *nonce)
 {
-  /*
-   * only setting frame_counter to zero matters, other attributes
-   * will be initialized when the session id is computed, but do it
-   * for completeness
-   */
+  // only setting frame_counter to zero matters, other attributes
+  // will be initialized when the session id is computed, but do it
+  // for completeness
   nonce->iv.endpoint_id = 0;
   memset(&nonce->iv.session_id, 0x0, sizeof(nonce->iv.session_id));
   nonce->iv.frame_counter = 0;
@@ -147,32 +145,24 @@ static void security_nonce_xfer_finalize(nonce_t *nonce, uint32_t *frame_counter
   }
 
   if (increment) {
-    /*
-     * Secondary's architecture is Little Endian, so we need to make sure the
-     * host uses the same way of storing the frame counter or there will be
-     * mismatch on Big Endian architecture.
-     */
+    // Secondary's architecture is Little Endian, so we need to make sure the
+    // host uses the same way of storing the frame counter or there will be
+    // mismatch on Big Endian architecture.
     (*frame_counter)++;
 
     if (*frame_counter == NONCE_FRAME_COUNTER_MAX_VALUE) {
-      /*
-       * Set security in reset mode only if it's currently "initialized". This
-       * is to prevent a scenario where it's first reset because of a TX packet,
-       * and then reset again by an RX packet.
-       */
+      // Set security in reset mode only if it's currently "initialized". This
+      // is to prevent a scenario where it's first reset because of a TX packet,
+      // and then reset again by an RX packet.
       if (security_get_state() == SECURITY_STATE_INITIALIZED) {
-        /*
-         * Keep track of the endpoint that triggered the endpoint
-         */
+        // Keep track of the endpoint that triggered the endpoint
         security_session_reset_triggered = true;
 
-        /*
-         * make sure packets on user endpoins are blocked
-         * while security session is being reset.
-         */
+        // make sure packets on user endpoins are blocked
+        // while security session is being reset.
         security_set_state(SECURITY_STATE_RESETTING);
 
-        /* Notify the security thread to renegotiate a new session */
+        // Notify the security thread to renegotiate a new session
         security_post_command(SECURITY_COMMAND_RESET_SESSION);
       }
     }
@@ -255,10 +245,10 @@ void security_keys_init(void)
   int ret;
   const char app_custom[] = "CPCD custom";
 
-  /* Perform MbedTLS runtime version check */
+  // Perform MbedTLS runtime version check
   FATAL_ON(MBEDTLS_VERSION_CHECK);
 
-  /* Perform an initial self tests */
+  // Perform an initial self tests
 #if defined(MBEDTLS_SELF_TEST)
   FATAL_ON(mbedtls_gcm_self_test(0) != 0);
   FATAL_ON(mbedtls_ctr_drbg_self_test(0) != 0);
@@ -293,10 +283,8 @@ void security_keys_init(void)
 
 void security_keys_reset(void)
 {
-  /*
-   * Clear GCM context and underlying cipher sub-context
-   * and reinit the context for next session
-   */
+  // Clear GCM context and underlying cipher sub-context
+  // and reinit the context for next session
   mbedtls_gcm_free(&gcm_context);
   mbedtls_gcm_init(&gcm_context);
 
@@ -318,7 +306,7 @@ static void security_keys_init_ecdh(void)
   mbedtls_ecp_group_init(&grp);
   mbedtls_ecp_point_init(&our_public_key);
 
-  /* Initialize context and generate keypair */
+  // Initialize context and generate keypair
   ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_CURVE25519);
   if (ret != 0) {
     FATAL("ECDH: Failed to load private key variable. ret=%d", ret);
@@ -435,13 +423,13 @@ void security_compute_session_key_and_id(uint8_t * random1,
   uint8_t session_key[SESSION_KEY_LENGTH_BYTES] = { 0 };
 
   if (security_get_state() == SECURITY_STATE_RESETTING) {
-    /* if security is resetting, clear previous context and reset nonces */
+    // if security is resetting, clear previous context and reset nonces
     security_keys_reset();
   }
 
-  /* Generate Session ID and Session Key */
+  // Generate Session ID and Session Key
   {
-    /* Both devices will construct a string of bits:  Rand-3 = Rand-1[0:255] || Rand-2[0:255] */
+    // Both devices will construct a string of bits:  Rand-3 = Rand-1[0:255] || Rand-2[0:255]
     memcpy(&random3[0], random1, half_random_len);
     memcpy(&random3[half_random_len], random2, half_random_len);
 
@@ -452,12 +440,9 @@ void security_compute_session_key_and_id(uint8_t * random1,
                          0); //is not sha224
     FATAL_ON(ret != 0);
 
-    /*
-     * The resulting 32-byte number will be split into two 8-byte values as follows:
-     *     Result = Session-ID-Host || Session-ID-NCP || Discarded data
-     *
-     * As the session id in nonce is only 7 bytes, drop the last byte of each 8-byte value.
-     */
+    // The resulting 32-byte number will be split into two 8-byte values as follows:
+    //     Result = Session-ID-Host || Session-ID-NCP || Discarded data
+    // As the session id in nonce is only 7 bytes, drop the last byte of each 8-byte value.
     security_nonce_set_session_id(&nonce_primary,
                                   &sha256_random3[0], SESSION_ID_LENGTH_BYTES);
     security_nonce_set_session_id(&nonce_secondary,
@@ -472,13 +457,13 @@ void security_compute_session_key_and_id(uint8_t * random1,
                                   SESSION_ID_LENGTH_BYTES);
 #endif
 
-    /* To generate the session key a second string of bits is constructed: Rand-4 = Rand-1[256:511] || Rand-2[256:511] || Binding Key[0:128] */
+    // To generate the session key a second string of bits is constructed: Rand-4 = Rand-1[256:511] || Rand-2[256:511] || Binding Key[0:128]
     memcpy(&random4[0], &random1[half_random_len], half_random_len);
     memcpy(&random4[half_random_len], &random2[half_random_len], half_random_len);
     memcpy(&random4[2 * half_random_len], binding_key, BINDING_KEY_LENGTH_BYTES);
 
-    /* Both devices perform SHA256 on RAND-4
-     * The resulting 256 bit number is then used as the session key */
+    // Both devices perform SHA256 on RAND-4
+    // The resulting 256 bit number is then used as the session key
     ret = mbedtls_sha256(random4,
                          sizeof(random4),
                          session_key,
@@ -486,7 +471,7 @@ void security_compute_session_key_and_id(uint8_t * random1,
     FATAL_ON(ret != 0);
   }
 
-  /* The session key is then used to encrypt all remaining communication */
+  // The session key is then used to encrypt all remaining communication
   ret = mbedtls_gcm_setkey(&gcm_context, MBEDTLS_CIPHER_ID_AES, session_key, SESSION_KEY_LENGTH_BYTES * 8);
   FATAL_ON(ret != 0);
 
@@ -549,27 +534,26 @@ void security_load_binding_key_from_file(void)
 
   string_len = strlen(line);
 
-  /* Prune possible line feeds */
+  // Prune possible line feeds
   if (line[string_len - 1] == '\n' || line[string_len - 1] == '\r') {
     line[string_len - 1] = '\0';
     string_len--;
   }
 
-  /* Assert that the key is 128 bit long */
+  // Assert that the key is 128 bit long
   if (string_len != BINDING_KEY_LENGTH_BYTES * 2) {
     FATAL("The binding key \'%s\' : [%s] is %u bits long, should be %u bits long", config.binding_key_file, line, (unsigned int)(string_len * 4), BINDING_KEY_LENGTH_BYTES * 8);
   }
 
-  /* Make sure that all chars are hex symbols */
+  // Make sure that all chars are hex symbols
   for (i = 0; i != BINDING_KEY_LENGTH_BYTES * 2; i++) {
     if (isxdigit(line[i]) == 0) {
       FATAL("Character number %u of the binding key is not a hexadecimal digit : %c", (unsigned int)i, line[i]);
     }
   }
 
-  /* Parse the binding key string into a binary array*/
+  // Parse the binding key string into a binary array
   {
-    size_t i;
     unsigned chr;
 
     for (i = 0; i < BINDING_KEY_LENGTH_BYTES * 2; i += 2 ) {
@@ -580,7 +564,7 @@ void security_load_binding_key_from_file(void)
     }
   }
 
-  /* line was internally malloc'ed by getline() */
+  // line was internally malloc'ed by getline()
   free(line);
 
   TRACE_SECURITY("Loaded valid binding key");
@@ -629,7 +613,7 @@ sl_status_t __security_encrypt(sl_cpc_endpoint_t *ep, sl_cpc_security_frame_t *s
 
   FATAL_ON(tag_len != TAG_LENGTH_BYTES);
 
-  /* set the endpoint in the nonce */
+  // set the endpoint in the nonce
   security_nonce_xfer_init(&nonce_primary, ep->id, sec_frame->frame_counter, true);
 
   status = mbedtls_gcm_crypt_and_tag(&gcm_context,
@@ -641,13 +625,13 @@ sl_status_t __security_encrypt(sl_cpc_endpoint_t *ep, sl_cpc_security_frame_t *s
                                      // authenticated but not encrypted
                                      header,
                                      header_len,
-                                     payload, //The input buffer is the payload
+                                     payload, // The input buffer is the payload
                                      output,
                                      tag_len,
                                      tag);
 
   if (status == 0) {
-    /* only upon successful encryption increase frame counter */
+    // only upon successful encryption increase frame counter
     security_nonce_xfer_finalize(&nonce_primary, &ep->frame_counter_tx, false);
 
     return SL_STATUS_OK;
@@ -655,7 +639,7 @@ sl_status_t __security_encrypt(sl_cpc_endpoint_t *ep, sl_cpc_security_frame_t *s
 
   security_nonce_xfer_finalize(&nonce_primary, &ep->frame_counter_tx, false);
 
-  /* convert mbedtls error code to sl_status */
+  // convert mbedtls error code to sl_status
   if (status == MBEDTLS_ERR_GCM_BAD_INPUT) {
     return SL_STATUS_INVALID_PARAMETER;
   } else {
@@ -694,7 +678,7 @@ sl_status_t __security_decrypt(sl_cpc_endpoint_t *ep,
 
   security_nonce_xfer_finalize(&nonce_secondary, &ep->frame_counter_rx, false);
 
-  /* convert mbedtls error code to sl_status */
+  // convert mbedtls error code to sl_status
   if (status == MBEDTLS_ERR_GCM_BAD_INPUT) {
     return SL_STATUS_INVALID_PARAMETER;
   } else if (status == MBEDTLS_ERR_GCM_AUTH_FAILED) {
@@ -715,7 +699,7 @@ sl_status_t __security_encrypt_secondary(sl_cpc_endpoint_t *ep,
 
   FATAL_ON(tag_len != TAG_LENGTH_BYTES);
 
-  /* set the endpoint in the nonce */
+  // set the endpoint in the nonce
   security_nonce_xfer_init(&secondary_nonce_secondary, ep->id, ep->frame_counter_tx, false);
 
   status = mbedtls_gcm_crypt_and_tag(&gcm_context,
@@ -727,13 +711,13 @@ sl_status_t __security_encrypt_secondary(sl_cpc_endpoint_t *ep,
                                      // authenticated but not encrypted
                                      header,
                                      header_len,
-                                     payload, //The input buffer is the payload
+                                     payload, // The input buffer is the payload
                                      output,
                                      tag_len,
                                      tag);
 
   if (status == 0) {
-    /* only upon successful encryption increase frame counter */
+    // only upon successful encryption increase frame counter
     security_nonce_xfer_finalize(&secondary_nonce_secondary, &ep->frame_counter_tx, true);
 
     return SL_STATUS_OK;
@@ -741,7 +725,7 @@ sl_status_t __security_encrypt_secondary(sl_cpc_endpoint_t *ep,
 
   security_nonce_xfer_finalize(&secondary_nonce_secondary, &ep->frame_counter_tx, false);
 
-  /* convert mbedtls error code to sl_status */
+  // convert mbedtls error code to sl_status
   if (status == MBEDTLS_ERR_GCM_BAD_INPUT) {
     return SL_STATUS_INVALID_PARAMETER;
   } else {
@@ -780,7 +764,7 @@ sl_status_t __security_decrypt_secondary(sl_cpc_endpoint_t *ep,
 
   security_nonce_xfer_finalize(&secondary_nonce_primary, &ep->frame_counter_rx, false);
 
-  /* convert mbedtls error code to sl_status */
+  // convert mbedtls error code to sl_status
   if (status == MBEDTLS_ERR_GCM_BAD_INPUT) {
     return SL_STATUS_INVALID_PARAMETER;
   } else if (status == MBEDTLS_ERR_GCM_AUTH_FAILED) {
@@ -794,9 +778,7 @@ sl_status_t __security_decrypt_secondary(sl_cpc_endpoint_t *ep,
 void security_xfer_rollback(sl_cpc_endpoint_t *ep)
 {
 #if defined(ENABLE_ENCRYPTION)
-  sl_cpc_security_state_t security_state = security_get_state();
-
-  if (security_state == SECURITY_STATE_INITIALIZED) {
+  if (security_get_state() == SECURITY_STATE_INITIALIZED) {
     ep->frame_counter_rx--;
     TRACE_SECURITY("Rolled back frame counter on ep #%d, counter decremented", ep->id);
   }

@@ -37,6 +37,11 @@ typedef void (*on_disconnect_completion_t)(sl_cpc_endpoint_t *ep, sl_status_t st
 /// Called when a termine operation completes
 typedef void (*on_terminate_completion_t)(sl_cpc_endpoint_t *ep, sl_status_t status);
 
+/// Called when setting the security counters completes
+typedef void (*on_set_security_counters_completion_t)(sl_cpc_endpoint_t *ep,
+                                                      sl_status_t status,
+                                                      void *ctx);
+
 /// @brief Struct for storing protocol operation structure
 struct protocol_ops {
   /// protocol version supported
@@ -67,6 +72,12 @@ struct protocol_ops {
   /// terminate/close an endpoint
   void            (*terminate)(sl_cpc_endpoint_t *ep,
                                on_terminate_completion_t);
+
+#if defined(ENABLE_ENCRYPTION)
+  void            (*set_security_counters)(sl_cpc_endpoint_t *ep,
+                                           on_set_security_counters_completion_t,
+                                           void *ctx);
+#endif
 };
 
 /***************************************************************************//**

@@ -14,10 +14,11 @@
  * sections of the MSLA applicable to Source Code.
  *
  ******************************************************************************/
-#define _GNU_SOURCE
 
+#include "config.h"
+
+#include <errno.h>
 #include <fcntl.h>
-#include <sys/errno.h>
 #include <glob.h>
 #include <limits.h>
 #include <sys/resource.h>
@@ -39,8 +40,6 @@
 #include "cpcd/logging.h"
 #include "cpcd/sleep.h"
 #include "cpcd/utils.h"
-
-#include "version.h"
 
 #ifndef DEFAULT_INSTANCE_NAME
   #define DEFAULT_INSTANCE_NAME "cpcd_0"
@@ -451,7 +450,7 @@ static void config_parse_cli_arg(int argc, char *argv[])
         config.file_path = optarg;
         break;
       case 's':
-        config.stats_interval = strtol(optarg, NULL, 0);
+        config.stats_interval = (int)strtol(optarg, NULL, 0);
         FATAL_ON(config.stats_interval <= 0);
         break;
       case 'h':
@@ -836,7 +835,7 @@ static void config_parse_config_file(void)
       config.traces_folder = strdup(val);
       FATAL_ON(config.traces_folder == NULL);
     } else if (0 == strcmp(name, "rlimit_nofile")) {
-      config.rlimit_nofile = strtoul(val, &endptr, 10);
+      config.rlimit_nofile = (int)strtoul(val, &endptr, 10);
       if (*endptr != '\0') {
         FATAL("Config file error : bad rlimit_nofile value");
       }
@@ -1058,12 +1057,12 @@ static void config_set_rlimit_nofile(void)
   ret = getrlimit(RLIMIT_NOFILE, &limit);
   FATAL_SYSCALL_ON(ret < 0);
 
-  if (limit.rlim_cur < config.rlimit_nofile) {
-    if (config.rlimit_nofile > limit.rlim_max) {
+  if (limit.rlim_cur < (rlim_t)config.rlimit_nofile) {
+    if ((rlim_t)config.rlimit_nofile > limit.rlim_max) {
       FATAL("The OS doesn't support our requested RLIMIT_NOFILE value");
     }
 
-    limit.rlim_cur = config.rlimit_nofile;
+    limit.rlim_cur = (rlim_t)config.rlimit_nofile;
 
     ret = setrlimit(RLIMIT_NOFILE, &limit);
     FATAL_SYSCALL_ON(ret < 0);
@@ -1083,7 +1082,6 @@ static void config_print_version(FILE *stream, int exit_code)
   fprintf(stream, "%s\n", PROJECT_VER);
   fprintf(stream, "GIT commit: %s\n", GIT_SHA1);
   fprintf(stream, "GIT branch: %s\n", GIT_REFSPEC);
-  fprintf(stream, "Sources hash: %s\n", SOURCES_HASH);
   exit(exit_code);
 }
 

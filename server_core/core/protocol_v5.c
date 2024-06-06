@@ -15,10 +15,14 @@
  *
  ******************************************************************************/
 
+#include "config.h"
+
 #include <errno.h>
 
+#include "cpcd/endianness.h"
 #include "cpcd/logging.h"
 
+#include "cpcd/sl_status.h"
 #include "server_core/system_endpoint/system.h"
 
 #include "protocol.h"
@@ -100,10 +104,10 @@ static void is_endpoint_opened_reply_v5(sli_cpc_property_id_t property_id,
 
   endpoint_id = PROPERTY_ID_TO_EP_ID(property_id);
 
-  /* Sanity checks */
+  // Sanity checks
   {
-    /* This function's signature is for all properties get/set. Make sure we
-     * are dealing with PROP_ENDPOINT_STATE and with the correct property_length*/
+    // This function's signature is for all properties get/set. Make sure we
+    // are dealing with PROP_ENDPOINT_STATE and with the correct property_length
     BUG_ON(property_id < PROP_ENDPOINT_STATE_1 || property_id > PROP_ENDPOINT_STATE_255);
 
     BUG_ON(endpoint_id != ctx->ep->id);
@@ -180,8 +184,8 @@ static void on_connect_reply_v5(sli_cpc_property_id_t property_id,
     case SL_STATUS_IN_PROGRESS:
     case SL_STATUS_OK:
       if (property_length != sizeof(sli_cpc_endpoint_state_v5_t)) {
-        TRACE_CORE("Connection confirmation for ep#%d has invalid length (expected %d, got %d)",
-                   ep_id, sizeof(sli_cpc_endpoint_state_v5_t), property_length);
+        TRACE_CORE("Connection confirmation for ep#%d has invalid length (expected %zd, got %zd)",
+                   (int)ep_id, sizeof(sli_cpc_endpoint_state_v5_t), property_length);
         callback(ctx->ep, SL_STATUS_INVALID_TYPE);
         break;
       }
@@ -273,6 +277,7 @@ static void on_disconnect_reply_v5(sli_cpc_property_id_t property_id,
 
   protocol_free_callback_context(ctx);
 }
+
 /***************************************************************************//**
  * Callback called when the response to a `terminate` is received.
  ******************************************************************************/
@@ -322,6 +327,79 @@ static void on_terminate_reply_v5(sli_cpc_property_id_t property_id,
 
   protocol_free_callback_context(ctx);
 }
+
+#if defined(ENABLE_ENCRYPTION)
+/***************************************************************************//**
+ * Callback called when the response to setting security counters is received.
+ ******************************************************************************/
+static void on_set_security_counters_reply_v5(sli_cpc_property_id_t property_id,
+                                              void *property_value,
+                                              size_t property_length,
+                                              void *user_arg,
+                                              sl_status_t status)
+{
+  struct protocol_callback_context *ctx = (struct protocol_callback_context*)user_arg;
+  on_set_security_counters_completion_t callback;
+
+  FATAL_ON(ctx == NULL);
+  callback = (on_set_security_counters_completion_t)ctx->callback;
+
+  switch (status) {
+    case SL_STATUS_IN_PROGRESS:
+    case SL_STATUS_OK:
+      if (property_id == PROP_LAST_STATUS) {
+        // case where the remote doesn't support updating the counters
+        sl_cpc_system_status_t system_status;
+
+        // first of all, check the length
+        if (property_length != sizeof(sl_cpc_system_status_t)) {
+          status = SL_STATUS_INVALID_TYPE;
+        } else {
+          system_status = (sl_cpc_system_status_t) u32_from_le((uint8_t*)property_value);
+
+          // this is the only case we're really interested in, if the
+          // remote doesn't support this command. In that case it should
+          // be handled in a special manner. Every other situation is an
+          // critical error.
+          if (system_status == STATUS_PROP_NOT_FOUND) {
+            status = SL_STATUS_NOT_SUPPORTED;
+          } else {
+            status = SL_STATUS_FAIL;
+          }
+        }
+      } else if (property_id >= PROP_ENDPOINT_ENCRYPTION
+                 && property_id <= PROP_ENDPOINT_ENCRYPTION + 255) {
+        // case where remote supports the command
+        uint8_t ep_id = PROPERTY_ID_TO_EP_ID(property_id);
+        size_t expected_length;
+
+        TRACE_CORE("Updated security counters for ep#%d", ep_id);
+        expected_length = 2 * sizeof(uint32_t);
+
+        if (property_length == expected_length) {
+          status = SL_STATUS_OK;
+        } else {
+          status = SL_STATUS_INVALID_TYPE;
+        }
+      } else {
+        status = SL_STATUS_FAIL;
+      }
+
+      break;
+
+    case SL_STATUS_TIMEOUT:
+    case SL_STATUS_ABORT:
+      status = SL_STATUS_FAIL;
+      break;
+    default:
+      break;
+  }
+
+  callback(ctx->ep, status, ctx->callback_data);
+
+  protocol_free_callback_context(ctx);
+}
+#endif
 
 /***************************************************************************//**
  * Convert bytestream to internal core state.
@@ -412,8 +490,8 @@ void connect_endpoint_v5(sl_cpc_endpoint_t *ep,
                                  &connected_state,
                                  sizeof(connected_state),
                                  ctx,
-                                 0, /* unlimited retries */
-                                 100000, /* 100ms between retries*/
+                                 0, // unlimited retries
+                                 100000, // 100ms between retries
                                  SYSTEM_EP_IFRAME);
 }
 
@@ -438,8 +516,8 @@ void disconnect_endpoint_v5(sl_cpc_endpoint_t *ep,
                                  &disconnected_state,
                                  sizeof(disconnected_state),
                                  ctx,
-                                 0, /* unlimited retries */
-                                 100000, /* 100ms between retries*/
+                                 0, // unlimited retries
+                                 100000, // 100ms between retries
                                  SYSTEM_EP_IFRAME);
 }
 
@@ -464,7 +542,36 @@ void terminate_endpoint_v5(sl_cpc_endpoint_t *ep,
                                  &close_state,
                                  sizeof(close_state),
                                  ctx,
-                                 1,      /* 1 retry */
-                                 100000, /* 100ms between retries*/
+                                 1,      // 1 retry
+                                 250000, // 250ms to receive reply
                                  SYSTEM_EP_IFRAME);
 }
+
+#if defined(ENABLE_ENCRYPTION)
+void set_security_counters_v5(sl_cpc_endpoint_t *ep,
+                              on_set_security_counters_completion_t callback,
+                              void *cb_data)
+{
+  struct protocol_callback_context *ctx;
+  uint8_t counters[2 * sizeof(uint32_t)];
+
+  ctx = protocol_new_callback_context();
+  FATAL_ON(ctx == NULL);
+
+  ctx->ep = ep;
+  ctx->callback = callback;
+  ctx->callback_data = cb_data;
+
+  u32_to_le(ep->frame_counter_rx, &counters[0]);
+  u32_to_le(ep->frame_counter_tx, &counters[sizeof(uint32_t)]);
+
+  sl_cpc_system_cmd_property_set(on_set_security_counters_reply_v5,
+                                 EP_ID_TO_PROPERTY_ENCRYPTION(ep->id),
+                                 counters,
+                                 sizeof(counters),
+                                 ctx,
+                                 1,
+                                 100000,
+                                 SYSTEM_EP_IFRAME);
+}
+#endif

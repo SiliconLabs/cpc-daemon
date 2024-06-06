@@ -15,7 +15,8 @@
  *
  ******************************************************************************/
 
-#define _GNU_SOURCE
+#include "config.h"
+
 #include <pthread.h>
 
 #include <fcntl.h>
@@ -27,6 +28,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+
+#if defined(__ANDROID__)
+#include <signal.h>
+#endif
 
 #include "cpcd/core.h"
 #include "cpcd/logging.h"
@@ -61,10 +66,22 @@ typedef struct {
 
 static void* driver_thread_func(void* param);
 
-void driver_emul_kill(void)
+#if defined(__ANDROID__)
+static void driver_emul_kill_handler(int signum)
+{
+  (void)signum;
+  pthread_exit(NULL);
+}
+#endif
+
+static void driver_emul_kill(void)
 {
   if (drv_thread_started) {
+#if defined(__ANDROID__)
+    pthread_kill(drv_thread, SIGUSR1);
+#else
     pthread_cancel(drv_thread);
+#endif
     drv_thread_started = false;
   }
 }
@@ -83,10 +100,14 @@ void driver_emul_init(int* fd_core, int *fd_notify_core)
 
   fd_socket_drv  = fd_sockets[0];
 
-  /* setup driver kill */
+#if defined(__ANDROID__)
+  signal(SIGUSR1, &driver_emul_kill_handler);
+#endif
+
+  // setup driver kill
   driver_kill_init(driver_emul_kill);
 
-  /* create driver thread */
+  // create driver thread
   if (pthread_create(&drv_thread, NULL, driver_thread_func, NULL)) {
     FATAL("Error creating driver thread");
   }
@@ -177,12 +198,12 @@ void sli_cpc_drv_emul_submit_pkt_for_rx(void *header_buf, void *payload_buf, uin
     // recreate header with adjusted tag length
     hdlc_create_header(buffer,
                        address,
-                       hdlc_get_length(header_buf) + tag_len,
+                       (uint16_t)(hdlc_get_length(header_buf) + tag_len),
                        hdlc_get_control(header_buf),
                        true);
 
     // FCS is part of payload_buf_len, drop it as it's useless to us now
-    payload_buf_len -= 2;
+    payload_buf_len = (uint16_t)(payload_buf_len - 2);
 
     endpoint.id = hdlc_get_address(header_buf);
     endpoint.frame_counter_tx = ep_frame_counters_tx[endpoint.id];
@@ -207,12 +228,12 @@ void sli_cpc_drv_emul_submit_pkt_for_rx(void *header_buf, void *payload_buf, uin
 
     // recompute FCS with encrypted payload + tag
     fcs = sli_cpc_get_crc_sw(&buffer[SLI_CPC_HDLC_HEADER_RAW_SIZE],
-                             payload_buf_len + tag_len);
+                             (uint16_t)(payload_buf_len + tag_len));
     buffer[SLI_CPC_HDLC_HEADER_RAW_SIZE + payload_buf_len + tag_len + 0] = (uint8_t)fcs;
     buffer[SLI_CPC_HDLC_HEADER_RAW_SIZE + payload_buf_len + tag_len + 1] = (uint8_t)(fcs >> 8);
 
     // restore payload_buf_len to accomodate "send"
-    payload_buf_len += 2;
+    payload_buf_len = (uint16_t)(payload_buf_len + 2);
 #endif
   } else {
     memcpy(buffer, header_buf, SLI_CPC_HDLC_HEADER_RAW_SIZE);
@@ -221,7 +242,7 @@ void sli_cpc_drv_emul_submit_pkt_for_rx(void *header_buf, void *payload_buf, uin
     }
   }
 
-  (void)send(fd_socket_drv, buffer, payload_buf_len + tag_len + SLI_CPC_HDLC_HEADER_RAW_SIZE, 0);
+  send(fd_socket_drv, buffer, (size_t)payload_buf_len + (size_t)tag_len + (size_t)SLI_CPC_HDLC_HEADER_RAW_SIZE, 0);
 
   free(buffer);
 }
@@ -320,15 +341,17 @@ static void* driver_thread_func(void* param)
   uint16_t tag_len = (uint16_t)security_encrypt_get_extra_buffer_size();
 #endif
 
+#if !defined(__ANDROID__)
   pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+#endif
 
   while (1) {
     FD_ZERO(&rfds);
     FD_SET(fd_socket_drv, &rfds);
     max_fd = fd_socket_drv;
-    /* select() requires the number of the highest file descriptor + 1 in the fd_set passed  */
+    // select() requires the number of the highest file descriptor + 1 in the fd_set passed
     max_fd++;
-    //no timeout
+    // no timeout
     retval = select(max_fd, &rfds, NULL, NULL, NULL);
     if (retval == -1) {
       perror("select()");
@@ -367,7 +390,7 @@ static void* driver_thread_func(void* param)
         sl_status_t status;
         uint8_t ack;
 
-        /* the payload buffer must be longer than the security tag */
+        // the payload buffer must be longer than the security tag
         BUG_ON(length < tag_len);
         length = (uint16_t)(length - tag_len - 2);
 
@@ -377,7 +400,7 @@ static void* driver_thread_func(void* param)
         ack = hdlc_get_ack(hdlc_get_control(frame->header));
         hdlc_set_control_ack(&frame->header[SLI_CPC_HDLC_CONTROL_POS], 0);
 
-        /* decrypt like the secondary would do when receiving such frame */
+        // decrypt like the secondary would do when receiving such frame
         status = security_decrypt_secondary(&endpoint,
                                             frame->header, SLI_CPC_HDLC_HEADER_SIZE,
                                             frame->payload, length,
@@ -395,7 +418,7 @@ static void* driver_thread_func(void* param)
           TRACE_DRIVER("Successfully decrypted frame\n");
         }
 
-        /* copy plaintext buffer at the payload pointer */
+        // copy plaintext buffer at the payload pointer
         memcpy(frame->payload, plaintext_buffer, length);
       }
 #endif
@@ -420,14 +443,14 @@ static void* driver_thread_func(void* param)
 
       memcpy(&system_cmd, frame->payload, sizeof(system_cmd));
 
-      /* system_cmd.payload cannot be used because it's a flexible array,
-       * and its content is not copied by the memcpy */
+      // system_cmd.payload cannot be used because it's a flexible array,
+      // and its content is not copied by the memcpy
       system_cmd_payload = frame->payload + sizeof(system_cmd);
 
       sli_cpc_system_property_cmd_t system_property_cmd;
       memcpy(&system_property_cmd, system_cmd_payload, sizeof(system_property_cmd));
 
-      property_length = system_cmd.length - sizeof(sli_cpc_property_id_t);
+      property_length = (uint16_t)(system_cmd.length - sizeof(sli_cpc_property_id_t));
       property_payload = frame->payload
                          + sizeof(sli_cpc_system_cmd_t)
                          + sizeof(sli_cpc_system_property_cmd_t);
@@ -455,10 +478,17 @@ static void* driver_thread_func(void* param)
                           + 2;
               } else if (system_property_cmd.property_id >= EP_ID_TO_PROPERTY_ENCRYPTION(1)
                          && system_property_cmd.property_id <= EP_ID_TO_PROPERTY_ENCRYPTION(255)) {
-                buf_len = sizeof(sli_cpc_system_cmd_t)
-                          + sizeof(sli_cpc_property_id_t)
-                          + sizeof(bool)
-                          + 2;
+                if (system_cmd.command_id == CMD_SYSTEM_PROP_VALUE_GET) {
+                  buf_len = sizeof(sli_cpc_system_cmd_t)
+                            + sizeof(sli_cpc_property_id_t)
+                            + sizeof(bool)
+                            + 2;
+                } else {
+                  buf_len = sizeof(sli_cpc_system_cmd_t)
+                            + sizeof(sli_cpc_property_id_t)
+                            + 2 * sizeof(uint32_t)
+                            + 2;
+                }
               }
 
               FATAL_ON(buf_len < 2);
@@ -490,32 +520,48 @@ static void* driver_thread_func(void* param)
               } else if (system_cmd.command_id == CMD_SYSTEM_PROP_VALUE_SET) {
                 TRACE_DRIVER("Replying to property set");
                 uint8_t ep_id = PROPERTY_ID_TO_EP_ID(system_property_cmd.property_id);
-                sli_cpc_endpoint_state_t requested_state;
 
-                memcpy(&requested_state, property_payload, sizeof(requested_state));
+                if ((system_property_cmd.property_id >= EP_ID_TO_PROPERTY_STATE(1)
+                     && system_property_cmd.property_id <= EP_ID_TO_PROPERTY_STATE(255))) {
+                  sli_cpc_endpoint_state_t requested_state;
 
-                TRACE_DRIVER("Property set for ep #%d requested state %d, current %d",
-                             ep_id, requested_state, ep_states[ep_id]);
+                  memcpy(&requested_state, property_payload, sizeof(requested_state));
 
-                if (requested_state == SLI_CPC_STATE_CONNECTED) {
-                  if (ep_states[ep_id] == SLI_CPC_STATE_OPEN) {
-                    ep_states[ep_id] = SLI_CPC_STATE_CONNECTED;
-                    TRACE_DRIVER("Property set forcing state CONNECTED for ep #%d",
+                  TRACE_DRIVER("Property set for ep #%d requested state %d, current %d",
+                               ep_id, requested_state, ep_states[ep_id]);
+
+                  if (requested_state == SLI_CPC_STATE_CONNECTED) {
+                    if (ep_states[ep_id] == SLI_CPC_STATE_OPEN) {
+                      ep_states[ep_id] = SLI_CPC_STATE_CONNECTED;
+                      TRACE_DRIVER("Property set forcing state CONNECTED for ep #%d",
+                                   ep_id);
+                    }
+                  } else if (requested_state == SLI_CPC_STATE_CLOSED) {
+                    ep_states[ep_id] = SLI_CPC_STATE_CLOSED;
+                  }
+
+                  // Create the set property reply
+                  sli_cpc_drv_emul_create_set_endpoint_status_reply((sli_cpc_system_cmd_t *)buffer,
+                                                                    PROPERTY_ID_TO_EP_ID(system_property_cmd.property_id),
+                                                                    system_cmd.command_seq,
+                                                                    ep_states[PROPERTY_ID_TO_EP_ID(system_property_cmd.property_id)]);
+                  if (requested_state == SLI_CPC_STATE_CLOSED && ep_states[ep_id] == SLI_CPC_STATE_CLOSED) {
+                    ep_states[ep_id] = SLI_CPC_STATE_OPEN;
+                    TRACE_DRIVER("Property set forcing state OPEN for ep #%d",
                                  ep_id);
                   }
-                } else if (requested_state == SLI_CPC_STATE_CLOSED) {
-                  ep_states[ep_id] = SLI_CPC_STATE_CLOSED;
-                }
+                } else if (system_property_cmd.property_id >= EP_ID_TO_PROPERTY_ENCRYPTION(1)
+                           && system_property_cmd.property_id <= EP_ID_TO_PROPERTY_ENCRYPTION(255)) {
+                  sli_cpc_system_cmd_t *tx_cmd = (sli_cpc_system_cmd_t *)buffer;
 
-                // Create the set property reply
-                sli_cpc_drv_emul_create_set_endpoint_status_reply((sli_cpc_system_cmd_t *)buffer,
-                                                                  PROPERTY_ID_TO_EP_ID(system_property_cmd.property_id),
-                                                                  system_cmd.command_seq,
-                                                                  ep_states[PROPERTY_ID_TO_EP_ID(system_property_cmd.property_id)]);
-                if (requested_state == SLI_CPC_STATE_CLOSED && ep_states[ep_id] == SLI_CPC_STATE_CLOSED) {
-                  ep_states[ep_id] = SLI_CPC_STATE_OPEN;
-                  TRACE_DRIVER("Property set forcing state OPEN for ep #%d",
-                               ep_id);
+                  tx_cmd->command_id = CMD_SYSTEM_PROP_VALUE_IS;
+                  tx_cmd->command_seq = system_cmd.command_seq;
+                  tx_cmd->length = sizeof(sli_cpc_property_id_t) + 2 * sizeof(uint32_t);
+
+                  sli_cpc_system_property_cmd_t *tx_property = (sli_cpc_system_property_cmd_t*)tx_cmd->payload;
+
+                  tx_property->property_id = system_property_cmd.property_id;
+                  memcpy(tx_property->payload, property_payload, property_length);
                 }
               } else {
                 BUG("Invalid command id");

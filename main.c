@@ -14,7 +14,8 @@
  * sections of the MSLA applicable to Source Code.
  *
  ******************************************************************************/
-#define _GNU_SOURCE
+
+#include "config.h"
 
 #include <pthread.h>
 
@@ -35,13 +36,12 @@
 #include "cpcd/security.h"
 #include "cpcd/server_core.h"
 
-#include "version.h"
 #include "driver/driver_kill.h"
 #include "server_core/epoll/epoll.h"
 
 pthread_t main_thread; // Current thread
 
-/* Global copy of argv to be able to restart the daemon with the same arguments. */
+// Global copy of argv to be able to restart the daemon with the same arguments.
 char **argv_g = 0;
 int argc_g = 0;
 
@@ -63,7 +63,6 @@ int main(int argc, char *argv[])
 
   PRINT_INFO("[CPCd v%s] [Library API v%d] [RCP Protocol v%d]", PROJECT_VER, LIBRARY_API_VERSION, PROTOCOL_VERSION);
   PRINT_INFO("Git commit: %s / branch: %s", GIT_SHA1, GIT_REFSPEC);
-  PRINT_INFO("Sources hash: %s", SOURCES_HASH);
 
   if (geteuid() == 0) {
     WARN("Running CPCd as 'root' is not recommended. Proceed at your own risk.");

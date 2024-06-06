@@ -15,8 +15,8 @@
  *
  ******************************************************************************/
 
-#ifndef CONFIG_H
-#define CONFIG_H
+#ifndef CPCD_CONFIG_H
+#define CPCD_CONFIG_H
 
 #include <stdbool.h>
 #include <sys/resource.h>
@@ -48,7 +48,7 @@ typedef struct __attribute__((packed)) {
 
   bool use_encryption;
 
-  char *binding_key_file;
+  const char *binding_key_file;
 
   bool binding_key_override;
 
@@ -94,9 +94,9 @@ typedef struct __attribute__((packed)) {
 
   const char *uart_validation_test_option;
 
-  long stats_interval;
+  int stats_interval;
 
-  rlim_t rlimit_nofile;
+  int rlimit_nofile;
 } config_t;
 
 extern config_t config;
@@ -107,4 +107,4 @@ void config_restart_cpcd(char **argv);
 void config_restart_cpcd_without_fw_update_args(void);
 void config_restart_cpcd_without_bind_arg(void);
 
-#endif //CONFIG_H
+#endif // CPCD_CONFIG_H

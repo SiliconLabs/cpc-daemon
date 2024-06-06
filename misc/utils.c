@@ -15,6 +15,8 @@
  *
  ******************************************************************************/
 
+#include "config.h"
+
 #include <errno.h>
 #include <sys/stat.h>
 
@@ -31,32 +33,30 @@ int recursive_mkdir(const char *dir, size_t len, const mode_t mode)
   tmp = (char *)zalloc(len + 1);
   FATAL_ON(tmp == NULL);
 
-  /* copy path */
+  // Copy path
   ret = snprintf(tmp, len + 1, "%s", dir);
   FATAL_ON(ret < 0 || (size_t) ret >= (len + 1));
 
-  /* remove trailing slash */
+  // Remove trailing slash
   if (tmp[len - 1] == '/') {
     tmp[len - 1] = '\0';
   }
 
-  /* check if path exists and is a directory */
+  // Check if path exists and is a directory
   ret = stat(tmp, &sb);
   if (ret == 0) {
-    /* ret is 0 if S_ISDIR returns a non-zero value, meaning that the path is a directory */
+    // ret is 0 if S_ISDIR returns a non-zero value, meaning that the path is a directory
     ret = S_ISDIR(sb.st_mode) != 0 ? 0 : -1;
     goto cleanup;
   }
 
-  /* recursive mkdir */
+  // Recursive mkdir
   for (p = tmp + 1; *p; p++) {
     if (*p == '/') {
       *p = 0;
 
-      /*
-       * mkdir first and then check stat to avoid potential
-       * time of check/time of use issues
-       */
+      // mkdir first and then check stat to avoid potential
+      // time of check/time of use issues
       ret = mkdir(tmp, mode);
       if (ret < 0) {
         if (errno != EEXIST) {
@@ -92,7 +92,7 @@ int recursive_mkdir(const char *dir, size_t len, const mode_t mode)
 
   ret = S_ISDIR(sb.st_mode) != 0 ? 0 : -1;
 
-  /* Fall through to return ret */
+  // Fall through to return ret
 
   cleanup:
   free(tmp);

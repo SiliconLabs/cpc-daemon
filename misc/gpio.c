@@ -1,3 +1,5 @@
+#include "config.h"
+
 #include <linux/gpio.h>
 
 #include <unistd.h>
@@ -10,6 +12,14 @@
 
 #include "cpcd/gpio.h"
 #include "cpcd/logging.h"
+
+// POSIX defines the second argument of ioctl function as int. That's
+// how musl defines it too. But Glibc, Linux kernel and BSD OSes define
+// it as unsigned long. This mismatch causes a compilation warning [1].
+// [1] https://www.openwall.com/lists/musl/2020/01/20/2
+#if defined(__GLIBC__)
+#define ioctl(d, req, ...) ioctl((d), (unsigned int)(req), __VA_ARGS__)
+#endif
 
 static const char* direction_to_str(gpio_direction_t direction)
 {
@@ -84,7 +94,7 @@ gpio_t gpio_init(const char *gpio_chip, unsigned int gpio_pin, gpio_direction_t 
         break;
     }
 
-    ret = ioctl(chip_fd, GPIO_GET_LINEEVENT_IOCTL, &rq);
+    ret = ioctl(chip_fd, (int)GPIO_GET_LINEEVENT_IOCTL, &rq);
     if (ret < 0) {
       FATAL("%s : The kernel must be configured with CONFIG_GPIO_CDEV_V1=y", strerror(errno));
     }
@@ -94,12 +104,13 @@ gpio_t gpio_init(const char *gpio_chip, unsigned int gpio_pin, gpio_direction_t 
     ret = fcntl(gpio, F_SETFL, O_NONBLOCK);
     FATAL_SYSCALL_ON(ret < 0);
   } else {
-    struct gpiohandle_request rq = { 0 };
+    struct gpiohandle_request rq;
+    memset(&rq, 0, sizeof(rq));
     rq.lineoffsets[0] = gpio_pin;
     rq.flags = GPIOHANDLE_REQUEST_OUTPUT;
     rq.lines = 1;
 
-    ret = ioctl(chip_fd, GPIO_GET_LINEHANDLE_IOCTL, &rq);
+    ret = ioctl(chip_fd, (int)GPIO_GET_LINEHANDLE_IOCTL, &rq);
     if (ret < 0) {
       FATAL("%s : The kernel must be configured with CONFIG_GPIO_CDEV_V1=y", strerror(errno));
     }
@@ -132,7 +143,7 @@ void gpio_write(gpio_t gpio, gpio_value_t value)
 
   data.values[0] = value;
 
-  ret = ioctl(gpio, GPIOHANDLE_SET_LINE_VALUES_IOCTL, &data);
+  ret = ioctl(gpio, (int)GPIOHANDLE_SET_LINE_VALUES_IOCTL, &data);
   FATAL_SYSCALL_ON(ret < 0);
 }
 
@@ -141,7 +152,7 @@ gpio_value_t gpio_read(gpio_t gpio)
   struct gpiohandle_data data;
   int ret;
 
-  ret = ioctl(gpio, GPIOHANDLE_GET_LINE_VALUES_IOCTL, &data);
+  ret = ioctl(gpio, (int)GPIOHANDLE_GET_LINE_VALUES_IOCTL, &data);
   FATAL_SYSCALL_ON(ret < 0);
 
   return (gpio_value_t) data.values[0];
@@ -149,7 +160,7 @@ gpio_value_t gpio_read(gpio_t gpio)
 
 int gpio_get_epoll_fd(gpio_t gpio)
 {
-  // The epoll file descriptor it the gpio_t itself
+  // The epoll file descriptor is the gpio_t itself
   return gpio;
 }
 

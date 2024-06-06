@@ -118,8 +118,6 @@ void sl_slist_insert(sl_slist_node_t *item,
  * @param    head  Pointer to pointer of the head element of list.
  *
  * @param    item  Pointer to the item to remove.
- *
- * @note     (1) An EFM_ASSERT is thrown if the item is not found within the list.
  ******************************************************************************/
 void sl_slist_remove(sl_slist_node_t **head,
                      sl_slist_node_t *item);
@@ -137,6 +135,16 @@ void sl_slist_remove(sl_slist_node_t **head,
 void sl_slist_sort(sl_slist_node_t **head,
                    bool (*cmp_fnct)(sl_slist_node_t *item_l,
                                     sl_slist_node_t *item_r));
+
+/*******************************************************************************
+ * Checks if the list is empty.
+ *
+ * @param    head      Pointer to the head element of the list.
+ ******************************************************************************/
+static inline bool sl_slist_is_empty(sl_slist_node_t *head)
+{
+  return head == NULL;
+}
 
 /** @} (end addtogroup slist) */
 

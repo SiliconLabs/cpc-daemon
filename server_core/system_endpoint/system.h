@@ -438,7 +438,7 @@ SL_ENUM_GENERIC(sl_cpc_bootloader_t, uint32_t)
   SL_CPC_BOOTLOADER_NONE                = 0,  ///< No bootloader
   SL_CPC_BOOTLOADER_EMBER_APPLICATION   = 1,  ///< Ember bootloader in application mode
   SL_CPC_BOOTLOADER_EMBER_STANDALONE    = 2,  ///< Ember bootloader in standalone mode
-  SL_CPC_BOOTLOADER_GECKO               = 3,  ///< Gecko SDK bootloader
+  SL_CPC_BOOTLOADER_GECKO               = 3,  ///< Simplicity SDK bootloader
   SL_CPC_BOOTLOADER_UNKNOWN             = 4,  ///< Unknown, third party bootloader?
 };
 

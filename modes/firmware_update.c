@@ -15,6 +15,8 @@
  *
  ******************************************************************************/
 
+#include "config.h"
+
 #include <sys/epoll.h>
 #include <unistd.h>
 #include <string.h>
@@ -33,14 +35,12 @@
 #include "driver/driver_spi.h"
 #include "driver/driver_xmodem.h"
 #include "driver/driver_ezsp.h"
-#include "version.h"
 
 #define RESET_TIMEOUT_MS 500
 
 extern char *server_core_secondary_app_version;
 extern uint8_t server_core_secondary_protocol_version;
 extern sl_cpc_bootloader_t server_core_secondary_bootloader_type;
-extern bool secondary_already_running_bootloader;
 
 static void reboot_secondary_with_pins_into_bootloader(void);
 static void reboot_secondary_by_cpc(server_core_mode_t mode);
@@ -206,11 +206,12 @@ static void reboot_secondary_with_pins_into_bootloader(void)
   int ret;
   struct epoll_event ev;
   static int fd_epoll;
+  bus_t bus = config.bus;
 
   reset_gpio = gpio_init(config.fwu_reset_chip, (unsigned int)config.fwu_spi_reset_pin, GPIO_DIRECTION_OUT, GPIO_EDGE_NO_EDGE);
   wake_gpio  = gpio_init(config.fwu_wake_chip, (unsigned int)config.fwu_spi_wake_pin, GPIO_DIRECTION_OUT, GPIO_EDGE_NO_EDGE);
 
-  if (config.bus == SPI) {
+  if (bus == SPI) {
     irq_gpio = gpio_init(config.spi_irq_chip, config.spi_irq_pin, GPIO_DIRECTION_IN, GPIO_EDGE_FALLING);
 
     // Create the epoll set
@@ -236,7 +237,7 @@ static void reboot_secondary_with_pins_into_bootloader(void)
   // will stay in bootloader mode
   gpio_write(reset_gpio, GPIO_VALUE_HIGH);
 
-  if (config.bus == SPI) {
+  if (bus == SPI) {
     // Make sure the falling-edge caused by the chip entering reset is cleared
     gpio_clear_irq(irq_gpio);
 
@@ -277,7 +278,7 @@ static void reboot_secondary_with_pins_into_bootloader(void)
 
   gpio_deinit(wake_gpio);
   gpio_deinit(reset_gpio);
-  if (config.bus == SPI) {
+  if (bus == SPI) {
     gpio_deinit(irq_gpio);
   }
 

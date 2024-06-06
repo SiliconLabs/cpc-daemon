@@ -21,7 +21,7 @@
 #include "cpcd/sl_status.h"
 
 #include "security/private/keys/keys.h"
-#include "lib/sl_cpc.h"
+#include "sl_cpc.h"
 
 #define SLI_SECURITY_PROTOCOL_HEADER_LENGTH (sizeof(uint16_t) + sizeof(sl_cpc_security_id_t))
 
@@ -90,4 +90,4 @@ void security_initialize_session(void);
 
 void security_reset_session(void);
 
-#endif //SECURITY_PROTOCOL_H
+#endif // SECURITY_PROTOCOL_H

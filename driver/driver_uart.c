@@ -14,7 +14,8 @@
  * sections of the MSLA applicable to Source Code.
  *
  ******************************************************************************/
-#define _GNU_SOURCE
+
+#include "config.h"
 
 #include <pthread.h>
 
@@ -70,20 +71,20 @@ typedef struct notify_private_data{
   int timer_file_descriptor;
 }notify_private_data_t;
 
-/*
+/***************************************************************************//**
  * @return The number of bytes appended to the buffer
- */
+ ******************************************************************************/
 static size_t read_and_append_uart_received_data(uint8_t *buffer, size_t buffer_head, size_t buffer_size);
 
-/*
+/***************************************************************************//**
  * Call this function in loop over the buffer to delimit and push the frames to the core
  *
  * @return Whether or not this call has delimited a pushed a frame, in other words,
  *         shall this function be called again in a loop
- */
+ ******************************************************************************/
 static bool delimit_and_push_frames_to_core(uint8_t *buffer, size_t *buffer_head);
 
-/*
+/***************************************************************************//**
  * Insures the start of the buffer is aligned with the start of a valid checksum
  * and re-synch in case the buffer starts with garbage.
  ******************************************************************************/
@@ -97,7 +98,7 @@ void driver_uart_init(int *fd_to_core, int *fd_notify_core, const char *device, 
 
   fd_uart = driver_uart_open(device, baudrate, hardflow);
 
-  /* Flush the uart IO fifo */
+  // Flush the uart IO fifo
   tcflush(fd_uart, TCIOFLUSH);
 
   ret = socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd_sockets);
@@ -112,22 +113,20 @@ void driver_uart_init(int *fd_to_core, int *fd_notify_core, const char *device, 
   fd_core_notify  = fd_sockets_notify[0];
   *fd_notify_core = fd_sockets_notify[1];
 
-  /*
-   * Create stop driver event, this file descriptor will be used by
-   * receive and transmit thread to exit gracefully
-   */
+  // Create stop driver event, this file descriptor will be used by
+  // receive and transmit thread to exit gracefully
   fd_stop_drv = eventfd(0, // Start with 0 value
                         EFD_CLOEXEC);
   FATAL_SYSCALL_ON(fd_stop_drv == -1);
   // Set driver kill callback
   driver_kill_init(driver_uart_kill);
 
-  /* create transmitter driver thread */
+  // create transmitter driver thread
   ret = pthread_create(&tx_drv_thread, NULL, transmit_driver_thread_func, NULL);
   FATAL_ON(ret != 0);
   tx_drv_thread_started = true;
 
-  /* create receiver driver thread */
+  // create receiver driver thread
   ret = pthread_create(&rx_drv_thread, NULL, receive_driver_thread_func, NULL);
   FATAL_ON(ret != 0);
   rx_drv_thread_started = true;
@@ -290,17 +289,17 @@ static void* receive_driver_thread_func(void* param)
 
   TRACE_DRIVER("Receiver thread start");
 
-  /* Create the epoll set */
+  // Create the epoll set
   fd_epoll = epoll_create1(EPOLL_CLOEXEC);
   FATAL_SYSCALL_ON(fd_epoll < 0);
 
-  /* Setup poll event for reading uart device */
+  // Setup poll event for reading uart device
   events[0].events = EPOLLIN;
   events[0].data.fd = fd_uart;
   ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, fd_uart, &events[0]);
   FATAL_SYSCALL_ON(ret < 0);
 
-  /* Setup poll event for stop event */
+  // Setup poll event for stop event
   events[1].events = EPOLLIN;
   events[1].data.fd = fd_stop_drv;
   ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, fd_stop_drv, &events[1]);
@@ -309,32 +308,28 @@ static void* receive_driver_thread_func(void* param)
   while (!exit_thread) {
     int event_count;
 
-    /* Wait for action */
-    {
-      do {
-        event_count = epoll_wait(fd_epoll, events, 2, -1);
-        if (event_count == -1 && errno == EINTR) {
-          continue;
-        }
-        FATAL_SYSCALL_ON(event_count == -1);
-        break;
-      } while (1);
+    // Wait for action
+    do {
+      event_count = epoll_wait(fd_epoll, events, 2, -1);
+      if (event_count == -1 && errno == EINTR) {
+        continue;
+      }
+      FATAL_SYSCALL_ON(event_count == -1);
+      break;
+    } while (1);
 
-      /* Timeouts should not occur */
-      FATAL_ON(event_count == 0);
-    }
+    // Timeouts should not occur
+    FATAL_ON(event_count == 0);
 
-    /* Process each ready file descriptor */
-    {
-      size_t event_i;
-      for (event_i = 0; event_i != (size_t)event_count; event_i++) {
-        int current_event_fd = events[event_i].data.fd;
+    // Process each ready file descriptor
+    size_t event_i;
+    for (event_i = 0; event_i != (size_t)event_count; event_i++) {
+      int current_event_fd = events[event_i].data.fd;
 
-        if (current_event_fd == fd_uart) {
-          driver_uart_process_uart();
-        } else if (current_event_fd == fd_stop_drv) {
-          exit_thread = true;
-        }
+      if (current_event_fd == fd_uart) {
+        driver_uart_process_uart();
+      } else if (current_event_fd == fd_stop_drv) {
+        exit_thread = true;
       }
     }
   }
@@ -355,17 +350,17 @@ static void* transmit_driver_thread_func(void* param)
 
   TRACE_DRIVER("Transmitter thread start");
 
-  /* Create the epoll set */
+  // Create the epoll set
   fd_epoll = epoll_create1(EPOLL_CLOEXEC);
   FATAL_SYSCALL_ON(fd_epoll < 0);
 
-  /* Setup poll event for reading core socket */
+  // Setup poll event for reading core socket
   events[0].events = EPOLLIN;
   events[0].data.fd = fd_core;
   ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, fd_core, &events[0]);
   FATAL_SYSCALL_ON(ret < 0);
 
-  /* Setup poll event for stop event */
+  // Setup poll event for stop event
   events[1].events = EPOLLIN;
   events[1].data.fd = fd_stop_drv;
   ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, fd_stop_drv, &events[1]);
@@ -374,32 +369,28 @@ static void* transmit_driver_thread_func(void* param)
   while (!exit_thread) {
     int event_count;
 
-    /* Wait for action */
-    {
-      do {
-        event_count = epoll_wait(fd_epoll, events, 2, -1);
-        if (event_count == -1 && errno == EINTR) {
-          continue;
-        }
-        FATAL_SYSCALL_ON(event_count == -1);
-        break;
-      } while (1);
+    // Wait for action
+    do {
+      event_count = epoll_wait(fd_epoll, events, 2, -1);
+      if (event_count == -1 && errno == EINTR) {
+        continue;
+      }
+      FATAL_SYSCALL_ON(event_count == -1);
+      break;
+    } while (1);
 
-      /* Timeouts should not occur */
-      FATAL_ON(event_count == 0);
-    }
+    // Timeouts should not occur
+    FATAL_ON(event_count == 0);
 
-    /* Process each ready file descriptor */
-    {
-      size_t event_i;
-      for (event_i = 0; event_i != (size_t)event_count; event_i++) {
-        int current_event_fd = events[event_i].data.fd;
+    // Process each ready file descriptor
+    size_t event_i;
+    for (event_i = 0; event_i != (size_t)event_count; event_i++) {
+      int current_event_fd = events[event_i].data.fd;
 
-        if (current_event_fd == fd_core) {
-          driver_uart_process_core();
-        } else if (current_event_fd == fd_stop_drv) {
-          exit_thread = true;
-        }
+      if (current_event_fd == fd_core) {
+        driver_uart_process_core();
+      } else if (current_event_fd == fd_stop_drv) {
+        exit_thread = true;
       }
     }
   }
@@ -447,7 +438,7 @@ int driver_uart_open(const char *device, unsigned int baudrate, bool hardflow)
   cfsetispeed(&tty, (speed_t)sym_baudrate);
   cfsetospeed(&tty, (speed_t)sym_baudrate);
   cfmakeraw(&tty);
-  /* Nonblocking read. */
+  // Nonblocking read
   tty.c_cc[VTIME] = 0;
   tty.c_cc[VMIN] = 1;
   tty.c_iflag &= (unsigned) ~(IXON);
@@ -463,10 +454,10 @@ int driver_uart_open(const char *device, unsigned int baudrate, bool hardflow)
 
   FATAL_SYSCALL_ON(tcsetattr(fd, TCSANOW, &tty) < 0);
 
-  /* Flush the content of the UART in case there was stale data */
+  // Flush the content of the UART in case there was stale data
   {
-    /* There was once a bug in the kernel requiring a delay before flushing the uart.
-     * Keep it there for backward compatibility */
+    // There was once a bug in the kernel requiring a delay before flushing the uart.
+    // Keep it there for backward compatibility
     sleep_ms(10);
 
     tcflush(fd, TCIOFLUSH);
@@ -515,7 +506,7 @@ static void driver_uart_process_uart(void)
   static size_t buffer_head = 0;
   static enum {EXPECTING_HEADER, EXPECTING_PAYLOAD} state = EXPECTING_HEADER;
 
-  /* Put the read data at the tip of the buffer head and increment it. */
+  // Put the read data at the tip of the buffer head and increment it.
   buffer_head += read_and_append_uart_received_data(buffer, buffer_head, sizeof(buffer));
 
   while (1) {
@@ -526,18 +517,18 @@ static void driver_uart_process_uart(void)
           // We are synchronized on a valid header, start delimiting the data that follows into a frame.
           state = EXPECTING_PAYLOAD;
         } else {
-          /* We went through all the data contained in 'buffer' and haven't synchronized on a header.
-           * Go back to waiting for more data. */
+          // We went through all the data contained in 'buffer' and haven't synchronized on a header.
+          // Go back to waiting for more data.
           return;
         }
         break;
 
       case EXPECTING_PAYLOAD:
         if (delimit_and_push_frames_to_core(buffer, &buffer_head)) {
-          /* A frame has been delimited and pushed to the core, go back to synchronizing on the next header */
+          // A frame has been delimited and pushed to the core, go back to synchronizing on the next header
           state = EXPECTING_HEADER;
         } else {
-          /* Not yet enough data, go back to waiting. */
+          // Not yet enough data, go back to waiting.
           return;
         }
         break;
@@ -550,21 +541,21 @@ static void driver_uart_process_uart(void)
   }
 }
 
-/* Append UART new data to the frame delimiter processing buffer */
+// Append UART new data to the frame delimiter processing buffer
 static size_t read_and_append_uart_received_data(uint8_t *buffer, size_t buffer_head, size_t buffer_size)
 {
   uint8_t temp_buffer[UART_BUFFER_SIZE];
 
   BUG_ON(buffer_head >= buffer_size);
 
-  /* Make sure we don't read more data than the supplied buffer can handle */
+  // Make sure we don't read more data than the supplied buffer can handle
   const size_t available_space = buffer_size - buffer_head - 1;
 
-  /* Read the uart data into the temp buffer */
+  // Read the uart data into the temp buffer
   ssize_t read_retval = read(fd_uart, temp_buffer, available_space);
   FATAL_ON(read_retval < 0);
 
-  /* copy the data in the main buffer */
+  // copy the data in the main buffer
   memcpy(&buffer[buffer_head], temp_buffer, (size_t)read_retval);
 
   return (size_t)read_retval;
@@ -573,6 +564,7 @@ static size_t read_and_append_uart_received_data(uint8_t *buffer, size_t buffer_
 static bool validate_header(uint8_t *header_start)
 {
   uint16_t hcs;
+  uint16_t payload_size;
 
   if (header_start[SLI_CPC_HDLC_FLAG_POS] != SLI_CPC_HDLC_FLAG_VAL) {
     return false;
@@ -582,6 +574,14 @@ static bool validate_header(uint8_t *header_start)
 
   if (!sli_cpc_validate_crc_sw(header_start, SLI_CPC_HDLC_HEADER_SIZE, hcs)) {
     TRACE_DRIVER_INVALID_HEADER_CHECKSUM();
+    return false;
+  }
+
+  payload_size = hdlc_get_length(header_start);
+  if (payload_size > UART_BUFFER_SIZE) {
+    // Received valid header with oversized payload. Invalidate the frame to avoid
+    // overflowing the reception buffers.
+    TRACE_DRIVER("RX buffer size from bus is invalid: %d", payload_size);
     return false;
   }
 
@@ -595,8 +595,8 @@ static bool header_synch(uint8_t *buffer, size_t *buffer_head)
     return false;
   }
 
-  /* If we think of a header like a sliding window of width SLI_CPC_HDLC_HEADER_RAW_SIZE,
-   * then we can slide it 'num_header_combination' times over the data. */
+  // If we think of a header like a sliding window of width SLI_CPC_HDLC_HEADER_RAW_SIZE,
+  // then we can slide it 'num_header_combination' times over the data.
   const size_t num_header_combination = *buffer_head - SLI_CPC_HDLC_HEADER_RAW_SIZE + 1;
 
   size_t i;
@@ -606,26 +606,23 @@ static bool header_synch(uint8_t *buffer, size_t *buffer_head)
       if (i == 0) {
         // The start of the buffer is aligned with a good header, don't do anything
       } else {
-        /* We had 'i' number of bad bytes until we struck a good header, move back the data
-         * to the beginning of the buffer */
+        // We had 'i' number of bad bytes until we struck a good header, move back the data
+        // to the beginning of the buffer
         memmove(&buffer[0], &buffer[i], *buffer_head - i);
 
-        /* We crushed 'i' bytes at the start of the buffer */
+        // We crushed 'i' bytes at the start of the buffer
         *buffer_head -= i;
       }
       return true;
     } else {
-      /* The header is not valid, continue until it is */
+      // The header is not valid, continue until it is
     }
   }
 
-  /* If we land here, no header at all was found. Keep the last 'SLI_CPC_HDLC_HEADER_RAW_SIZE - 1' bytes and
-   * bring them back at the start of the buffer so that the next appended byte could complete that potential header */
-  {
-    memmove(&buffer[0], &buffer[num_header_combination], SLI_CPC_HDLC_HEADER_RAW_SIZE - 1);
-
-    *buffer_head = SLI_CPC_HDLC_HEADER_RAW_SIZE - 1;
-  }
+  // If we land here, no header at all was found. Keep the last 'SLI_CPC_HDLC_HEADER_RAW_SIZE - 1' bytes and
+  // bring them back at the start of the buffer so that the next appended byte could complete that potential header
+  memmove(&buffer[0], &buffer[num_header_combination], SLI_CPC_HDLC_HEADER_RAW_SIZE - 1);
+  *buffer_head = SLI_CPC_HDLC_HEADER_RAW_SIZE - 1;
 
   return false;
 }
@@ -638,10 +635,10 @@ static bool header_synch(uint8_t *buffer, size_t *buffer_head)
  */
 static bool delimit_and_push_frames_to_core(uint8_t *buffer, size_t *buffer_head)
 {
-  uint16_t payload_len; /* The length of the payload, as retrieved from the header (including the checksum) */
-  size_t frame_size; /* The whole size of the frame */
+  uint16_t payload_len; // The length of the payload, as retrieved from the header (including the checksum)
+  size_t frame_size; // The whole size of the frame
 
-  /* if not enough bytes even for a header */
+  // if not enough bytes even for a header
   if (*buffer_head < SLI_CPC_HDLC_HEADER_RAW_SIZE) {
     return false;
   }
@@ -650,33 +647,33 @@ static bool delimit_and_push_frames_to_core(uint8_t *buffer, size_t *buffer_head
 
   frame_size = payload_len + SLI_CPC_HDLC_HEADER_RAW_SIZE;
 
-  /* Check if we have enough data for a full frame*/
+  // Check if we have enough data for a full frame
   if (frame_size > *buffer_head) {
     return false;
   }
 
-  /* Push to core */
+  // Push to core
   {
     TRACE_FRAME("Driver : Frame delimiter : push delimited frame to core : ", buffer, frame_size);
 
     ssize_t write_retval = write(fd_core, buffer, frame_size);
     FATAL_SYSCALL_ON(write_retval < 0);
 
-    /* Error if write is not complete */
+    // Error if write is not complete
     FATAL_ON((size_t)write_retval != frame_size);
   }
 
-  /* Move the remaining data back to the start of the buffer. */
+  // Move the remaining data back to the start of the buffer.
   {
     const size_t remaining_bytes = *buffer_head - frame_size;
 
     memmove(buffer, &buffer[frame_size], remaining_bytes);
 
-    /* Adjust the buffer_head now that we have modified the buffer's content */
+    // Adjust the buffer_head now that we have modified the buffer's content
     *buffer_head = remaining_bytes;
   }
 
-  /* A complete frame has been delimited. A second round of parsing can be done. */
+  // A complete frame has been delimited. A second round of parsing can be done.
   return true;
 }
 
@@ -709,7 +706,7 @@ static void driver_uart_process_core(void)
 
     FATAL_SYSCALL_ON(write_retval < 0);
 
-    /* Error if write is not complete */
+    // Error if write is not complete
     FATAL_ON((size_t)write_retval != (size_t)read_retval);
   }
 
@@ -726,7 +723,7 @@ static void driver_uart_process_core(void)
   tx_complete_timestamp.tv_nsec += driver_get_time_to_drain_ns((uint32_t)length);
   tx_complete_timestamp.tv_nsec %= 1000000000;
 
-  /* Push write notification to core */
+  // Push write notification to core
   ssize_t write_retval = write(fd_core_notify, &tx_complete_timestamp, sizeof(tx_complete_timestamp));
   FATAL_SYSCALL_ON(write_retval != sizeof(tx_complete_timestamp));
 }

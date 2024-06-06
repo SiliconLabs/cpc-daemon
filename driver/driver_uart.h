@@ -18,7 +18,6 @@
 #ifndef DRIVER_UART_H
 #define DRIVER_UART_H
 
-#define _GNU_SOURCE
 #include <pthread.h>
 #include <stdbool.h>
 
@@ -39,4 +38,4 @@ void driver_uart_assert_rts(bool assert);
 
 void driver_uart_print_overruns(void);
 
-#endif //DRIVER_UART_H
+#endif // DRIVER_UART_H

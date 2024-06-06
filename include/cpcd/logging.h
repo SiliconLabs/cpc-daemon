@@ -24,6 +24,8 @@
 #include <stdio.h>
 #include <stdint.h>
 
+#include <cpcd/exit.h>
+
 /// Struct representing CPC Core debug counters.
 typedef struct {
   uint32_t endpoint_opened;
@@ -45,15 +47,15 @@ typedef struct {
 
 void logging_init(void);
 
-void init_file_logging();
+void init_file_logging(void);
 
 void init_stats_logging(void);
 
 void logging_kill(void);
 
-void trace(const bool force_stdout, const char* string, ...);
+void trace(const bool force_stdout, const char* string, ...) __attribute__((format(printf, 2, 3)));
 
-void trace_no_timestamp(const char* string, ...);
+void trace_no_timestamp(const char* string, ...) __attribute__((format(printf, 1, 2)));
 
 void trace_frame(const char* string, const void* buffer, size_t len);
 
@@ -210,8 +212,6 @@ extern core_debug_counters_t secondary_core_debug_counters;
 
 #define OUT_FILE stderr
 
-__attribute__((noreturn)) void signal_crash(void);
-
 #define CRASH() do { signal_crash(); } while (0)
 
 #define WARN(msg, ...)                                                                                                             \
@@ -253,7 +253,7 @@ __attribute__((noreturn)) void signal_crash(void);
     }                                                                                                                      \
   } while (0)
 
-/* Special version used specifically when the trace file hasn't been opened yet (error while creating it) */
+// Special version used specifically when the trace file hasn't been opened yet (error while creating it)
 #define FATAL_SYSCALL_NO_TRACE_FILE_ON(cond)                                                                               \
   do {                                                                                                                     \
     if (cond) {                                                                                                            \
@@ -277,4 +277,4 @@ __attribute__((noreturn)) void signal_crash(void);
       CRASH();                                                                                                        \
     }                                                                                                                 \
   } while (0)
-#endif //TRACING_H
+#endif // TRACING_H
