@@ -15,6 +15,8 @@
  *
  ******************************************************************************/
 
+#include "config.h"
+
 #include <pthread.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -32,49 +34,49 @@
 #define TIMEOUT_SECONDS         5
 #define TIME_BETWEEN_RETRIES_US 1000000
 
-/* Flag set when waiting on external reset */
+// Flag set when waiting on external reset
 static bool wait_on_reset_external;
 
-/* Flag set when external reset status is received */
+// Flag set when external reset status is received
 static bool reset_external_received;
 
-/* Flag set when waiting on software reset */
+// Flag set when waiting on software reset
 static bool wait_on_reset_software;
 
-/* Flag set when software reset status is received */
+// Flag set when software reset status is received
 static bool reset_software_received;
 
-/* Flag set when secondary cpc version is received */
+// Flag set when secondary cpc version is received
 static bool secondary_cpc_version_received;
 
-/* Flag set when fc validation value is received */
+// Flag set when fc validation value is received
 static bool fc_validation_value_received;
 
-/* Flow control validation value */
+// Flow control validation value
 static uint32_t fc_validation_value;
 
-/* Flag set when uframe processing is received */
+// Flag set when uframe processing is received
 static bool uframe_processing_received;
 
-/* Flag set when enter irq is received */
+// Flag set when enter irq is received
 static bool enter_irq_received;
 
-/* Flag set when noop is received */
+// Flag set when noop is received
 static bool noop_received;
 
-/* Server core communication */
+// Server core communication
 static int server_core_fd;
 static epoll_private_data_t server_core_epoll_pdata;
 
-/* Setup/teardown server core sockets */
+// Setup/teardown server core sockets
 static void setup_server_core_sockets(void);
 static void teardown_server_core_sockets(void);
 
-/* Main tests */
+// Main tests
 static void test_1_rx_tx(void);
 static void test_2_rts_cts(void);
 
-/* Sub tests */
+// Sub tests
 static void open_uart_port_subtest(bool flowcontrol);
 static void reset_external_subtest(void);
 static void reset_software_subtest(void);
@@ -85,11 +87,11 @@ static void send_noop_subtest(void);
 static uint32_t send_data_subtest(void);
 static uint32_t get_fc_validation_value_subtest(void);
 
-/* Helpers */
+// Helpers
 static void compare_fc_validation_values(uint32_t reference_value, uint32_t received_value);
 static void wait(uint32_t mseconds);
 
-/* Callbacks */
+// Callbacks
 static void reset_software_callback(sl_status_t status,
                                     sl_cpc_system_status_t reset_status);
 
@@ -118,9 +120,6 @@ static void enter_irq_callback(sli_cpc_property_id_t property_id,
                                sl_status_t status);
 
 static void noop_callback(sl_status_t status);
-
-/* External functions */
-__attribute__((noreturn)) void software_graceful_exit(void);
 
 static void server_core_write_callback(epoll_private_data_t *private_data)
 {
@@ -238,11 +237,11 @@ static void test_2_rts_cts(void)
   uint32_t irq_start_in_ms = 500, irq_end_in_ms = 3000;
   enter_irq_subtest(irq_start_in_ms, irq_end_in_ms);
   wait(irq_start_in_ms + irq_start_in_ms);
-  uint32_t fc_validation_value = send_data_subtest();
+  uint32_t local_fc_validation_value = send_data_subtest();
   wait(irq_end_in_ms);
   uint32_t received_fc_validation_value = get_fc_validation_value_subtest();
   enable_uframe_processing_subtest(false);
-  compare_fc_validation_values(fc_validation_value, received_fc_validation_value);
+  compare_fc_validation_values(local_fc_validation_value, received_fc_validation_value);
 
   PRINT_INFO("Validating Host RTS <-> Secondary CTS...");
   send_noop_subtest();

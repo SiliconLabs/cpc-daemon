@@ -21,7 +21,7 @@
 #include "stdint.h"
 #include <sys/epoll.h>
 
-//forward declaration for interdependency
+// forward declaration for interdependency
 struct epoll_private_data;
 
 typedef struct epoll_private_data epoll_private_data_t;
@@ -46,4 +46,4 @@ void epoll_watch_back(uint8_t endpoint_number);
 
 size_t epoll_wait_for_event(struct epoll_event events[], size_t max_event_number);
 
-#endif //EPOLL_H
+#endif // EPOLL_H

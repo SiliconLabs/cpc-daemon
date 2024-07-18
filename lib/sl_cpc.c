@@ -15,6 +15,10 @@
  *
  ******************************************************************************/
 
+#include "config.h"
+
+#include "sl_cpc.h"
+
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -40,9 +44,6 @@
 #include "cpcd/sleep.h"
 #include "cpcd/sl_slist.h"
 #include "cpcd/utils.h"
-
-#include "sl_cpc.h"
-#include "version.h"
 
 #ifdef COMPILE_LTTNG
 #include <lttng/tracef.h>
@@ -117,14 +118,14 @@ static size_t get_time_string(char *slice, size_t slice_len)
     return 0;
   }
 
-  /* XXXX-XX-XXTXX:XX:XX + .XXXXXX + Z */
+  // XXXX-XX-XXTXX:XX:XX + .XXXXXX + Z
   strftime(slice, 19 + 1, "%FT%T", &tm);
   snprintf(slice + 19, 7 + 1, ".%06lu", (long)now.tv_nsec / 1000);
   slice[26] = 'Z';
   return TIME_STR_LEN;
 }
 
-static void lib_trace(FILE *__restrict __stream, const char* string, ...)
+__attribute__((format(printf, 2, 3))) static void lib_trace(FILE *__restrict __stream, const char* string, ...)
 {
   va_list vl;
   va_start(vl, string);
@@ -206,7 +207,7 @@ static int cpc_query_exchange(sli_cpc_handle_t *lib_handle, int fd, cpcd_exchang
 
   query = zalloc(query_len);
   if (query == NULL) {
-    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", query_len);
+    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%zd) failed", query_len);
     SET_CPC_RET(-ENOMEM);
     RETURN_CPC_RET;
   }
@@ -223,7 +224,7 @@ static int cpc_query_exchange(sli_cpc_handle_t *lib_handle, int fd, cpcd_exchang
       TRACE_LIB_ERRNO(lib_handle, "send(%d) failed", fd);
       SET_CPC_RET(-errno);
     } else {
-      TRACE_LIB_ERROR(lib_handle, -EBADE, "send(%d) failed, ret = %d", fd, bytes_written);
+      TRACE_LIB_ERROR(lib_handle, -EBADE, "send(%d) failed, ret = %zd", fd, bytes_written);
       SET_CPC_RET(-EBADE);
     }
     goto free_query;
@@ -238,7 +239,7 @@ static int cpc_query_exchange(sli_cpc_handle_t *lib_handle, int fd, cpcd_exchang
       TRACE_LIB_ERRNO(lib_handle, "recv(%d) failed", fd);
       SET_CPC_RET(-errno);
     } else {
-      TRACE_LIB_ERROR(lib_handle, -EBADE, "recv(%d) failed, ret = %d", fd, bytes_read);
+      TRACE_LIB_ERROR(lib_handle, -EBADE, "recv(%d) failed, ret = %zd", fd, bytes_read);
       SET_CPC_RET(-EBADE);
     }
     goto free_query;
@@ -263,7 +264,7 @@ static int cpc_query_receive(sli_cpc_handle_t *lib_handle, int fd, void *payload
 
   query = zalloc(query_len);
   if (query == NULL) {
-    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", query_len);
+    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%zd) failed", query_len);
     SET_CPC_RET(-ENOMEM);
     RETURN_CPC_RET;
   }
@@ -277,7 +278,7 @@ static int cpc_query_receive(sli_cpc_handle_t *lib_handle, int fd, void *payload
       TRACE_LIB_ERRNO(lib_handle, "recv(%d) failed", fd);
       SET_CPC_RET(-errno);
     } else {
-      TRACE_LIB_ERROR(lib_handle, -EBADE, "recv(%d) failed, ret = %d", fd, bytes_read);
+      TRACE_LIB_ERROR(lib_handle, -EBADE, "recv(%d) failed, ret = %zd", fd, bytes_read);
       SET_CPC_RET(-EBADE);
     }
 
@@ -383,7 +384,7 @@ static int get_secondary_app_version(sli_cpc_handle_t *lib_handle)
 
   lib_handle->secondary_app_version = zalloc((size_t)app_string_size + 1);
   if (lib_handle->secondary_app_version == NULL) {
-    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", (size_t)app_string_size + 1);
+    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%zd) failed", (size_t)app_string_size + 1);
     SET_CPC_RET(-ENOMEM);
     RETURN_CPC_RET;
   }
@@ -599,7 +600,7 @@ static int sli_cpc_deinit(bool atomic, cpc_handle_t *handle)
 
     tmp_ret = pthread_join(lib_handle->reset_thread, NULL);
     if (tmp_ret) {
-      TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_join() failed", lib_handle->reset_sock_fd);
+      TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_join() failed");
     }
   }
 
@@ -655,19 +656,19 @@ int cpc_init(cpc_handle_t *handle, const char *instance_name, bool enable_tracin
 
   lib_handle->pid = getpid();
 
-  /* Save the parameters internally for possible further re-init */
+  // Save the parameters internally for possible further re-init
   lib_handle->enable_tracing = enable_tracing;
   lib_handle->reset_callback = reset_callback;
 
   if (instance_name == NULL) {
-    /* If the instance name is NULL, use the default name */
+    // If the instance name is NULL, use the default name
     lib_handle->instance_name = strdup(DEFAULT_INSTANCE_NAME);
     if (lib_handle->instance_name == NULL) {
       SET_CPC_RET(-errno);
       goto free_lib_handle;
     }
   } else {
-    /* Instead, use the one supplied by the user */
+    // Instead, use the one supplied by the user
     lib_handle->instance_name = strdup(instance_name);
     if (lib_handle->instance_name == NULL) {
       SET_CPC_RET(-errno);
@@ -675,7 +676,7 @@ int cpc_init(cpc_handle_t *handle, const char *instance_name, bool enable_tracin
     }
   }
 
-  /* Create the control socket path */
+  // Create the control socket path
   {
     int nchars;
     const size_t size = sizeof(server_addr.sun_path) - 1;
@@ -684,7 +685,7 @@ int cpc_init(cpc_handle_t *handle, const char *instance_name, bool enable_tracin
 
     nchars = snprintf(server_addr.sun_path, size, "%s/cpcd/%s/ctrl.cpcd.sock", CPC_SOCKET_DIR, lib_handle->instance_name);
 
-    /* Make sure the path fitted entirely in the struct's static buffer */
+    // Make sure the path fitted entirely in the struct's static buffer
     if (nchars < 0 || (size_t) nchars >= size) {
       TRACE_LIB_ERROR(lib_handle, -ERANGE, "socket path '%s/cpcd/%s/ctrl.cpcd.sock' does not fit in buffer", CPC_SOCKET_DIR, lib_handle->instance_name);
       SET_CPC_RET(-ERANGE);
@@ -771,13 +772,13 @@ int cpc_init(cpc_handle_t *handle, const char *instance_name, bool enable_tracin
 
   lib_handle_item = zalloc(sizeof(sli_handle_list_item_t));
   if (lib_handle_item == NULL) {
-    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", sizeof(sli_handle_list_item_t));
+    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%zd) failed", sizeof(sli_handle_list_item_t));
     SET_CPC_RET(-ENOMEM);
     goto destroy_mutex;
   }
 
   if (lib_handle->reset_callback) {
-    /* Create the reset socket path */
+    // Create the reset socket path
     {
       int nchars;
       const size_t size = sizeof(server_addr.sun_path) - 1;
@@ -786,7 +787,7 @@ int cpc_init(cpc_handle_t *handle, const char *instance_name, bool enable_tracin
 
       nchars = snprintf(server_addr.sun_path, size, "%s/cpcd/%s/reset.cpcd.sock", CPC_SOCKET_DIR, lib_handle->instance_name);
 
-      /* Make sure the path fitted entirely in the struct's static buffer */
+      // Make sure the path fitted entirely in the struct's static buffer
       if (nchars < 0 || (size_t) nchars >= size) {
         TRACE_LIB_ERROR(lib_handle, -ERANGE, "socket path '%s/cpcd/%s/reset.cpcd.sock' does not fit in buffer", CPC_SOCKET_DIR, lib_handle->instance_name);
         SET_CPC_RET(-ERANGE);
@@ -920,7 +921,7 @@ int cpc_restart(cpc_handle_t *handle)
 
   sli_cpc_handle_t *lib_handle_copy = zalloc(sizeof(sli_cpc_handle_t));
   if (lib_handle_copy == NULL) {
-    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", sizeof(sli_cpc_handle_t));
+    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%zd) failed", sizeof(sli_cpc_handle_t));
     SET_CPC_RET(-ENOMEM);
 
     unlock_cpc_api(&cpc_api_lock);
@@ -941,7 +942,7 @@ int cpc_restart(cpc_handle_t *handle)
 
   lib_handle_item_copy = zalloc(sizeof(sli_handle_list_item_t));
   if (lib_handle_item_copy == NULL) {
-    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", sizeof(sli_handle_list_item_t));
+    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%zd) failed", sizeof(sli_handle_list_item_t));
     SET_CPC_RET(-ENOMEM);
 
     free(lib_handle_copy->instance_name);
@@ -1108,14 +1109,14 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
 
   ep_addr.sun_family = AF_UNIX;
 
-  /* Create the endpoint socket path */
+  // Create the endpoint socket path
   {
     int nchars;
     const size_t size = sizeof(ep_addr.sun_path) - 1;
 
     nchars = snprintf(ep_addr.sun_path, size, "%s/cpcd/%s/ep%d.cpcd.sock", CPC_SOCKET_DIR, lib_handle->instance_name, id);
 
-    /* Make sure the path fitted entirely in the struct sockaddr_un's static buffer */
+    // Make sure the path fitted entirely in the struct sockaddr_un's static buffer
     if (nchars < 0 || (size_t) nchars >= size) {
       TRACE_LIB_ERROR(lib_handle, -ERANGE, "socket path '%s/cpcd/%s/ep%d.cpcd.sock' does not fit in buffer", CPC_SOCKET_DIR, lib_handle->instance_name, id);
       SET_CPC_RET(-ERANGE);
@@ -1125,7 +1126,7 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
 
   ep = zalloc(sizeof(sli_cpc_endpoint_t));
   if (ep == NULL) {
-    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", sizeof(sli_cpc_endpoint_t));
+    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%zd) failed", sizeof(sli_cpc_endpoint_t));
     SET_CPC_RET(-ERANGE);
     goto cleanup;
   }
@@ -1217,7 +1218,7 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
 
   ep_handle_item = zalloc(sizeof(sli_handle_list_item_t));
   if (ep_handle_item == NULL) {
-    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", sizeof(sli_handle_list_item_t));
+    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%zd) failed", sizeof(sli_handle_list_item_t));
     SET_CPC_RET(-ENOMEM);
     goto destroy_mutex;
   }
@@ -1309,7 +1310,7 @@ int cpc_close_endpoint(cpc_endpoint_t *endpoint)
   increment_ref_count(&lib_handle->ref_count);
 
   if (ep->ref_count != 0) {
-    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot close a handle (%p) that is in use", *endpoint);
+    TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot close a handle (%p) that is in use", endpoint);
     SET_CPC_RET(-EPERM);
 
     unlock_cpc_api(&cpc_api_lock);
@@ -1515,7 +1516,7 @@ ssize_t cpc_write_endpoint(cpc_endpoint_t endpoint, const void *data, size_t dat
   unlock_cpc_api(&cpc_api_lock);
 
   if (data_length > lib_handle->max_write_size) {
-    TRACE_LIB_ERROR(lib_handle, -EINVAL, "payload too large (%d > %d)", data_length, lib_handle->max_write_size);
+    TRACE_LIB_ERROR(lib_handle, -EINVAL, "payload too large (%zd > %zd)", data_length, lib_handle->max_write_size);
     SET_CPC_RET(-EINVAL);
 
     goto cleanup;
@@ -1539,14 +1540,12 @@ ssize_t cpc_write_endpoint(cpc_endpoint_t endpoint, const void *data, size_t dat
 
   TRACE_LIB(lib_handle, "wrote to EP #%d", ep->id);
 
-  /*
-   * The socket type between the library and the daemon are of type
-   * SOCK_SEQPACKET. Unlike stream sockets, it is technically impossible
-   * for DGRAM or SEQPACKET to do partial writes. The man page is ambiguous
-   * about the return value in the our case, but research showed that it should
-   * never happens. If it did happen,it would cause problems in
-   * dealing with partially sent messages.
-   */
+  // The socket type between the library and the daemon are of type
+  // SOCK_SEQPACKET. Unlike stream sockets, it is technically impossible
+  // for DGRAM or SEQPACKET to do partial writes. The man page is ambiguous
+  // about the return value in the our case, but research showed that it should
+  // never happens. If it did happen,it would cause problems in
+  // dealing with partially sent messages.
   assert((size_t)bytes_written == data_length);
 
   cleanup:
@@ -2013,7 +2012,7 @@ const char* cpc_get_secondary_app_version(cpc_handle_t handle)
   secondary_app_version_len = strlen(lib_handle->secondary_app_version) + 1;
   secondary_app_version = zalloc(secondary_app_version_len);
   if (secondary_app_version == NULL) {
-    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", secondary_app_version_len);
+    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%zd) failed", secondary_app_version_len);
   } else {
     memcpy(secondary_app_version, lib_handle->secondary_app_version, secondary_app_version_len);
   }
@@ -2239,7 +2238,7 @@ int cpc_init_endpoint_event(cpc_handle_t handle, cpc_endpoint_event_handle_t *ev
 
   evt = zalloc(sizeof(sli_cpc_endpoint_event_handle_t));
   if (evt == NULL) {
-    TRACE_LIB_ERROR(evt->lib_handle, -ENOMEM, "alloc(%d) failed", sizeof(sli_cpc_endpoint_event_handle_t));
+    TRACE_LIB_ERROR(evt->lib_handle, -ENOMEM, "alloc(%zd) failed", sizeof(sli_cpc_endpoint_event_handle_t));
     SET_CPC_RET(-ENOMEM);
 
     goto cleanup;
@@ -2285,7 +2284,7 @@ int cpc_init_endpoint_event(cpc_handle_t handle, cpc_endpoint_event_handle_t *ev
 
   ep_evt_handle_item = zalloc(sizeof(sli_handle_list_item_t));
   if (ep_evt_handle_item == NULL) {
-    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", sizeof(sli_handle_list_item_t));
+    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%zd) failed", sizeof(sli_handle_list_item_t));
     SET_CPC_RET(-ENOMEM);
     goto destroy_mutex;
   }
@@ -2406,7 +2405,7 @@ int cpc_read_endpoint_event(cpc_endpoint_event_handle_t event_handle, cpc_event_
       TRACE_LIB_ERRNO(lib_handle, "recv(%d) failed", evt->sock_fd);
       SET_CPC_RET(-errno);
     } else {
-      TRACE_LIB_ERROR(lib_handle, -EBADE, "recv(%d) failed, ret = %d", evt->sock_fd, tmp_ret2);
+      TRACE_LIB_ERROR(lib_handle, -EBADE, "recv(%d) failed, ret = %zd", evt->sock_fd, tmp_ret2);
       SET_CPC_RET(-EBADE);
     }
     goto unlock_mutex;
@@ -2416,7 +2415,7 @@ int cpc_read_endpoint_event(cpc_endpoint_event_handle_t event_handle, cpc_event_
 
   event = zalloc((size_t)tmp_ret2);
   if (event ==  NULL) {
-    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%d) failed", tmp_ret2);
+    TRACE_LIB_ERROR(lib_handle, -ENOMEM, "alloc(%zd) failed", tmp_ret2);
     SET_CPC_RET(-ENOMEM);
     goto unlock_mutex;
   }
@@ -2428,7 +2427,7 @@ int cpc_read_endpoint_event(cpc_endpoint_event_handle_t event_handle, cpc_event_
       TRACE_LIB_ERRNO(lib_handle, "recv(%d) failed", evt->sock_fd);
       SET_CPC_RET(-errno);
     } else {
-      TRACE_LIB_ERROR(lib_handle, -EBADE, "recv(%d) failed, ret = %d", evt->sock_fd, tmp_ret2);
+      TRACE_LIB_ERROR(lib_handle, -EBADE, "recv(%d) failed, ret = %zd", evt->sock_fd, tmp_ret2);
       SET_CPC_RET(-EBADE);
     }
     goto free_event;

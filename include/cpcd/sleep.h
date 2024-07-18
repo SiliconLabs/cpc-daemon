@@ -20,7 +20,7 @@
 
 #include <stdint.h>
 
-/** Helpers around the nanosleep POSIX system call */
+// Helpers around the nanosleep POSIX system call
 
 int sleep_us(uint32_t us);
 
@@ -31,4 +31,4 @@ static inline int sleep_ms(uint32_t ms)
 
 int sleep_s(uint32_t s);
 
-#endif /* SLEEP_H */
+#endif // SLEEP_H

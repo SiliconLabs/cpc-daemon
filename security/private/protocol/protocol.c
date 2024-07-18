@@ -15,6 +15,8 @@
  *
  ******************************************************************************/
 
+#include "config.h"
+
 #include <unistd.h>
 #include <string.h>
 
@@ -274,7 +276,7 @@ void security_initialize_session(void)
                                 sizeof(random1));
   FATAL_ON(ret != 0);
 
-  /* Send random1 and receive random 2 */
+  // Send random1 and receive random 2
   status = security_send_session_init_request(random1, &protocol_response);
 
   if (status != SL_STATUS_OK) {
@@ -296,6 +298,6 @@ void security_initialize_session(void)
 
   TRACE_SECURITY("Session initialized");
 
-  /* Notify server_core that security is ready */
+  // Notify server_core that security is ready
   server_core_notify_security_ready();
 }

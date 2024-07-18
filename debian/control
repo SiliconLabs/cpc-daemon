@@ -1,0 +1,46 @@
+Source: cpc-daemon
+Section: misc
+Priority: optional
+Maintainer: Issam Maghni <issam.maghni@silabs.com>
+Build-Depends:
+  debhelper-compat (= 10),
+  cmake,
+  pkgconf | pkg-config,
+  libmbedtls-dev (>= 2.16),
+Standards-Version: 4.6.1
+
+Package: libcpc3
+Architecture: linux-any
+Multi-Arch: same
+Section: libs
+Pre-Depends: ${misc:Pre-Depends}
+Depends:
+  ${shlibs:Depends},
+  ${misc:Depends},
+Description: CPC library
+  This library offers a safe API to communicate using multiple endpoints
+  with a secondary processor through the CPC daemon.
+
+Package: libcpc-dev
+Architecture: linux-any
+Multi-Arch: same
+Section: libdevel
+Pre-Depends: ${misc:Pre-Depends}
+Depends:
+  libcpc3 (= ${binary:Version}),
+  ${misc:Depends},
+Description: CPC development
+Provides: libcpc3-dev
+
+Package: cpcd
+Architecture: linux-any
+Multi-Arch: foreign
+Pre-Depends: ${misc:Pre-Depends}
+# cpcd communicates only with the same library version
+Depends:
+  libcpc3 (= ${binary:Version}),
+  ${shlibs:Depends},
+  ${misc:Depends},
+Description: CPC daemon
+  This daemon permits the CPC library to communicate with a secondary
+  processor using multiple endpoints through a shared physical link.

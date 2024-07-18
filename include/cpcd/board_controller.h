@@ -22,4 +22,4 @@
 
 void board_controller_get_config_vcom(const char *ip_address, unsigned int *baudrate, bool *flowcontrol);
 
-#endif //BOARD_CONTROLLER_H
+#endif // BOARD_CONTROLLER_H

@@ -14,8 +14,10 @@
  * sections of the MSLA applicable to Source Code.
  *
  ******************************************************************************/
-#define _GNU_SOURCE             /* See feature_test_macros(7) */
-#include <fcntl.h>              /* Definition of O_* constants */
+
+#include "config.h"
+
+#include <fcntl.h>              // Definition of O_* constants
 #include <sys/eventfd.h>
 #include <unistd.h>
 

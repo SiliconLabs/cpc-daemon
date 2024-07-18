@@ -15,6 +15,8 @@
  *
  ******************************************************************************/
 
+#include "config.h"
+
 #include <pthread.h>
 
 #include "cpcd/config.h"
@@ -23,7 +25,7 @@
 #include "security/security.h"
 #include "security/private/thread/command_synchronizer.h"
 
-/* Inter-thread command sending synchronization */
+// Inter-thread command sending synchronization
 static struct {
   sl_cpc_security_command_t command_type;
   pthread_cond_t            command_in_process_condition;
@@ -43,8 +45,8 @@ void security_post_command(sl_cpc_security_command_t command)
     FATAL("Tried to send a security command when encryption is disabled");
   }
 
-  /* A condition is used in pair with a mutex to check against the condition's predicate
-   * (i.e security_event_binary_synchronizer.event_type) */
+  // A condition is used in pair with a mutex to check against the condition's predicate
+  // (i.e security_event_binary_synchronizer.event_type)
   pthread_mutex_lock(&command_binary_synchronizer.command_in_progress_mutex);
   {
     while (command_binary_synchronizer.command_type != SECURITY_COMMAND_NONE) {
@@ -53,10 +55,10 @@ void security_post_command(sl_cpc_security_command_t command)
       FATAL_ON(ret != 0);
     }
 
-    /* Here we know that no security event request is pending and have the lock to update it */
+    // Here we know that no security event request is pending and have the lock to update it
     command_binary_synchronizer.command_type = command;
 
-    /* Kick the condition to notify the security thread that a event is requested */
+    // Kick the condition to notify the security thread that a event is requested
     ret = pthread_cond_signal(&command_binary_synchronizer.command_in_process_condition);
     FATAL_ON(ret != 0);
   }
@@ -72,11 +74,11 @@ sl_cpc_security_command_t security_wait_for_command(void)
   int ret;
   sl_cpc_security_command_t command;
 
-  /* A condition is used in pair with a mutex to check against the condition's predicate
-   * (i.e security_event_binary_synchronizer.event_type) */
+  // A condition is used in pair with a mutex to check against the condition's predicate
+  // (i.e security_event_binary_synchronizer.event_type)
   pthread_mutex_lock(&command_binary_synchronizer.command_in_progress_mutex);
   {
-    /* Wait until there is an event */
+    // Wait until there is an event
     while (command_binary_synchronizer.command_type == SECURITY_COMMAND_NONE) {
       ret = pthread_cond_wait(&command_binary_synchronizer.command_in_process_condition,
                               &command_binary_synchronizer.command_in_progress_mutex);
@@ -85,8 +87,8 @@ sl_cpc_security_command_t security_wait_for_command(void)
 
     command  = command_binary_synchronizer.command_type;
 
-    /* The event has been registered, kick the condition to let other sender thread(s) be able
-     * to send another request right away */
+    // The event has been registered, kick the condition to let other sender thread(s) be able
+    // to send another request right away
     command_binary_synchronizer.command_type = SECURITY_COMMAND_NONE;
     pthread_cond_signal(&command_binary_synchronizer.command_in_process_condition);
   }

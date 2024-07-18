@@ -288,7 +288,7 @@ static inline uint8_t hdlc_create_control_unumbered(uint8_t type)
 {
   uint8_t control = SLI_CPC_HDLC_FRAME_TYPE_UNNUMBERED << SLI_CPC_HDLC_CONTROL_FRAME_TYPE_SHIFT;
 
-  control |= type << SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_SHIFT;
+  control |= (uint8_t)(type << SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_SHIFT);
 
   return control;
 }

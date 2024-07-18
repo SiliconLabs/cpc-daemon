@@ -15,7 +15,8 @@
  *
  ******************************************************************************/
 
-#define _GNU_SOURCE
+#include "config.h"
+
 #include <pthread.h>
 
 #include "cpcd/config.h"

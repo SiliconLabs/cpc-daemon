@@ -15,6 +15,8 @@
  *
  ******************************************************************************/
 
+#include "config.h"
+
 #include <fcntl.h>
 #include <stdint.h>
 #include <string.h>
@@ -38,8 +40,8 @@
 
 #define MAX_RETRANSMIT_ATTEMPTS (5)
 
-// data from the bootloader comes in chunks
-static bool wait_for_bootloader_string(int fd, char *string)
+// Data from the bootloader comes in chunks
+static bool wait_for_bootloader_string(int fd, const char *string)
 {
   char btl_buffer[128] = { 0 };
   char *btl_chunk = btl_buffer;
@@ -47,7 +49,7 @@ static bool wait_for_bootloader_string(int fd, char *string)
   ssize_t ret;
   unsigned int retries = 10;
 
-  // receive data until the string is found
+  // Receive data until the string is found
   do {
     sleep_s(1);
 
@@ -79,14 +81,14 @@ sl_status_t xmodem_uart_firmware_upgrade(const char* image_file, const char *dev
   int image_file_fd;
   uint8_t* mmapped_image_file_data;
   size_t mmapped_image_file_len;
-  ssize_t ret;
+  ssize_t sret;
+  int ret;
   uint8_t answer;
   unsigned int retransmit_count = 0;
 
-  /* Open the uart and memory map the firmware update file */
+  // Open the uart and memory map the firmware update file
   {
     struct stat stat;
-    int ret;
 
     uart_fd = driver_uart_open(dev_name, bitrate, hardflow);
 
@@ -107,28 +109,24 @@ sl_status_t xmodem_uart_firmware_upgrade(const char* image_file, const char *dev
     FATAL_SYSCALL_ON(mmapped_image_file_data == NULL);
   }
 
-  /* Wait for the "C" character meaning the secondary is ready for XMODEM-CRC transfer */
+  // Wait for the "C" character meaning the secondary is ready for XMODEM-CRC transfer
   {
     // wait_for_bootloader_string implements a timeout, so fd must be non-blocking
     ret = fcntl(uart_fd, F_SETFL, O_NONBLOCK);
     FATAL_SYSCALL_ON(ret < 0);
 
-    {
-      TRACE_XMODEM("Connecting to bootloader...");
-      if (!wait_for_bootloader_string(uart_fd, BTL_MENU_PROMPT)) {
-        TRACE_XMODEM("Failed to connect to bootloader.");
-        return SL_STATUS_FAIL;
-      }
+    TRACE_XMODEM("Connecting to bootloader...");
+    if (!wait_for_bootloader_string(uart_fd, BTL_MENU_PROMPT)) {
+      TRACE_XMODEM("Failed to connect to bootloader.");
+      return SL_STATUS_FAIL;
     }
 
-    /* The bootloader sends a menu with options. We have to send '1' in order to start a gbl file transfer */
-    {
-      const uint8_t upload_gbl = '1';
-      TRACE_XMODEM("Received bootloader menu, send \"1\" to start gbl file transfer.");
+    // The bootloader sends a menu with options. We have to send '1' in order to start a gbl file transfer
+    const uint8_t upload_gbl = '1';
+    TRACE_XMODEM("Received bootloader menu, send \"1\" to start gbl file transfer.");
 
-      ret = write(uart_fd, (const void *)&upload_gbl, sizeof(upload_gbl));
-      FATAL_SYSCALL_ON(ret != sizeof(upload_gbl));
-    }
+    sret = write(uart_fd, (const void *)&upload_gbl, sizeof(upload_gbl));
+    FATAL_SYSCALL_ON(sret != sizeof(upload_gbl));
 
     TRACE_XMODEM("Waiting for receiver ping ...");
 
@@ -140,21 +138,21 @@ sl_status_t xmodem_uart_firmware_upgrade(const char* image_file, const char *dev
     ret = fcntl(uart_fd, F_SETFL, flags);
     FATAL_SYSCALL_ON(ret < 0);
     do {
-      ret = read(uart_fd, &answer, sizeof(answer));
-      FATAL_SYSCALL_ON(ret != sizeof(answer));
+      sret = read(uart_fd, &answer, sizeof(answer));
+      FATAL_SYSCALL_ON(sret != sizeof(answer));
     } while (answer != XMODEM_CMD_C);
 
     TRACE_XMODEM("Received \"C\" ping. Transfer begins : ");
   }
 
-  /* Actual file transfer */
+  // Actual file transfer
   {
     XmodemFrame_t frame;
     uint8_t* image_file_data = mmapped_image_file_data;
     size_t image_file_len = mmapped_image_file_len;
 
     frame.header = XMODEM_CMD_SOH;
-    frame.seq = 1; //Sequence number starts at one initially, wraps around to 0 afterward
+    frame.seq = 1; // Sequence number starts at one initially, wraps around to 0 afterward
 
     while (image_file_len) {
       size_t z = 0;
@@ -164,17 +162,17 @@ sl_status_t xmodem_uart_firmware_upgrade(const char* image_file, const char *dev
       z = min(image_file_len, sizeof(frame.data));
 
       memcpy(frame.data, image_file_data, z);
-      memset(frame.data + z, 0xff, sizeof(frame.data) - z); //Pad last frame with 0xFF
+      memset(frame.data + z, 0xff, sizeof(frame.data) - z); // Pad last frame with 0xFF
 
       u16_to_be(sli_cpc_get_crc_sw(frame.data, sizeof(frame.data)), (uint8_t *)&frame.crc);
 
       frame.seq_neg = (uint8_t)(0xff - frame.seq);
 
-      ret = write(uart_fd, &frame, sizeof(frame));
-      FATAL_SYSCALL_ON(ret != sizeof(frame));
+      sret = write(uart_fd, &frame, sizeof(frame));
+      FATAL_SYSCALL_ON(sret != sizeof(frame));
 
-      ret = read(uart_fd, &answer, sizeof(answer));
-      FATAL_SYSCALL_ON(ret != sizeof(answer));
+      sret = read(uart_fd, &answer, sizeof(answer));
+      FATAL_SYSCALL_ON(sret != sizeof(answer));
 
       switch (answer) {
         case XMODEM_CMD_NAK:
@@ -208,56 +206,46 @@ sl_status_t xmodem_uart_firmware_upgrade(const char* image_file, const char *dev
         return SL_STATUS_FAIL;
       }
     }
-    TRACE_XMODEM("Finished sending image file. Sent a total of %d Bytes.", (size_t)(image_file_data - mmapped_image_file_data));
+    TRACE_XMODEM("Finished sending image file. Sent a total of %zd Bytes.", (size_t)(image_file_data - mmapped_image_file_data));
     TRACE_XMODEM("Transfer of file \"%s\" completed with %u retransmits.", image_file, retransmit_count);
   }
 
   trace_no_timestamp("\n");
 
-  /* Complete the transfer by sending EOF symbol */
-  {
-    const uint8_t eof = XMODEM_CMD_EOT;
-    TRACE_XMODEM("Sending EOT symbol to complete image file transfer.");
-    ret = write(uart_fd, &eof, sizeof(eof));
-    FATAL_SYSCALL_ON(ret != sizeof(eof));
+  // Complete the transfer by sending EOF symbol
+  const uint8_t eof = XMODEM_CMD_EOT;
+  TRACE_XMODEM("Sending EOT symbol to complete image file transfer.");
+  sret = write(uart_fd, &eof, sizeof(eof));
+  FATAL_SYSCALL_ON(sret != sizeof(eof));
+
+  if (!wait_for_bootloader_string(uart_fd, BTL_UPLOAD_CONFIRMATION)) {
+    TRACE_XMODEM("Failed to receive upload confirmation from bootloader.");
+    return SL_STATUS_FAIL;
   }
+  TRACE_XMODEM("Received upload confirmation from bootloader. Device restarting, waiting for bootloader menu...");
 
-  {
-    if (!wait_for_bootloader_string(uart_fd, BTL_UPLOAD_CONFIRMATION)) {
-      TRACE_XMODEM("Failed to receive upload confirmation from bootloader.");
-      return SL_STATUS_FAIL;
-    }
-    TRACE_XMODEM("Received upload confirmation from bootloader. Device restarting, waiting for bootloader menu...");
+  if (!wait_for_bootloader_string(uart_fd, BTL_MENU_PROMPT)) {
+    TRACE_XMODEM("Failed to restart device after upgrade.");
+    return SL_STATUS_FAIL;
   }
+  TRACE_XMODEM("Device restarted successfully.");
 
-  {
-    if (!wait_for_bootloader_string(uart_fd, BTL_MENU_PROMPT)) {
-      TRACE_XMODEM("Failed to restart device after upgrade.");
-      return SL_STATUS_FAIL;
-    }
-    TRACE_XMODEM("Device restarted successfully.");
-  }
+  // Send '2' in order to run the new image
+  const uint8_t run_gbl = '2';
+  TRACE_XMODEM("Received bootloader menu, send \"2\" to run the new image file.");
+  sret = write(uart_fd, (const void *)&run_gbl, sizeof(run_gbl));
+  FATAL_SYSCALL_ON(sret != sizeof(run_gbl));
 
-  /* Send '2' in order to run the new image */
-  {
-    const uint8_t run_gbl = '2';
-    TRACE_XMODEM("Received bootloader menu, send \"2\" to run the new image file.");
-    ret = write(uart_fd, (const void *)&run_gbl, sizeof(run_gbl));
-    FATAL_SYSCALL_ON(ret != sizeof(run_gbl));
-  }
+  // Cleanup
+  TRACE_XMODEM("Cleaning up...");
+  ret = munmap(mmapped_image_file_data, mmapped_image_file_len);
+  FATAL_SYSCALL_ON(ret != 0);
 
-  /* Cleanup */
-  {
-    TRACE_XMODEM("Cleaning up...");
-    ret = munmap(mmapped_image_file_data, mmapped_image_file_len);
-    FATAL_SYSCALL_ON(ret != 0);
+  ret = close(image_file_fd);
+  FATAL_SYSCALL_ON(ret != 0);
 
-    ret = close(image_file_fd);
-    FATAL_SYSCALL_ON(ret != 0);
-
-    ret = close(uart_fd);
-    FATAL_SYSCALL_ON(ret != 0);
-  }
+  ret = close(uart_fd);
+  FATAL_SYSCALL_ON(ret != 0);
 
   return SL_STATUS_OK;
 }

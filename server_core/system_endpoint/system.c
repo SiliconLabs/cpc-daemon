@@ -15,6 +15,8 @@
  *
  ******************************************************************************/
 
+#include "config.h"
+
 #include <stdlib.h>
 #include <string.h>
 #include <sys/timerfd.h>
@@ -75,7 +77,7 @@ typedef struct  {
   sl_status_t error_status;
   uint8_t command_seq;
   bool acked;
-  epoll_private_data_t re_transmit_timer_private_data; //for epoll for timerfd
+  epoll_private_data_t re_transmit_timer_private_data; // for epoll for timerfd
 } sl_cpc_system_command_handle_t;
 
 typedef struct {
@@ -88,8 +90,6 @@ typedef struct {
  ******************************************************************************/
 static sl_slist_node_t *pending_commands;
 static sl_slist_node_t *commands;
-static sl_slist_node_t *retries;
-static sl_slist_node_t *commands_in_error;
 
 static bool received_remote_sequence_numbers_reset_ack = true;
 
@@ -122,6 +122,10 @@ static void sl_cpc_system_open_endpoint(void)
                            on_iframe_unsolicited);
 }
 
+/***************************************************************************//**
+ * Helper function to simplify initializing a command handle.
+ * Sets the command sequence number and increments it.
+ ******************************************************************************/
 static void sl_cpc_system_init_command_handle(sl_cpc_system_command_handle_t *command_handle,
                                               void *on_final_callback,
                                               void *on_final_arg,
@@ -154,7 +158,7 @@ const char* sl_cpc_system_bootloader_type_to_str(sl_cpc_bootloader_t bootloader)
     case SL_CPC_BOOTLOADER_EMBER_STANDALONE:
       return "Ember Standalone";
     case SL_CPC_BOOTLOADER_GECKO:
-      return "Gecko SDK";
+      return "Simplicity SDK";
     case SL_CPC_BOOTLOADER_UNKNOWN:
       return "Unknown";
     default:
@@ -165,9 +169,7 @@ const char* sl_cpc_system_bootloader_type_to_str(sl_cpc_bootloader_t bootloader)
 void sl_cpc_system_init(void)
 {
   sl_slist_init(&commands);
-  sl_slist_init(&retries);
   sl_slist_init(&pending_commands);
-  sl_slist_init(&commands_in_error);
   sl_slist_init(&prop_last_status_callbacks);
 
   sl_cpc_system_open_endpoint();
@@ -197,7 +199,7 @@ static void sl_cpc_system_cmd_abort(sl_cpc_system_command_handle_t *command_hand
     command_handle->re_transmit_timer_private_data.file_descriptor = 0;
   }
 
-  command_handle->error_status = error; //This will be propagated when calling the callbacks
+  command_handle->error_status = error; // This will be propagated when calling the callbacks
 
   switch (command_handle->command->command_id) {
     case CMD_SYSTEM_NOOP:
@@ -221,7 +223,7 @@ static void sl_cpc_system_cmd_abort(sl_cpc_system_command_handle_t *command_hand
     }
     break;
 
-    case CMD_SYSTEM_PROP_VALUE_IS: //fall through
+    case CMD_SYSTEM_PROP_VALUE_IS: // fall through
     default:
       BUG("Invalid command_id");
       break;
@@ -243,7 +245,7 @@ static void sl_cpc_system_cmd_timed_out(const void *frame_data)
 
   timed_out_command = (sli_cpc_system_cmd_t *)frame_data;
 
-  /* Go through the list of pending requests to find the one for which this reply applies */
+  // Go through the list of pending requests to find the one for which this reply applies
   SL_SLIST_FOR_EACH_ENTRY(commands, command_handle, sl_cpc_system_command_handle_t, node_commands) {
     if (command_handle->command_seq == timed_out_command->command_seq) {
       break;
@@ -261,7 +263,7 @@ static void sl_cpc_system_cmd_timed_out(const void *frame_data)
 
   sl_cpc_system_cmd_abort(command_handle, SL_STATUS_TIMEOUT);
 
-  /* Free the command handle and its buffer */
+  // Free the command handle and its buffer
 
   free(command_handle->command);
   free(command_handle);
@@ -284,7 +286,7 @@ void sl_cpc_system_cmd_poll_acknowledged(const void *frame_data)
       const struct itimerspec timeout = { .it_interval = { .tv_sec = 0, .tv_nsec = 0 },
                                           .it_value    = { .tv_sec = (long int)command_handle->retry_timeout_us / 1000000, .tv_nsec = ((long int)command_handle->retry_timeout_us * 1000) % 1000000000 } };
 
-      /* Setup timeout timer.*/
+      // Setup timeout timer.
       if (command_handle->error_status == SL_STATUS_OK) {
         timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
 
@@ -293,8 +295,8 @@ void sl_cpc_system_cmd_poll_acknowledged(const void *frame_data)
         ret = timerfd_settime(timer_fd, 0, &timeout, NULL);
         FATAL_SYSCALL_ON(ret < 0);
 
-        /* Setup the timer in the server_core epoll set */
-        command_handle->re_transmit_timer_private_data.endpoint_number = SL_CPC_ENDPOINT_SYSTEM; //Irrelevant in this scenario
+        // Setup the timer in the server_core epoll set
+        command_handle->re_transmit_timer_private_data.endpoint_number = SL_CPC_ENDPOINT_SYSTEM; // Irrelevant in this scenario
         command_handle->re_transmit_timer_private_data.file_descriptor = timer_fd;
         command_handle->re_transmit_timer_private_data.callback = on_timer_expired;
 
@@ -325,12 +327,12 @@ void sl_cpc_system_cmd_noop(sl_cpc_system_noop_cmd_callback_t on_noop_reply,
 {
   sl_cpc_system_command_handle_t *command_handle;
 
-  /* Malloc the command handle and the command buffer */
+  // Malloc the command handle and the command buffer
   {
     command_handle = zalloc(sizeof(sl_cpc_system_command_handle_t));
     FATAL_ON(command_handle == NULL);
 
-    command_handle->command = zalloc(sizeof(sli_cpc_system_cmd_t)); //noop has nothing in the 'payload field'
+    command_handle->command = zalloc(sizeof(sli_cpc_system_cmd_t)); // noop has nothing in the 'payload field'
     FATAL_ON(command_handle->command == NULL);
   }
 
@@ -341,7 +343,7 @@ void sl_cpc_system_cmd_noop(sl_cpc_system_noop_cmd_callback_t on_noop_reply,
                                     retry_timeout_us,
                                     SYSTEM_EP_IFRAME);
 
-  /* Fill the system endpoint command buffer */
+  // Fill the system endpoint command buffer
   {
     sli_cpc_system_cmd_t *tx_command = command_handle->command;
 
@@ -368,7 +370,7 @@ void sl_cpc_system_cmd_reboot(sl_cpc_system_reset_cmd_callback_t on_reset_reply,
 {
   sl_cpc_system_command_handle_t *command_handle;
 
-  /* Malloc the command handle and the command buffer */
+  // Malloc the command handle and the command buffer
   {
     command_handle = zalloc(sizeof(sl_cpc_system_command_handle_t));
     FATAL_ON(command_handle == NULL);
@@ -384,7 +386,7 @@ void sl_cpc_system_cmd_reboot(sl_cpc_system_reset_cmd_callback_t on_reset_reply,
                                     retry_timeout_us,
                                     SYSTEM_EP_UFRAME);
 
-  /* Fill the system endpoint command buffer */
+  // Fill the system endpoint command buffer
   {
     sli_cpc_system_cmd_t *tx_command = command_handle->command;
 
@@ -415,18 +417,15 @@ bool sl_cpc_system_received_unnumbered_acknowledgement(void)
  ******************************************************************************/
 void sl_cpc_system_on_unnumbered_acknowledgement(void)
 {
-  sl_slist_node_t *item;
   sl_cpc_system_command_handle_t *command_handle;
 
   TRACE_SYSTEM("Received sequence numbers reset acknowledgement");
   received_remote_sequence_numbers_reset_ack = true;
 
   // Send any pending commands
-  item = sl_slist_pop(&pending_commands);
-  while (item != NULL) {
-    command_handle = SL_SLIST_ENTRY(item, sl_cpc_system_command_handle_t, node_commands);
+  while (!sl_slist_is_empty(pending_commands)) {
+    command_handle = SL_SLIST_ENTRY(sl_slist_pop(&pending_commands), sl_cpc_system_command_handle_t, node_commands);
     write_command(command_handle);
-    item = sl_slist_pop(&pending_commands);
   }
 }
 
@@ -436,7 +435,6 @@ void sl_cpc_system_on_unnumbered_acknowledgement(void)
 static void on_unnumbered_acknowledgement_timeout(epoll_private_data_t *private_data)
 {
   int ret;
-  sl_slist_node_t *item;
   int timer_fd = private_data->file_descriptor;
   sl_cpc_system_command_handle_t *command_handle = container_of(private_data,
                                                                 sl_cpc_system_command_handle_t,
@@ -454,7 +452,7 @@ static void on_unnumbered_acknowledgement_timeout(epoll_private_data_t *private_
 
   TRACE_SYSTEM("Remote is unresponsive, retrying...");
 
-  /* Ack the timer */
+  // Ack the timer
   {
     uint64_t expiration;
     ssize_t retval;
@@ -465,20 +463,18 @@ static void on_unnumbered_acknowledgement_timeout(epoll_private_data_t *private_
 
     FATAL_ON(retval != sizeof(expiration));
 
-    WARN_ON(expiration != 1); /* we missed a timeout*/
+    WARN_ON(expiration != 1); // we missed a timeout
   }
 
-  /* Drop any pending commands to prevent accumulation*/
-  item = sl_slist_pop(&pending_commands);
-  while (item != NULL) {
-    command_handle = SL_SLIST_ENTRY(item, sl_cpc_system_command_handle_t, node_commands);
+  // Drop any pending commands to prevent accumulation
+  while (!sl_slist_is_empty(pending_commands)) {
+    command_handle = SL_SLIST_ENTRY(sl_slist_pop(&pending_commands), sl_cpc_system_command_handle_t, node_commands);
 
     if (command_handle->command->command_id != CMD_SYSTEM_INVALID) {
       sl_cpc_system_cmd_abort(command_handle, SL_STATUS_ABORT);
     }
     free(command_handle->command);
     free(command_handle);
-    item = sl_slist_pop(&pending_commands);
   }
 
   ret = core_write(SL_CPC_ENDPOINT_SYSTEM, NULL, 0, SL_CPC_FLAG_UNNUMBERED_RESET_COMMAND);
@@ -516,7 +512,7 @@ void sl_cpc_system_request_sequence_reset(void)
   command_handle = zalloc(sizeof(sl_cpc_system_command_handle_t));
   FATAL_ON(command_handle == NULL);
 
-  /* Setup the timer in the server_core epoll set */
+  // Setup the timer in the server_core epoll set
   command_handle->re_transmit_timer_private_data.file_descriptor = timer_fd;
   command_handle->re_transmit_timer_private_data.callback = on_unnumbered_acknowledgement_timeout;
 
@@ -533,13 +529,11 @@ void sl_cpc_system_request_sequence_reset(void)
  ******************************************************************************/
 void sl_cpc_system_reset_system_endpoint(void)
 {
-  sl_slist_node_t *item;
   sl_cpc_system_command_handle_t *command_handle;
 
   // Abort any pending commands
-  item = sl_slist_pop(&commands);
-  while (item != NULL) {
-    command_handle = SL_SLIST_ENTRY(item, sl_cpc_system_command_handle_t, node_commands);
+  while (!sl_slist_is_empty(commands)) {
+    command_handle = SL_SLIST_ENTRY(sl_slist_pop(&commands), sl_cpc_system_command_handle_t, node_commands);
 
     if (command_handle->command->command_id != CMD_SYSTEM_INVALID) {
       WARN("Dropping system command id #%d seq#%d", command_handle->command->command_id, command_handle->command_seq);
@@ -549,7 +543,6 @@ void sl_cpc_system_reset_system_endpoint(void)
     // Command payload will be freed once we close the endpoint
     free(command_handle->command);
     free(command_handle);
-    item = sl_slist_pop(&commands);
   }
 
   // Close the system endpoint
@@ -571,7 +564,7 @@ void sl_cpc_system_cmd_property_get(sl_cpc_system_property_get_set_cmd_callback_
 {
   sl_cpc_system_command_handle_t *command_handle;
 
-  /* Malloc the command handle and the command buffer */
+  // Malloc the command handle and the command buffer
   {
     const size_t property_get_buffer_size = sizeof(sli_cpc_system_cmd_t) + sizeof(sli_cpc_property_id_t);
 
@@ -580,7 +573,7 @@ void sl_cpc_system_cmd_property_get(sl_cpc_system_property_get_set_cmd_callback_
 
     // Allocate a buffer and pad it to 8 bytes because memcpy reads in chunks of 8.
     // If we don't pad, Valgrind will complain.
-    command_handle->command = zalloc(PAD_TO_8_BYTES(property_get_buffer_size)); //property-get has the property id as payload
+    command_handle->command = zalloc(PAD_TO_8_BYTES(property_get_buffer_size)); // property-get has the property id as payload
     FATAL_ON(command_handle->command == NULL);
   }
 
@@ -591,7 +584,7 @@ void sl_cpc_system_cmd_property_get(sl_cpc_system_property_get_set_cmd_callback_
                                     retry_timeout_us,
                                     frame_type);
 
-  /* Fill the system endpoint command buffer */
+  // Fill the system endpoint command buffer
   {
     sli_cpc_system_cmd_t *tx_command = command_handle->command;
     sli_cpc_system_property_cmd_t *tx_property_command = (sli_cpc_system_property_cmd_t *) tx_command->payload;
@@ -636,7 +629,7 @@ void sl_cpc_system_cmd_property_set(sl_cpc_system_property_get_set_cmd_callback_
 
     // Allocate a buffer and pad it to 8 bytes because memcpy reads in chunks of 8.
     // If we don't pad, Valgrind will complain.
-    command_handle->command = zalloc(PAD_TO_8_BYTES(property_get_buffer_size)); //property-get has the property id as payload
+    command_handle->command = zalloc(PAD_TO_8_BYTES(property_get_buffer_size)); // property-get has the property id as payload
     FATAL_ON(command_handle->command == NULL);
   }
 
@@ -647,7 +640,7 @@ void sl_cpc_system_cmd_property_set(sl_cpc_system_property_get_set_cmd_callback_
                                     retry_timeout_us,
                                     frame_type);
 
-  /* Fill the system endpoint command buffer */
+  // Fill the system endpoint command buffer
   {
     sli_cpc_system_cmd_t *tx_command = command_handle->command;
     sli_cpc_system_property_cmd_t *tx_property_command = (sli_cpc_system_property_cmd_t *) tx_command->payload;
@@ -770,7 +763,7 @@ static void on_final_property_is(sl_cpc_system_command_handle_t * command_handle
   size_t value_length = system_cmd->length - sizeof(sli_cpc_system_property_cmd_t);
 
   callback(system_property_cmd.property_id,
-           (uint8_t *)system_property_cmd_payload, /* discard const qualifier */
+           (uint8_t *)system_property_cmd_payload, // discard const qualifier
            value_length,
            command_handle->on_final_arg,
            command_handle->error_status);
@@ -802,12 +795,12 @@ static void on_reply(uint8_t endpoint_id,
   system_cmd_payload_length = answer_length - sizeof(system_cmd);
   FATAL_ON(system_cmd.length != system_cmd_payload_length);
 
-  /* Go through the list of pending requests to find the one for which this reply applies */
+  // Go through the list of pending requests to find the one for which this reply applies
   SL_SLIST_FOR_EACH_ENTRY(commands, command_handle, sl_cpc_system_command_handle_t, node_commands) {
     if (command_handle->command_seq == system_cmd.command_seq) {
-      TRACE_SYSTEM("Processing command seq#%d of type %d", system_cmd.command_seq, frame_type);
+      TRACE_SYSTEM("Processing command seq#%d of type %zd", (int)system_cmd.command_seq, frame_type);
 
-      /* Stop and close the retransmit timer */
+      // Stop and close the retransmit timer
       if (frame_type == SLI_CPC_HDLC_FRAME_TYPE_UNNUMBERED
           || (frame_type == SLI_CPC_HDLC_FRAME_TYPE_INFORMATION && command_handle->acked == true)) {
         BUG_ON(command_handle->re_transmit_timer_private_data.file_descriptor <= 0);
@@ -816,7 +809,7 @@ static void on_reply(uint8_t endpoint_id,
         command_handle->re_transmit_timer_private_data.file_descriptor = 0;
       }
 
-      /* Call the appropriate callback */
+      // Call the appropriate callback
       if (frame_type == SLI_CPC_HDLC_FRAME_TYPE_UNNUMBERED) {
         BUG_ON(command_handle->frame_type == SYSTEM_EP_IFRAME);
         switch (system_cmd.command_id) {
@@ -854,7 +847,7 @@ static void on_reply(uint8_t endpoint_id,
         FATAL("Invalid frame_type");
       }
 
-      /* Cleanup this command now that it's been serviced */
+      // Cleanup this command now that it's been serviced
       sl_slist_remove(&commands, &command_handle->node_commands);
       free(command_handle->command);
       free(command_handle);
@@ -972,9 +965,9 @@ static void on_iframe_unsolicited(uint8_t endpoint_id, const void* data, size_t 
     data_len -= 4;
 
     if (system_property_cmd.property_id >= PROP_ENDPOINT_STATE_0 && system_property_cmd.property_id <= PROP_ENDPOINT_STATE_255) {
-      uint8_t endpoint_id = PROPERTY_ID_TO_EP_ID(system_property_cmd.property_id);
+      uint8_t ep_id = PROPERTY_ID_TO_EP_ID(system_property_cmd.property_id);
 
-      core_on_unsolicited_endpoint_state(endpoint_id, u8_data, data_len);
+      core_on_unsolicited_endpoint_state(ep_id, u8_data, data_len);
     }
   }
 }
@@ -991,7 +984,7 @@ static void on_timer_expired(epoll_private_data_t *private_data)
 
   TRACE_SYSTEM("Command ID #%u SEQ #%u timer expired", command_handle->command->command_id, command_handle->command->command_seq);
 
-  /* Ack the timer */
+  // Ack the timer
   {
     uint64_t expiration;
     ssize_t retval;
@@ -1002,7 +995,7 @@ static void on_timer_expired(epoll_private_data_t *private_data)
 
     FATAL_ON(retval != sizeof(expiration));
 
-    WARN_ON(expiration != 1); /* we missed a timeout*/
+    WARN_ON(expiration != 1); // we missed a timeout
   }
 
   if (!command_handle->retry_forever) {
@@ -1012,7 +1005,7 @@ static void on_timer_expired(epoll_private_data_t *private_data)
   if (command_handle->retry_count > 0 || command_handle->retry_forever) {
     sl_slist_remove(&commands, &command_handle->node_commands);
 
-    command_handle->error_status = SL_STATUS_IN_PROGRESS; //at least one timer retry occurred
+    command_handle->error_status = SL_STATUS_IN_PROGRESS; // at least one timer retry occurred
 
     write_command(command_handle);
 
@@ -1068,7 +1061,7 @@ static void write_command(sl_cpc_system_command_handle_t *command_handle)
   TRACE_SYSTEM("Submitted command_id #%d command_seq #%d", command_handle->command->command_id, command_handle->command_seq);
 
   if (command_handle->frame_type == SYSTEM_EP_UFRAME) {
-    /* Setup timeout timer.*/
+    // Setup timeout timer.
     {
       const struct itimerspec timeout = { .it_interval = { .tv_sec = 0, .tv_nsec = 0 },
                                           .it_value    = { .tv_sec = (long int)command_handle->retry_timeout_us / 1000000, .tv_nsec = ((long int)command_handle->retry_timeout_us * 1000) % 1000000000 } };
@@ -1077,15 +1070,15 @@ static void write_command(sl_cpc_system_command_handle_t *command_handle)
 
       FATAL_SYSCALL_ON(timer_fd < 0);
 
-      int ret = timerfd_settime(timer_fd,
-                                0,
-                                &timeout,
-                                NULL);
+      ret = timerfd_settime(timer_fd,
+                            0,
+                            &timeout,
+                            NULL);
 
       FATAL_SYSCALL_ON(ret < 0);
     }
 
-    /* Setup the timer in the server_core epoll set */
+    // Setup the timer in the server_core epoll set
     {
       command_handle->re_transmit_timer_private_data.endpoint_number = SL_CPC_ENDPOINT_SYSTEM;
       command_handle->re_transmit_timer_private_data.file_descriptor = timer_fd;
@@ -1098,16 +1091,13 @@ static void write_command(sl_cpc_system_command_handle_t *command_handle)
 
 void sl_cpc_system_cleanup(void)
 {
-  sl_slist_node_t *item;
   prop_last_status_callback_list_item_t *callback_list_item;
 
   TRACE_RESET("Server core cleanup");
 
-  item = sl_slist_pop(&prop_last_status_callbacks);
-  while (item != NULL) {
-    callback_list_item = SL_SLIST_ENTRY(item, prop_last_status_callback_list_item_t, node);
+  while (!sl_slist_is_empty(prop_last_status_callbacks)) {
+    callback_list_item = SL_SLIST_ENTRY(sl_slist_pop(&prop_last_status_callbacks), prop_last_status_callback_list_item_t, node);
     free(callback_list_item);
-    item = sl_slist_pop(&pending_commands);
   }
 
   // Close the system endpoint

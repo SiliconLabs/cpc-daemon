@@ -25,7 +25,7 @@ Adding the `cpc_journal` component enables efficient logging of CPC events. This
 
 For projects with a command line interface, the `cpc_journal_cli` component introduces the `print_cpc_journal` command. This command prints the contents of the CPC Journal in a CSV format via the CLI.
 
-Additionally, projects with the `iostream` component can use `sl_cpc_journal_print`. 
+Additionally, projects with the `iostream` component can use `sl_cpc_journal_print`.
 This function allows for printing the journal's contents.
 
 **Note: Entries are consumed when printed**
@@ -47,11 +47,11 @@ If the issue is reproduced fairly quickly, the `enable_frame_trace` configuratio
 can be used to enable an additional level of information to the traces.
 
 #### Log Rotation
-When an issue takes a longer time to reproduce, trace files might occupy excessive space on the target. 
-To manage this, the [logrotate](https://linux.die.net/man/8/logrotate) tool can be utilized to consolidate logs. 
+When an issue takes a longer time to reproduce, trace files might occupy excessive space on the target.
+To manage this, the [logrotate](https://linux.die.net/man/8/logrotate) tool can be utilized to consolidate logs.
 
 Below is an example of a logrotate configuration, that will retain 10 log files,
-each up to 10 MB in size, and rotate them accordingly. 
+each up to 10 MB in size, and rotate them accordingly.
 Log compression can be done by adding the `compress` option in the configuration.
 ```
 /home/pi/cpcd_log/*.log {
@@ -102,8 +102,9 @@ Traces are then sent over `stderr` with the associated timestamp.
 ## Debugging CPCd with GDB
 First, add debug symbols to the CPCd binary by specifying the `debug` target group:
 ```
-mkdir build
-cmake ../ -DTARGET_GROUP=debug
+mkdir ./build
+cd ./build
+cmake -D CMAKE_BUILD_TYPE=Debug ..
 make
 ```
 
@@ -165,7 +166,7 @@ Provide the following details:
 * **CPCd Version**: Specify the version of the CPCd you are using.
 * **Operating System & Version**: e.g., Raspbian, Ubuntu
 * **Hardware Information**: Details about the primary and secondary processors involved.
-* **Secondary Version**: The version of the GSDK release being used
+* **Secondary Version**: The version of the Simplicity SDK release being used
 * **CPCd Compilation**:
   * Compiler: [Name, Version]
 * **Secondary Compilation**:

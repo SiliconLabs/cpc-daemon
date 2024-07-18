@@ -15,7 +15,8 @@
  *
  ******************************************************************************/
 
-#define _GNU_SOURCE
+#include "config.h"
+
 #include <pthread.h>
 
 #include <stdio.h>
@@ -145,8 +146,8 @@ static void async_logger_init(async_logger_t* logger, int file_descriptor, const
   logger->buffer = zalloc(logger->buffer_size);
   NO_LOGGING_FATAL_ON(logger->buffer == NULL);
 
-  /* Lock the buffer in RAM since it's a long buffer and we will use it often to prevent
-   * page faults. */
+  // Lock the buffer in RAM since it's a long buffer and we will use it often to prevent
+  // page faults.
   ret = mlock(logger->buffer,
               logger->buffer_size);
   NO_LOGGING_FATAL_SYSCALL_ON(ret != 0);
@@ -188,7 +189,7 @@ static void file_logging_init(void)
   ret = access(config.traces_folder, W_OK);
   NO_LOGGING_FATAL_SYSCALL_ON(ret < 0);
 
-  /* Build file string and open file */
+  // Build file string and open file
   {
     time_t t = time(NULL);
     struct tm tm = *localtime(&t);
@@ -206,7 +207,7 @@ static void file_logging_init(void)
                       tm.tm_min,
                       tm.tm_sec);
 
-    /* Make sure the path fitted entirely in the struct's static buffer */
+    // Make sure the path fitted entirely in the struct's static buffer
     NO_LOGGING_FATAL_SYSCALL_ON(nchars < 0 || (size_t) nchars >= sizeof(buf));
 
     file_logger.file = fopen(buf, "w+");
@@ -235,7 +236,7 @@ static void async_logger_write(async_logger_t* logger, void* data, size_t length
   pthread_mutex_lock(&logger->mutex);
   {
     if (logger->buffer_size - logger->buffer_count < length) {
-      /* Overflowing traces are discarded */
+      // Overflowing traces are discarded
       fprintf(stderr, "WARNING : %s logger buffer full, lost log.\n", logger->name);
       logger->lost_logs++;
     } else {
@@ -244,15 +245,15 @@ static void async_logger_write(async_logger_t* logger, void* data, size_t length
       if (remaining >= length) {
         memcpy(&logger->buffer[logger->buffer_head], data, length);
         logger->buffer_head += length;
-      } else { /* Split write at buffer boundary */
+      } else { // Split write at buffer boundary
         memcpy(&logger->buffer[logger->buffer_head], data, remaining);
-        memcpy(&logger->buffer[0], data + remaining, length - remaining);
+        memcpy(&logger->buffer[0], (const uint8_t *)data + remaining, length - remaining);
         logger->buffer_head = length - remaining;
       }
 
       logger->buffer_count += length;
 
-      /* Register the high water mark */
+      // Register the high water mark
       if (logger->buffer_count > logger->highwater_mark) {
         logger->highwater_mark = logger->buffer_count;
       }
@@ -264,9 +265,9 @@ static void async_logger_write(async_logger_t* logger, void* data, size_t length
   pthread_mutex_unlock(&logger->mutex);
 
   if (do_signal == true) {
-    /* Don't wake up the logger thread until sufficient data is present.
-     * It will wake up at regular interval anyway to keep stdout traces (in a
-     * terminal for example) fluid. */
+    // Don't wake up the logger thread until sufficient data is present.
+    // It will wake up at regular interval anyway to keep stdout traces (in a
+    // terminal for example) fluid.
     if (count_cpy >= ASYNC_LOGGER_DONT_TRIGG_UNLESS_THIS_CHUNK_SIZE) {
       pthread_cond_signal(&logger->condition);
     }
@@ -280,12 +281,12 @@ static void* async_logger_thread_func(void* param)
   ssize_t ret;
 
   while (1) {
-    /* Lock the mutex because we need to condition wait on the predicate 'buffer_count'
-     * which is altered by both the producers and this consumer */
+    // Lock the mutex because we need to condition wait on the predicate 'buffer_count'
+    // which is altered by both the producers and this consumer
     pthread_mutex_lock(&logger->mutex);
     {
-      /* Wait until there is at least the preferred no-wake-up-until data amount, a timeout or
-       * a graceful exit request has been sent to us. */
+      // Wait until there is at least the preferred no-wake-up-until data amount, a timeout or
+      // a graceful exit request has been sent to us.
       while (logger->buffer_count < ASYNC_LOGGER_DONT_TRIGG_UNLESS_THIS_CHUNK_SIZE && gracefully_exit == false) {
         struct timespec max_wait;
 
@@ -299,22 +300,21 @@ static void* async_logger_thread_func(void* param)
         FATAL_ON(ret != 0 && ret != ETIMEDOUT);
 
         if (ret == ETIMEDOUT) {
-          /* We have timed out or a graceful exit is pending, don't block on the condition again
-           * and start writing the data we have to far. */
+          // We have timed out or a graceful exit is pending, don't block on the condition again
+          // and start writing the data we have to far.
           break;
         }
       }
 
-      /* We will write as much data as we have on hand */
+      // We will write as much data as we have on hand
       chunk_size = logger->buffer_count;
-    } /* Unlock the mutex to allow other threads to continue to write data. */
+    } // Unlock the mutex to allow other threads to continue to write data.
     pthread_mutex_unlock(&logger->mutex);
 
     if (chunk_size == 0) {
       if (gracefully_exit == true) {
-        /* Graceful exit requested and no data, kill this thread right away. */
+        // Graceful exit requested and no data, kill this thread right away.
         char buf[256];
-        int ret;
         ret = snprintf(buf,
                        sizeof(buf),
                        "Logger buffer size = %zu, highwater mark = %zu : %.2f%%. Lost logs : %zu\n",
@@ -322,8 +322,9 @@ static void* async_logger_thread_func(void* param)
                        logger->highwater_mark,
                        100.0f * ((float) logger->highwater_mark / (float) logger->buffer_size),
                        logger->lost_logs);
-        /* Dont check for 'ret' overflow, we know 256 bytes was sufficient. */
-        (void)write(logger->fd, buf, (size_t)ret);
+        ret = write(logger->fd, buf, (size_t)ret);
+        // Dont check for 'ret' overflow, we know 256 bytes was sufficient.
+        (void)ret;
         fsync(logger->fd);
         if (logger->fd != STDOUT_FILENO) {
           ret = fclose(logger->file);
@@ -332,25 +333,25 @@ static void* async_logger_thread_func(void* param)
         free(logger->buffer);
         pthread_exit(NULL);
       } else {
-        /* We have timed out, and there's not even a single byte of logging data available.
-         * Skip the rest and go back to waiting for data. */
+        // We have timed out, and there's not even a single byte of logging data available.
+        // Skip the rest and go back to waiting for data.
         continue;
       }
     }
 
-    /* Remaining bytes between the tail and end end of the circular buffer */
+    // Remaining bytes between the tail and end end of the circular buffer
     size_t remaining = logger->buffer_size - logger->buffer_tail;
 
-    /* This consumer thread is the only one manipulating the tail, so we can safely use it while the
-     * lock is not held to write a chunk of data to the file. We can safely write this chunk and take
-     * the time we want outside of the lock because as far as the producers are concerned,
-     * this chunk is still in the buffer and cannot be overridden. */
+    // This consumer thread is the only one manipulating the tail, so we can safely use it while the
+    // lock is not held to write a chunk of data to the file. We can safely write this chunk and take
+    // the time we want outside of the lock because as far as the producers are concerned,
+    // this chunk is still in the buffer and cannot be overridden.
     {
       if (remaining >= chunk_size) {
         write_until_success_or_error(logger->fd,
                                      &logger->buffer[logger->buffer_tail],
                                      chunk_size);
-      } else { /* Split write at the buffer boundary */
+      } else { // Split write at the buffer boundary
         write_until_success_or_error(logger->fd,
                                      &logger->buffer[logger->buffer_tail],
                                      remaining);
@@ -361,8 +362,8 @@ static void* async_logger_thread_func(void* param)
       }
     }
 
-    /* Now that the chunk is written, take back the lock to update the tail and decrease the
-     * count, which is the shared variable. */
+    // Now that the chunk is written, take back the lock to update the tail and decrease the
+    // count, which is the shared variable.
     pthread_mutex_lock(&logger->mutex);
     {
       if (remaining >= chunk_size) {
@@ -391,14 +392,14 @@ static void file_log(void* data, size_t length)
 
 void logging_init(void)
 {
-  /* Completely initialize stdout logging no matter what, because we still print some
-   * info /early info even if the complete logging is not enabled. */
+  // Completely initialize stdout logging no matter what, because we still print some
+  // info /early info even if the complete logging is not enabled.
   stdout_logging_init();
 
-  /* Partially init the file logger (the log struct) to be able to record early log and
-   * write them later on if the config file enables it. */
+  // Partially init the file logger (the log struct) to be able to record early log and
+  // write them later on if the config file enables it.
   async_logger_init(&file_logger,
-                    -1,  /* No file descriptor for the moment */
+                    -1,  // No file descriptor for the moment
                     "file");
 }
 
@@ -406,7 +407,7 @@ static void logging_print_stats(epoll_private_data_t *event_private_data)
 {
   int fd_timer = event_private_data->file_descriptor;
 
-  /* Ack the timer */
+  // Ack the timer
   {
     uint64_t expiration;
     ssize_t ret;
@@ -486,7 +487,7 @@ static void logging_print_stats(epoll_private_data_t *event_private_data)
 
 void init_stats_logging(void)
 {
-  /* Setup timer */
+  // Setup timer
   stats_timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
   FATAL_SYSCALL_ON(stats_timer_fd < 0);
 
@@ -500,7 +501,7 @@ void init_stats_logging(void)
 
   FATAL_SYSCALL_ON(ret < 0);
 
-  /* Setup epoll */
+  // Setup epoll
   {
     logging_private_data = (epoll_private_data_t*) zalloc(sizeof(epoll_private_data_t));
     FATAL_ON(logging_private_data == NULL);
@@ -512,14 +513,14 @@ void init_stats_logging(void)
   }
 }
 
-void init_file_logging()
+void init_file_logging(void)
 {
   file_logging_init();
 }
 
 void logging_kill(void)
 {
-  /* Note we don't cancel the threads, we let them finish */
+  // Note we don't cancel the threads, we let them finish
 
   gracefully_exit = true;
 
@@ -558,7 +559,7 @@ static size_t get_time_string(char *slice, size_t slice_len)
     return 0;
   }
 
-  /* XXXX-XX-XXTXX:XX:XX + .XXXXXX + Z */
+  // XXXX-XX-XXTXX:XX:XX + .XXXXXX + Z
   strftime(slice, 19 + 1, "%FT%T", &tm);
   snprintf(slice + 19, 7 + 1, ".%06lu", (long)now.tv_nsec / 1000);
   slice[26] = 'Z';
@@ -574,7 +575,7 @@ void trace(const bool force_stdout, const char* string, ...)
     return;
   }
 
-  /* Append the time stamp */
+  // Append the time stamp
   {
     log_string[log_string_length++] = '[';
     log_string_length += get_time_string(log_string + log_string_length, sizeof(log_string) - log_string_length);
@@ -582,7 +583,7 @@ void trace(const bool force_stdout, const char* string, ...)
     log_string[log_string_length++] = ' ';
   }
 
-  /* Append formated text */
+  // Append formated text
   {
     va_list vl;
 
@@ -596,7 +597,7 @@ void trace(const bool force_stdout, const char* string, ...)
 
       if ((size_t)nchar >= size) {
         fprintf(stderr, "Truncated log message");
-        /* The string was truncated, terminate it properly*/
+        // The string was truncated, terminate it properly
         log_string[sizeof(log_string) - 1] = '\n';
         log_string_length = sizeof(log_string);
       } else {
@@ -623,7 +624,7 @@ void trace_no_timestamp(const char* string, ...)
     return;
   }
 
-  /* Append formated text */
+  // Append formated text
   {
     va_list vl;
 
@@ -637,7 +638,7 @@ void trace_no_timestamp(const char* string, ...)
 
       if ((size_t)nchar >= size) {
         fprintf(stderr, "Truncated log message");
-        /* The string was truncated, terminate it properly*/
+        // The string was truncated, terminate it properly
         log_string[sizeof(log_string) - 1] = '\n';
         log_string_length = sizeof(log_string);
       } else {
@@ -664,7 +665,7 @@ static inline void byte_to_hex(uint8_t byte, char str[2])
 
 void trace_frame(const char* string, const void* buffer, size_t len)
 {
-  char log_string[4096]; /* Arbitrary size. Large buffer frames will most likely overflow. */
+  char log_string[4096]; // Arbitrary size. Large buffer frames will most likely overflow.
   size_t log_string_length = 0;
   uint8_t* frame = (uint8_t*) buffer;
 
@@ -672,7 +673,7 @@ void trace_frame(const char* string, const void* buffer, size_t len)
     return;
   }
 
-  /* Append the time stamp */
+  // Append the time stamp
   {
     log_string[log_string_length++] = '[';
     log_string_length += get_time_string(log_string + log_string_length, sizeof(log_string) - log_string_length);
@@ -682,11 +683,11 @@ void trace_frame(const char* string, const void* buffer, size_t len)
     }
   }
 
-  /* Append  string up to buffer */
+  // Append  string up to buffer
   for (size_t i = 0; string[i] != '\0'; i++) {
-    /* Edge case where the string itself can fill the whole buffer.. */
+    // Edge case where the string itself can fill the whole buffer..
     if (log_string_length >= sizeof(log_string)) {
-      /* Flush the buffer */
+      // Flush the buffer
       if (config.stdout_tracing) {
         stdio_log(log_string, log_string_length);
       }
@@ -694,19 +695,19 @@ void trace_frame(const char* string, const void* buffer, size_t len)
         file_log(log_string, log_string_length);
       }
 
-      /* Start at the beginning */
+      // Start at the beginning
       log_string_length = 0;
     }
 
     log_string[log_string_length++] = string[i];
   }
 
-  /* Append hex data */
+  // Append hex data
   for (size_t i = 0; i != len; i++) {
-    /* In the case of large buffer, its possible we reach the end of the buffer
-     * in the middle of the parsing, flush the buffer */
+    // In the case of large buffer, its possible we reach the end of the buffer
+    // in the middle of the parsing, flush the buffer
     if (log_string_length >= sizeof(log_string) - sizeof("xx:")) {
-      /* Flush the buffer */
+      // Flush the buffer
       if (config.stdout_tracing) {
         stdio_log(log_string, log_string_length);
       }
@@ -714,7 +715,7 @@ void trace_frame(const char* string, const void* buffer, size_t len)
         file_log(log_string, log_string_length);
       }
 
-      /* Start at the beginning */
+      // Start at the beginning
       log_string_length = 0;
     }
 
@@ -724,7 +725,7 @@ void trace_frame(const char* string, const void* buffer, size_t len)
     log_string[log_string_length++] = ':';
   }
 
-  /* Newline terminate the string (overriding the last semicolon)*/
+  // Newline terminate the string (overriding the last semicolon)
   if (log_string_length) {
     log_string[log_string_length - 1] = '\n';
 

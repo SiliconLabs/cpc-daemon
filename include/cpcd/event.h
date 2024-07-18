@@ -19,7 +19,7 @@
 #ifndef CPCD_EVENT_H
 #define CPCD_EVENT_H
 
-#include "lib/sl_cpc.h"
+#include "sl_cpc.h"
 
 typedef struct {
   cpc_event_type_t type;
@@ -28,4 +28,4 @@ typedef struct {
   uint8_t payload[];
 } cpcd_event_buffer_t;
 
-#endif //CPCD_EVENT_H
+#endif // CPCD_EVENT_H

@@ -14,7 +14,8 @@
  * sections of the MSLA applicable to Source Code.
  *
  ******************************************************************************/
-#define _GNU_SOURCE
+
+#include "config.h"
 
 #include <pthread.h>
 
@@ -41,7 +42,6 @@
 #include "server_core/server/server.h"
 #include "server_core/core/core.h"
 #include "server_core/system_endpoint/system.h"
-#include "version.h"
 #include "driver/driver_kill.h"
 
 #define MAX_EPOLL_EVENTS 1
@@ -50,28 +50,33 @@ char *server_core_secondary_app_version = NULL;
 uint8_t server_core_secondary_protocol_version;
 sl_cpc_bootloader_t server_core_secondary_bootloader_type = SL_CPC_BOOTLOADER_UNKNOWN;
 
+#if !defined(UNIT_TESTING)
 static const sli_cpc_system_primary_version_t primary_version = {
   .major = PROJECT_VER_MAJOR,
   .minor = PROJECT_VER_MINOR,
   .patch = PROJECT_VER_PATCH,
   .tweak = PROJECT_VER_TWEAK
 };
+#endif
 
 static pthread_t server_core_thread;
 static bool server_core_thread_started = false;
-static bool set_reset_mode_ack = false;
 static bool reset_ack = false;
+static bool secondary_bus_max_bitrate_received = false;
+
+#if !defined(UNIT_TESTING)
+static bool set_reset_mode_ack = false;
 static bool secondary_cpc_version_received = false;
 static bool set_primary_version_reply_received = false;
 static bool secondary_app_version_received_or_not_available = false;
 static bool bootloader_info_received_or_not_available = false;
 static bool secondary_bus_bitrate_received = false;
 static bool failed_to_receive_secondary_bus_bitrate = false;
-static bool secondary_bus_max_bitrate_received = false;
 static bool failed_to_receive_secondary_bus_max_bitrate = false;
 static bool capabilities_received = false;
 static bool rx_capability_received = false;
 static bool protocol_version_received = false;
+#endif
 
 #if defined(UNIT_TESTING)
 static bool reset_reason_received = true;
@@ -81,7 +86,9 @@ static bool reset_reason_received = false;
 
 static server_core_mode_t server_core_mode = SERVER_CORE_MODE_NORMAL;
 
+#if !defined(UNIT_TESTING)
 static sl_cpc_system_reboot_mode_t pending_reboot_mode;
+#endif
 
 static int kill_eventfd = -1;
 static int security_ready_eventfd = -1;
@@ -103,11 +110,13 @@ static enum {
   RESET_SEQUENCE_DONE
 } reset_sequence_state = SET_NORMAL_REBOOT_MODE;
 
+#if !defined(UNIT_TESTING)
 static enum {
   SET_BOOTLOADER_REBOOT_MODE,
   WAIT_BOOTLOADER_REBOOT_MODE_ACK,
   WAIT_BOOTLOADER_RESET_ACK
 } reboot_into_bootloader_state = SET_BOOTLOADER_REBOOT_MODE;
+#endif
 
 bool ignore_reset_reason = true;
 
@@ -117,9 +126,13 @@ static uint32_t rx_capability = 1024;
 static uint32_t rx_capability = 0;
 #endif
 
+#if !defined(UNIT_TESTING)
 static uint32_t capabilities = 0;
+#endif
 
+#if !defined(UNIT_TESTING)
 static void on_unsolicited_status(sl_cpc_system_status_t status);
+#endif
 
 static void* server_core_thread_func(void* param);
 
@@ -139,13 +152,17 @@ static void security_property_get_state_callback(sli_cpc_property_id_t property_
 
 static void security_fetch_remote_security_state(epoll_private_data_t *private_data);
 
+#if !defined(UNIT_TESTING)
 static void property_set_reset_mode_callback(sli_cpc_property_id_t property_id,
                                              void *property_value,
                                              size_t property_length,
                                              void *user_data,
                                              sl_status_t status);
+#endif
 
+#if !defined(UNIT_TESTING)
 static void process_reboot_enter_bootloader(void);
+#endif
 
 void reset_callback(sl_status_t status,
                     sl_cpc_system_status_t reset_status);
@@ -183,7 +200,7 @@ uint32_t server_core_get_secondary_rx_capability(void)
 void server_core_kill(void)
 {
   ssize_t ret;
-  const uint64_t event_value = 1; //doesn't matter what it is
+  const uint64_t event_value = 1; // Doesn't matter what it is
 
   if (kill_eventfd == -1) {
     return;
@@ -231,7 +248,7 @@ void server_core_init(int fd_socket_driver_core, int fd_socket_driver_core_notif
   sl_cpc_system_register_unsolicited_prop_last_status_callback(on_unsolicited_status);
 #endif
 
-  /* Create the string {socket_folder}/cpcd/{instance_name} */
+  // Create the string {socket_folder}/cpcd/{instance_name}
   {
     const size_t socket_folder_string_size = strlen(config.socket_folder) + strlen("/cpcd/") + strlen(config.instance_name) + sizeof(char);
     socket_folder = (char *)zalloc(socket_folder_string_size);
@@ -241,7 +258,7 @@ void server_core_init(int fd_socket_driver_core, int fd_socket_driver_core_notif
     FATAL_ON(ret < 0 || (size_t) ret >= socket_folder_string_size);
   }
 
-  /* Check if the socket folder exists */
+  // Check if the socket folder exists
   if (stat(socket_folder, &sb) == 0 && S_ISDIR(sb.st_mode)) {
     TRACE_SERVER("Cleaning up socket folder %s", socket_folder);
     cleanup_socket_folder(socket_folder);
@@ -254,11 +271,11 @@ void server_core_init(int fd_socket_driver_core, int fd_socket_driver_core_notif
 
   free(socket_folder);
 
-  /* The server is not initialized immediately because we want to perform a successful reset sequence
-   * of the secondary before. That is, unless we explicitly disable the reset sequence in the config file */
+  // The server is not initialized immediately because we want to perform a successful reset sequence
+  // of the secondary before. That is, unless we explicitly disable the reset sequence in the config file
   if (config.reset_sequence == false) {
-    /* FIXME : If we don't perform a reset sequence, the rx_capability won't be fetched. Lets put a very conservative
-     * value in place to be able to work . */
+    // FIXME : If we don't perform a reset sequence, the rx_capability won't be fetched. Lets put a very conservative
+    // value in place to be able to work.
     rx_capability = 256;
 
     ret = core_set_protocol_version(PROTOCOL_VERSION);
@@ -279,22 +296,22 @@ void server_core_init(int fd_socket_driver_core, int fd_socket_driver_core_notif
   server_init();
 #endif
 
-  /* Setup the kill eventfd */
+  // Setup the kill eventfd
   {
-    kill_eventfd = eventfd(0, //Start with 0 value
+    kill_eventfd = eventfd(0, // Start with 0 value
                            EFD_CLOEXEC);
     FATAL_ON(kill_eventfd == -1);
 
     static epoll_private_data_t private_data;
 
     private_data.callback = server_core_cleanup;
-    private_data.file_descriptor = kill_eventfd; /* Irrelevant here */
-    private_data.endpoint_number = 0; /* Irrelevant here */
+    private_data.file_descriptor = kill_eventfd; // Irrelevant here
+    private_data.endpoint_number = 0; // Irrelevant here
 
     epoll_register(&private_data);
   }
 
-  /* Setup event to be called when security has been initialized */
+  // Setup event to be called when security has been initialized
   {
     security_ready_eventfd = eventfd(0, EFD_CLOEXEC);
     FATAL_ON(security_ready_eventfd == -1);
@@ -302,14 +319,14 @@ void server_core_init(int fd_socket_driver_core, int fd_socket_driver_core_notif
     static epoll_private_data_t security_ready_data;
 
     security_ready_data.callback = security_fetch_remote_security_state;
-    /* These fields are initialized but values are not relevant */
+    // These fields are initialized but values are not relevant
     security_ready_data.file_descriptor = security_ready_eventfd;
     security_ready_data.endpoint_number = 0;
 
     epoll_register(&security_ready_data);
   }
 
-  /* create server_core thread */
+  // create server_core thread
   server_core_mode = mode;
   ret = pthread_create(&server_core_thread, NULL, server_core_thread_func, NULL);
   FATAL_ON(ret != 0);
@@ -353,7 +370,7 @@ static void* server_core_thread_func(void* param)
 
     event_count = epoll_wait_for_event(events, MAX_EPOLL_EVENTS);
 
-    /* Process each ready file descriptor*/
+    // Process each ready file descriptor
     size_t event_i;
     for (event_i = 0; event_i != (size_t)event_count; event_i++) {
       epoll_private_data_t* private_data = (epoll_private_data_t*) events[event_i].data.ptr;
@@ -366,6 +383,7 @@ static void* server_core_thread_func(void* param)
   return NULL;
 }
 
+#if !defined(UNIT_TESTING)
 static void property_set_reset_mode_callback(sli_cpc_property_id_t property_id,
                                              void *property_value,
                                              size_t property_length,
@@ -417,6 +435,7 @@ static void property_set_reset_mode_callback(sli_cpc_property_id_t property_id,
       break;
   }
 }
+#endif
 
 void reset_callback(sl_status_t status,
                     sl_cpc_system_status_t reset_status)
@@ -444,6 +463,7 @@ void reset_callback(sl_status_t status,
   }
 }
 
+#if !defined(UNIT_TESTING)
 static void on_unsolicited_status(sl_cpc_system_status_t status)
 {
   if (uart_validation_reset_requested(status)) {
@@ -465,19 +485,19 @@ static void on_unsolicited_status(sl_cpc_system_status_t status)
     } else {
       PRINT_INFO("Secondary has reset, reset the daemon.");
 
-      /* Stop driver immediately */
+      // Stop driver immediately
       driver_kill();
 
-      /* Notify lib connected */
+      // Notify lib connected
       server_notify_connected_libs_of_secondary_reset();
 
-      /* Close every single endpoint data connections */
+      // Close every single endpoint data connections
       for (uint8_t i = 1; i < 255; ++i) {
         server_close_endpoint(i, false);
       }
 
-      /* Restart the daemon with the same arguments as this process */
-      /* All file descriptors except stdout, stdin and stderr are supposed to be closed automatically with O_CLOEXEC */
+      // Restart the daemon with the same arguments as this process
+      // All file descriptors except stdout, stdin and stderr are supposed to be closed automatically with O_CLOEXEC
       {
         extern char **argv_g;
         config_restart_cpcd(argv_g);
@@ -485,6 +505,7 @@ static void on_unsolicited_status(sl_cpc_system_status_t status)
     }
   }
 }
+#endif
 
 char* server_core_get_secondary_app_version(void)
 {
@@ -803,7 +824,7 @@ static void process_reset_sequence(bool firmware_reset_mode)
     case SET_NORMAL_REBOOT_MODE:
       PRINT_INFO("Connecting to Secondary...");
 
-      /* Send a request to the secondary to set the reboot mode to 'application' */
+      // Send a request to the secondary to set the reboot mode to 'application'
       {
         const sl_cpc_system_reboot_mode_t reboot_mode = REBOOT_APPLICATION;
 
@@ -815,8 +836,8 @@ static void process_reset_sequence(bool firmware_reset_mode)
                                        &reboot_mode,
                                        sizeof(reboot_mode),
                                        NULL,
-                                       1,       /* retry once */
-                                       2000000, /* 2s between retries*/
+                                       1,       // retry once
+                                       2000000, // 2s between retries
                                        SYSTEM_EP_UFRAME);
 
         reset_sequence_state = WAIT_NORMAL_REBOOT_MODE_ACK;
@@ -828,14 +849,14 @@ static void process_reset_sequence(bool firmware_reset_mode)
     case WAIT_NORMAL_REBOOT_MODE_ACK:
 
       if (set_reset_mode_ack == true) {
-        /* Now, request a reset  */
+        // Now, request a reset
         sl_cpc_system_cmd_reboot(reset_callback,
-                                 5,     /* 5 retries */
-                                 100000 /* 100ms between retries*/);
+                                 5,       // 5 retries
+                                 100000); // 100ms between retries
 
         reset_sequence_state = WAIT_NORMAL_RESET_ACK;
 
-        /* Set it back to false because it will be used for the bootloader reboot sequence */
+        // Set it back to false because it will be used for the bootloader reboot sequence
         set_reset_mode_ack = false;
 
         TRACE_RESET("Reboot mode reply received, reset request sent");
@@ -847,7 +868,7 @@ static void process_reset_sequence(bool firmware_reset_mode)
       if (reset_ack == true) {
         reset_sequence_state = WAIT_RESET_REASON;
 
-        /* Set it back to false because it will be used for the bootloader reboot sequence */
+        // Set it back to false because it will be used for the bootloader reboot sequence
         reset_ack = false;
 
         TRACE_RESET("Reset request acknowledged, waiting for device to reset");
@@ -862,8 +883,8 @@ static void process_reset_sequence(bool firmware_reset_mode)
         sl_cpc_system_cmd_property_get(property_get_rx_capability_callback,
                                        PROP_RX_CAPABILITY,
                                        NULL,
-                                       5,       /* 5 retries */
-                                       100000,  /* 100ms between retries*/
+                                       5,       // 5 retries
+                                       100000,  // 100ms between retries
                                        SYSTEM_EP_UFRAME);
       }
       break;
@@ -876,8 +897,8 @@ static void process_reset_sequence(bool firmware_reset_mode)
         sl_cpc_system_cmd_property_get(property_get_protocol_version_callback,
                                        PROP_PROTOCOL_VERSION,
                                        NULL,
-                                       5,      /* 5 retries */
-                                       100000, /* 100ms between retries*/
+                                       5,      // 5 retries
+                                       100000, // 100ms between retries
                                        SYSTEM_EP_UFRAME);
       }
       break;
@@ -892,8 +913,8 @@ static void process_reset_sequence(bool firmware_reset_mode)
         sl_cpc_system_cmd_property_get(property_get_capabilities_callback,
                                        PROP_CAPABILITIES,
                                        NULL,
-                                       5,       /* 5 retries */
-                                       100000,  /* 100ms between retries*/
+                                       5,       // 5 retries
+                                       100000,  // 100ms between retries
                                        SYSTEM_EP_UFRAME);
       }
       break;
@@ -908,8 +929,8 @@ static void process_reset_sequence(bool firmware_reset_mode)
           sl_cpc_system_cmd_property_get(property_get_secondary_cpc_version_callback,
                                          PROP_SECONDARY_CPC_VERSION,
                                          NULL,
-                                         5,       /* 5 retries */
-                                         100000,  /* 100ms between retries*/
+                                         5,       // 5 retries
+                                         100000,  // 100ms between retries
                                          SYSTEM_EP_UFRAME);
         } else {
           // Fetch bootloader information only if in firmware reset mode
@@ -917,8 +938,8 @@ static void process_reset_sequence(bool firmware_reset_mode)
           sl_cpc_system_cmd_property_get(property_get_secondary_bootloader_info_callback,
                                          PROP_BOOTLOADER_INFO,
                                          NULL,
-                                         5,       /* 5 retries */
-                                         100000,  /* 100ms between retries*/
+                                         5,       // 5 retries
+                                         100000,  // 100ms between retries
                                          SYSTEM_EP_UFRAME);
         }
       }
@@ -932,8 +953,8 @@ static void process_reset_sequence(bool firmware_reset_mode)
         sl_cpc_system_cmd_property_get(property_get_secondary_cpc_version_callback,
                                        PROP_SECONDARY_CPC_VERSION,
                                        NULL,
-                                       5,       /* 5 retries */
-                                       100000,  /* 100ms between retries*/
+                                       5,       // 5 retries
+                                       100000,  // 100ms between retries
                                        SYSTEM_EP_UFRAME);
       }
 
@@ -949,8 +970,8 @@ static void process_reset_sequence(bool firmware_reset_mode)
                                        &primary_version,
                                        sizeof(primary_version),
                                        NULL,
-                                       5,      /* 5 retries */
-                                       100000, /* 100ms between retries*/
+                                       5,      // 5 retries
+                                       100000, // 100ms between retries
                                        SYSTEM_EP_UFRAME);
       }
       break;
@@ -963,8 +984,8 @@ static void process_reset_sequence(bool firmware_reset_mode)
         sl_cpc_system_cmd_property_get(property_get_secondary_bus_bitrate_callback,
                                        PROP_BUS_BITRATE_VALUE,
                                        NULL,
-                                       5,       /* 5 retries */
-                                       100000,  /* 100ms between retries*/
+                                       5,       // 5 retries
+                                       100000,  // 100ms between retries
                                        SYSTEM_EP_UFRAME);
       }
       break;
@@ -976,8 +997,8 @@ static void process_reset_sequence(bool firmware_reset_mode)
         sl_cpc_system_cmd_property_get(property_get_secondary_bus_max_bitrate_callback,
                                        PROP_BUS_MAX_BITRATE_VALUE,
                                        NULL,
-                                       5,       /* 5 retries */
-                                       100000,  /* 100ms between retries*/
+                                       5,       // 5 retries
+                                       100000,  // 100ms between retries
                                        SYSTEM_EP_UFRAME);
       }
       break;
@@ -989,8 +1010,8 @@ static void process_reset_sequence(bool firmware_reset_mode)
         sl_cpc_system_cmd_property_get(property_get_secondary_app_version_callback,
                                        PROP_SECONDARY_APP_VERSION,
                                        NULL,
-                                       5,       /* 5 retries */
-                                       100000,  /* 100ms between retries*/
+                                       5,       // 5 retries
+                                       100000,  // 100ms between retries
                                        SYSTEM_EP_UFRAME);
       }
       break;
@@ -1033,7 +1054,7 @@ static void process_reboot_enter_bootloader(void)
 {
   switch (reboot_into_bootloader_state) {
     case SET_BOOTLOADER_REBOOT_MODE:
-      /* Send a request to the secondary to set the reboot mode to 'application' */
+      // Send a request to the secondary to set the reboot mode to 'application'
     {
       const sl_cpc_system_reboot_mode_t reboot_mode = REBOOT_BOOTLOADER;
 
@@ -1045,8 +1066,8 @@ static void process_reboot_enter_bootloader(void)
                                      &reboot_mode,
                                      sizeof(reboot_mode),
                                      NULL,
-                                     1,         /* retry once */
-                                     2000000,   /* 2s between retries*/
+                                     1,         // retry once
+                                     2000000,   // 2s between retries
                                      SYSTEM_EP_UFRAME);
 
       reboot_into_bootloader_state = WAIT_BOOTLOADER_REBOOT_MODE_ACK;
@@ -1057,10 +1078,10 @@ static void process_reboot_enter_bootloader(void)
 
     case WAIT_BOOTLOADER_REBOOT_MODE_ACK:
       if (set_reset_mode_ack == true) {
-        /* Now, request a reset  */
+        // Now, request a reset
         sl_cpc_system_cmd_reboot(reset_callback,
-                                 5,     /* 5 retries */
-                                 100000 /* 100ms between retries*/);
+                                 5,       // 5 retries
+                                 100000); // 100ms between retries
 
         reboot_into_bootloader_state = WAIT_BOOTLOADER_RESET_ACK;
 

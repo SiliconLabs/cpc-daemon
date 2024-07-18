@@ -18,7 +18,6 @@
 #ifndef SERVER_CORE_H
 #define SERVER_CORE_H
 
-#define _GNU_SOURCE
 #include <pthread.h>
 
 #include <stdint.h>
@@ -48,4 +47,4 @@ bool server_core_reset_is_received_reset_reason(void);
 
 char* server_core_get_secondary_app_version(void);
 
-#endif //SERVER_CORE_H
+#endif // SERVER_CORE_H

@@ -18,7 +18,6 @@
 #ifndef DRIVER_EZSP_H
 #define DRIVER_EZSP_H
 
-#define _GNU_SOURCE
 #include <pthread.h>
 
 #include <stdbool.h>

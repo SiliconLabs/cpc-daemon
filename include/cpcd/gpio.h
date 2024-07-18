@@ -63,9 +63,7 @@ gpio_value_t gpio_read(gpio_t gpio);
 
 int gpio_get_epoll_fd(gpio_t gpio);
 
-/*
- * Clears a single gpio IRQ event.
- */
+// Clears a single gpio IRQ event.
 void gpio_clear_irq(gpio_t gpio);
 
-#endif /* GPIO_H */
+#endif // GPIO_H

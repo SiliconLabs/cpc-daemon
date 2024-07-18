@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.7)
 
 include(FindPackageHandleStandardArgs)
 
-if(DEFINED MbedTLS_FOUND)
+if(MbedTLS_FOUND)
   return()
 endif()
 

@@ -18,10 +18,10 @@
 #ifndef CPCD_EXCHANGE_H
 #define CPCD_EXCHANGE_H
 
-#include "lib/sl_cpc.h"
+#include "sl_cpc.h"
 
-/* NOTE: New exchange types must be added to the end of the enum to prevent
- *       an incompatibility between older library versions */
+// NOTE: New exchange types must be added to the end of the enum to prevent
+//       an incompatibility between older library versions
 SL_ENUM_GENERIC(cpcd_exchange_type_t, uint8_t)
 {
   EXCHANGE_ENDPOINT_STATUS_QUERY,
@@ -43,4 +43,4 @@ typedef struct {
   uint8_t payload[];
 } cpcd_exchange_buffer_t;
 
-#endif //CPCD_EXCHANGE_H
+#endif // CPCD_EXCHANGE_H

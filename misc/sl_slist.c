@@ -15,6 +15,8 @@
  *
  ******************************************************************************/
 
+#include "config.h"
+
 #include <assert.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -136,8 +138,6 @@ void sl_slist_remove(sl_slist_node_t **head,
       return;
     }
   }
-
-  EFM_ASSERT(node_ptr != NULL);
 }
 
 /***************************************************************************//**

@@ -86,5 +86,10 @@ void disconnect_endpoint_v5(sl_cpc_endpoint_t *ep,
                             on_disconnect_completion_t callback);
 void terminate_endpoint_v5(sl_cpc_endpoint_t *ep,
                            on_terminate_completion_t callback);
+#if defined(ENABLE_ENCRYPTION)
+void set_security_counters_v5(sl_cpc_endpoint_t *ep,
+                              on_set_security_counters_completion_t callback,
+                              void *cb_data);
+#endif
 
 #endif // CORE_PROTOCOL_INTERNAL_H

@@ -59,8 +59,10 @@ void on_write_completed(uint8_t id, sl_status_t status);
 void cpc_unity_test_read_rx_callback(uint8_t endpoint_id);
 
 void core_reset_endpoint(uint8_t endpoint_number);
+#if defined(ENABLE_ENCRYPTION)
 uint32_t core_endpoint_get_frame_counter(uint8_t endpoint_number, bool tx);
 void core_endpoint_set_frame_counter(uint8_t endpoint_number, uint32_t new_value, bool tx);
+#endif
 #endif
 
 void core_reset_endpoint_sequence(uint8_t endpoint_number);
@@ -108,17 +110,16 @@ void core_on_unsolicited_endpoint_state(const uint8_t endpoint_id,
 // -----------------------------------------------------------------------------
 // Data Types
 
-/* 1-byte aligned
- *  0                   1                   2                   3
- *  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
- * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- * |  header[7]  |                                                 |
- * +-+-+-+-+-+-+-+                                                 :
- * |                            payload                            |
- * :                                                               :
- * |                                                               |
- * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- */
+// 1-byte aligned
+//  0                   1                   2                   3
+//  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+// |  header[7]  |                                                 |
+// +-+-+-+-+-+-+-+                                                 :
+// |                            payload                            |
+// :                                                               :
+// |                                                               |
+// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 typedef struct {
   uint8_t  header[SLI_CPC_HDLC_HEADER_RAW_SIZE];
   uint8_t  payload[];     // last two bytes are little endian 16bits

@@ -24,4 +24,4 @@ void server_push_data_to_core(uint8_t endpoint_number, const void *data, size_t 
 
 void server_tell_core_to_open_endpoint(uint8_t endpoint_number);
 
-#endif //SERVER_INTERNAL_H
+#endif // SERVER_INTERNAL_H

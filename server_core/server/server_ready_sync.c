@@ -15,6 +15,8 @@
  *
  ******************************************************************************/
 
+#include "config.h"
+
 #include <pthread.h>
 #include <stdbool.h>
 
@@ -58,7 +60,7 @@ void server_ready_wait(void)
       FATAL_ON(ret != 0);
     }
 
-    /* Nothing to do with the predicate. */
+    // Nothing to do with the predicate.
   }
   pthread_mutex_unlock(&server_ready_synchronizer.is_ready_mutex);
 }

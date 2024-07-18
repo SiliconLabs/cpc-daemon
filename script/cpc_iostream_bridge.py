@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 
-import socket
-import threading
-import libcpc
-import sys
-import signal
-import time
 import argparse
+import pathlib
+import signal
+import socket
+import sys
+import threading
+import time
+
+sys.path.append(str(pathlib.Path(__file__).parents[1].joinpath("lib/bindings/python/src")))
+
+import libcpc
 
 verbose = False
 reset_flag = False

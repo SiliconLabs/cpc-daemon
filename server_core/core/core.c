@@ -15,6 +15,8 @@
  *
  ******************************************************************************/
 
+#include "config.h"
+
 #include <sys/socket.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
@@ -106,7 +108,7 @@ static void core_process_rx_i_frame(frame_t *rx_frame);
 static void core_process_rx_s_frame(frame_t *rx_frame);
 static void core_process_rx_u_frame(frame_t *rx_frame);
 
-/* CPC core functions  */
+// CPC core functions
 static bool core_process_tx_queue(void);
 static void process_ack(sl_cpc_endpoint_t *endpoint, uint8_t ack);
 static void transmit_ack(sl_cpc_endpoint_t *endpoint);
@@ -116,11 +118,11 @@ static sl_cpc_endpoint_t* find_endpoint(uint8_t endpoint_number);
 static void transmit_reject(sl_cpc_endpoint_t *endpoint, uint8_t address, uint8_t ack, sl_cpc_reject_reason_t reason);
 static bool is_endpoint_connection_active(const sl_cpc_endpoint_t *ep);
 
-/* Functions to operate on linux fd timers */
+// Functions to operate on linux fd timers
 static void stop_re_transmit_timer(sl_cpc_endpoint_t* endpoint);
 static void start_re_transmit_timer(sl_cpc_endpoint_t* endpoint, struct timespec offset);
 
-/* Functions to communicate with the driver and server */
+// Functions to communicate with the driver and server
 static void core_push_frame_to_driver(const void *frame, size_t frame_len);
 static bool core_pull_frame_from_driver(frame_t** frame_buf, size_t* frame_buf_len);
 
@@ -314,8 +316,8 @@ static void core_on_security_state_change(sl_cpc_security_state_t old, sl_cpc_se
       core_endpoints[i].frame_counter_tx = SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE;
       core_endpoints[i].frame_counter_rx = SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE;
 #if defined(UNIT_TESTING)
-      sli_cpc_drv_emul_set_frame_counter(i, SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE, true);
-      sli_cpc_drv_emul_set_frame_counter(i, SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE, false);
+      sli_cpc_drv_emul_set_frame_counter((uint8_t)i, SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE, true);
+      sli_cpc_drv_emul_set_frame_counter((uint8_t)i, SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE, false);
 #endif
     }
   } else if (new == SECURITY_STATE_INITIALIZING) {
@@ -326,7 +328,7 @@ static void core_on_security_state_change(sl_cpc_security_state_t old, sl_cpc_se
 
 void core_init(int driver_fd, int driver_notify_fd)
 {
-  /* Init all endpoints */
+  // Init all endpoints
   size_t i = 0;
   for (i = 0; i < SL_CPC_ENDPOINT_MAX_COUNT; i++) {
     core_endpoints[i].id = (uint8_t)i;
@@ -352,9 +354,9 @@ void core_init(int driver_fd, int driver_notify_fd)
   security_register_state_change_callback(core_on_security_state_change);
 #endif
 
-  /* Setup epoll */
+  // Setup epoll
   {
-    /* Setup the driver data socket */
+    // Setup the driver data socket
     {
       driver_sock_private_data.callback = core_process_rx_driver;
       driver_sock_private_data.file_descriptor = driver_fd;
@@ -363,17 +365,17 @@ void core_init(int driver_fd, int driver_notify_fd)
       epoll_register(&driver_sock_private_data);
     }
 
-    /* Setup the driver notification socket */
+    // Setup the driver notification socket
     {
       driver_sock_notify_private_data.callback = core_process_rx_driver_notification;
       driver_sock_notify_private_data.file_descriptor = driver_notify_fd;
-      driver_sock_notify_private_data.endpoint_number = 0; /* Irrelevant here */
+      driver_sock_notify_private_data.endpoint_number = 0; // Irrelevant here
 
       epoll_register(&driver_sock_notify_private_data);
     }
   }
 
-  /* Setup timer to fetch secondary debug counter */
+  // Setup timer to fetch secondary debug counter
   if (config.stats_interval > 0) {
     stats_timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
     FATAL_SYSCALL_ON(stats_timer_fd < 0);
@@ -388,7 +390,7 @@ void core_init(int driver_fd, int driver_notify_fd)
 
     FATAL_SYSCALL_ON(ret < 0);
 
-    /* Setup epoll */
+    // Setup epoll
     {
       epoll_private_data_t* private_data = (epoll_private_data_t*) zalloc(sizeof(epoll_private_data_t));
       FATAL_SYSCALL_ON(private_data == NULL);
@@ -405,7 +407,7 @@ void core_init(int driver_fd, int driver_notify_fd)
 
 void core_process_transmit_queue(void)
 {
-  /* Flush the transmit queue */
+  // Flush the transmit queue
   while (transmit_queue != NULL || pending_on_security_ready_queue != NULL) {
     if (!core_process_tx_queue()) {
       break;
@@ -447,6 +449,7 @@ static void core_update_secondary_debug_counter(sli_cpc_property_id_t property_i
                                                 void *user_data,
                                                 sl_status_t status)
 {
+  const uint8_t *property_data;
   (void)user_data;
 
   if (status == SL_STATUS_TIMEOUT) {
@@ -467,57 +470,58 @@ static void core_update_secondary_debug_counter(sli_cpc_property_id_t property_i
 
   FATAL_ON(property_id != PROP_CORE_DEBUG_COUNTERS);
   FATAL_ON(property_value == NULL || property_length > sizeof(core_debug_counters_t));
+  property_data = (const uint8_t *)property_value;
 
-  secondary_core_debug_counters.endpoint_opened = u32_from_le((const uint8_t *)property_value);
-  property_value = property_value + sizeof(secondary_core_debug_counters.endpoint_opened);
+  secondary_core_debug_counters.endpoint_opened = u32_from_le(property_data);
+  property_data += sizeof(secondary_core_debug_counters.endpoint_opened);
 
-  secondary_core_debug_counters.endpoint_closed = u32_from_le((const uint8_t *)property_value);
-  property_value = property_value + sizeof(secondary_core_debug_counters.endpoint_closed);
+  secondary_core_debug_counters.endpoint_closed = u32_from_le(property_data);
+  property_data += sizeof(secondary_core_debug_counters.endpoint_closed);
 
-  secondary_core_debug_counters.rxd_frame = u32_from_le((const uint8_t *)property_value);
-  property_value = property_value + sizeof(secondary_core_debug_counters.rxd_frame);
+  secondary_core_debug_counters.rxd_frame = u32_from_le(property_data);
+  property_data += sizeof(secondary_core_debug_counters.rxd_frame);
 
-  secondary_core_debug_counters.rxd_valid_iframe = u32_from_le((const uint8_t *)property_value);
-  property_value = property_value + sizeof(secondary_core_debug_counters.rxd_valid_iframe);
+  secondary_core_debug_counters.rxd_valid_iframe = u32_from_le(property_data);
+  property_data += sizeof(secondary_core_debug_counters.rxd_valid_iframe);
 
-  secondary_core_debug_counters.rxd_valid_uframe = u32_from_le((const uint8_t *)property_value);
-  property_value = property_value + sizeof(secondary_core_debug_counters.rxd_valid_uframe);
+  secondary_core_debug_counters.rxd_valid_uframe = u32_from_le(property_data);
+  property_data += sizeof(secondary_core_debug_counters.rxd_valid_uframe);
 
-  secondary_core_debug_counters.rxd_valid_sframe = u32_from_le((const uint8_t *)property_value);
-  property_value = property_value + sizeof(secondary_core_debug_counters.rxd_valid_sframe);
+  secondary_core_debug_counters.rxd_valid_sframe = u32_from_le(property_data);
+  property_data += sizeof(secondary_core_debug_counters.rxd_valid_sframe);
 
-  secondary_core_debug_counters.rxd_data_frame_dropped = u32_from_le((const uint8_t *)property_value);
-  property_value = property_value + sizeof(secondary_core_debug_counters.rxd_data_frame_dropped);
+  secondary_core_debug_counters.rxd_data_frame_dropped = u32_from_le(property_data);
+  property_data += sizeof(secondary_core_debug_counters.rxd_data_frame_dropped);
 
-  secondary_core_debug_counters.txd_reject_destination_unreachable = u32_from_le((const uint8_t *)property_value);
-  property_value = property_value + sizeof(secondary_core_debug_counters.txd_reject_destination_unreachable);
+  secondary_core_debug_counters.txd_reject_destination_unreachable = u32_from_le(property_data);
+  property_data += sizeof(secondary_core_debug_counters.txd_reject_destination_unreachable);
 
-  secondary_core_debug_counters.txd_reject_error_fault = u32_from_le((const uint8_t *)property_value);
-  property_value = property_value + sizeof(secondary_core_debug_counters.txd_reject_error_fault);
+  secondary_core_debug_counters.txd_reject_error_fault = u32_from_le(property_data);
+  property_data += sizeof(secondary_core_debug_counters.txd_reject_error_fault);
 
-  secondary_core_debug_counters.txd_completed = u32_from_le((const uint8_t *)property_value);
-  property_value = property_value + sizeof(secondary_core_debug_counters.txd_completed);
+  secondary_core_debug_counters.txd_completed = u32_from_le(property_data);
+  property_data += sizeof(secondary_core_debug_counters.txd_completed);
 
-  secondary_core_debug_counters.retxd_data_frame = u32_from_le((const uint8_t *)property_value);
-  property_value = property_value + sizeof(secondary_core_debug_counters.retxd_data_frame);
+  secondary_core_debug_counters.retxd_data_frame = u32_from_le(property_data);
+  property_data += sizeof(secondary_core_debug_counters.retxd_data_frame);
 
-  secondary_core_debug_counters.driver_error = u32_from_le((const uint8_t *)property_value);
-  property_value = property_value + sizeof(secondary_core_debug_counters.driver_error);
+  secondary_core_debug_counters.driver_error = u32_from_le(property_data);
+  property_data += sizeof(secondary_core_debug_counters.driver_error);
 
-  secondary_core_debug_counters.driver_packet_dropped = u32_from_le((const uint8_t *)property_value);
-  property_value = property_value + sizeof(secondary_core_debug_counters.driver_packet_dropped);
+  secondary_core_debug_counters.driver_packet_dropped = u32_from_le(property_data);
+  property_data += sizeof(secondary_core_debug_counters.driver_packet_dropped);
 
-  secondary_core_debug_counters.invalid_header_checksum = u32_from_le((const uint8_t *)property_value);
-  property_value = property_value + sizeof(secondary_core_debug_counters.invalid_header_checksum);
+  secondary_core_debug_counters.invalid_header_checksum = u32_from_le(property_data);
+  property_data += sizeof(secondary_core_debug_counters.invalid_header_checksum);
 
-  secondary_core_debug_counters.invalid_payload_checksum = u32_from_le((const uint8_t *)property_value);
+  secondary_core_debug_counters.invalid_payload_checksum = u32_from_le(property_data);
 }
 
 static void core_fetch_secondary_debug_counters(epoll_private_data_t *event_private_data)
 {
   int fd_timer = event_private_data->file_descriptor;
 
-  /* Ack the timer */
+  // Ack the timer
   {
     uint64_t expiration;
     ssize_t ret;
@@ -547,7 +551,7 @@ static void core_process_rx_driver_notification(epoll_private_data_t *event_priv
                      sizeof(tx_complete_timestamp),
                      MSG_DONTWAIT);
 
-  /* Socket closed */
+  // Socket closed
   if (ret == 0 || (ret < 0 && errno == ECONNRESET)) {
     TRACE_CORE("Driver closed the notification socket");
     epoll_unregister(&driver_sock_notify_private_data);
@@ -585,14 +589,14 @@ static void core_process_rx_driver(epoll_private_data_t *event_private_data)
   frame_t *rx_frame;
   size_t frame_size;
 
-  /* The driver unblocked, read the frame. Frames from the driver are complete */
+  // The driver unblocked, read the frame. Frames from the driver are complete
   if (core_pull_frame_from_driver(&rx_frame, &frame_size) == false) {
     return;
   }
 
   TRACE_CORE_RXD_FRAME(rx_frame, frame_size);
 
-  /* Validate header checksum */
+  // Validate header checksum
   {
     uint16_t hcs = hdlc_get_hcs(rx_frame->header);
 
@@ -609,7 +613,7 @@ static void core_process_rx_driver(epoll_private_data_t *event_private_data)
   uint8_t  type        = hdlc_get_frame_type(control);
   uint8_t  ack         = hdlc_get_ack(control);
 
-  /* Make sure the length from the header matches the length reported by the driver*/
+  // Make sure the length from the header matches the length reported by the driver
   BUG_ON(data_length != frame_size - SLI_CPC_HDLC_HEADER_RAW_SIZE);
 
   sl_cpc_endpoint_t* endpoint = find_endpoint(address);
@@ -625,7 +629,7 @@ static void core_process_rx_driver(epoll_private_data_t *event_private_data)
     }
   }
 
-  /* If endpoint is closed , reject the frame and return unless the frame itself is a reject, if so ignore it */
+  // If endpoint is closed , reject the frame and return unless the frame itself is a reject, if so ignore it
   if (!is_endpoint_connection_active(endpoint)
       || (endpoint->state == SLI_CPC_STATE_REMOTE_SHUTDOWN
           && type != SLI_CPC_HDLC_FRAME_TYPE_SUPERVISORY)) {
@@ -636,7 +640,7 @@ static void core_process_rx_driver(epoll_private_data_t *event_private_data)
     return;
   }
 
-  /* For data and supervisory frames, process the ack right away */
+  // For data and supervisory frames, process the ack right away
   if (type == SLI_CPC_HDLC_FRAME_TYPE_INFORMATION || type == SLI_CPC_HDLC_FRAME_TYPE_SUPERVISORY) {
     process_ack(endpoint, ack);
   }
@@ -660,7 +664,7 @@ static void core_process_rx_driver(epoll_private_data_t *event_private_data)
       break;
   }
 
-  /* core_pull_frame_from_driver() malloced rx_frame */
+  // core_pull_frame_from_driver() malloced rx_frame
   free(rx_frame);
 }
 
@@ -669,6 +673,36 @@ bool core_ep_is_closing(uint8_t ep_id)
   return core_endpoints[ep_id].state == SLI_CPC_STATE_CLOSING;
 }
 
+#if defined(ENABLE_ENCRYPTION)
+static void on_set_security_counters_reply(sl_cpc_endpoint_t *ep,
+                                           sl_status_t status,
+                                           void *ctx)
+{
+  uint8_t tx_window_size = (uint8_t)((uintptr_t)ctx);
+
+  if (status == SL_STATUS_NOT_SUPPORTED) {
+    ep->frame_counter_rx = SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE;
+    ep->frame_counter_tx = SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE;
+
+    status = SL_STATUS_OK;
+  }
+
+  if (status == SL_STATUS_OK) {
+    core_connect_endpoint(ep->id, 0, tx_window_size, true);
+  } else {
+    server_connect_endpoint(ep->id, true);
+  }
+}
+
+static void core_set_remote_security_counters(sl_cpc_endpoint_t *ep, uint8_t tx_window_size)
+{
+  FATAL_ON(protocol == NULL);
+  protocol->set_security_counters(ep,
+                                  on_set_security_counters_reply,
+                                  (void*)((uintptr_t)tx_window_size));
+}
+#endif
+
 static void on_get_encryption_reply(sl_cpc_endpoint_t *ep, sl_status_t status, bool encrypted, void *ctx)
 {
   uint8_t tx_window_size = (uint8_t)((uintptr_t)ctx);
@@ -676,7 +710,16 @@ static void on_get_encryption_reply(sl_cpc_endpoint_t *ep, sl_status_t status, b
   if (status != SL_STATUS_OK) {
     server_connect_endpoint(ep->id, true);
   } else {
-    core_connect_endpoint(ep->id, 0, tx_window_size, encrypted);
+    if (encrypted) {
+#if defined(ENABLE_ENCRYPTION)
+      core_set_remote_security_counters(ep, tx_window_size);
+#else
+      // we should never end up, but handle it for completeness
+      FATAL("CPCd built without encryption support");
+#endif
+    } else {
+      core_connect_endpoint(ep->id, 0, tx_window_size, encrypted);
+    }
   }
 }
 
@@ -836,14 +879,14 @@ static void core_process_rx_i_frame(frame_t *rx_frame)
     return;
   }
 
-  /* Prevent -2 on a zero length */
+  // Prevent -2 on a zero length
   BUG_ON(hdlc_get_length(rx_frame->header) < SLI_CPC_HDLC_FCS_SIZE);
 
   uint16_t rx_frame_payload_length = (uint16_t) (hdlc_get_length(rx_frame->header) - SLI_CPC_HDLC_FCS_SIZE);
 
   uint16_t fcs = hdlc_get_fcs(rx_frame->payload, rx_frame_payload_length);
 
-  /* Validate payload checksum. In case it is invalid, NAK the packet. */
+  // Validate payload checksum. In case it is invalid, NAK the packet.
   if (!sli_cpc_validate_crc_sw(rx_frame->payload, rx_frame_payload_length, fcs)) {
     transmit_reject(endpoint, address, endpoint->ack, HDLC_REJECT_CHECKSUM_MISMATCH);
     TRACE_CORE_INVALID_PAYLOAD_CHECKSUM();
@@ -861,7 +904,7 @@ static void core_process_rx_i_frame(frame_t *rx_frame)
       uint8_t *output;
       sl_status_t status;
 
-      /* the payload buffer must be longer than the security tag */
+      // the payload buffer must be longer than the security tag
       BUG_ON(rx_frame_payload_length < tag_len);
       rx_frame_payload_length = (uint16_t)(rx_frame_payload_length - tag_len);
 
@@ -1144,16 +1187,16 @@ int core_write(uint8_t endpoint_number, const void* message, size_t message_len,
 
   endpoint = find_endpoint(endpoint_number);
 
-  /* Sanity checks */
+  // Sanity checks
   {
-    /* Make sure the endpoint it opened */
+    // Make sure the endpoint it opened
     if (endpoint->state != SLI_CPC_STATE_CONNECTED
         && endpoint->state != SLI_CPC_STATE_REMOTE_SHUTDOWN) {
       WARN("Tried to write on closed endpoint #%d", endpoint_number);
       return -1;
     }
 
-    /* if u-frame, make sure they are enabled */
+    // if u-frame, make sure they are enabled
     if ((flags & SL_CPC_FLAG_UNNUMBERED_INFORMATION) || (flags & SL_CPC_FLAG_UNNUMBERED_RESET_COMMAND) || (flags & SL_CPC_FLAG_UNNUMBERED_POLL)) {
       FATAL_ON(!(endpoint->flags & SL_CPC_OPEN_ENDPOINT_FLAG_UFRAME_ENABLE));
 
@@ -1167,13 +1210,13 @@ int core_write(uint8_t endpoint_number, const void* message, size_t message_len,
         type = SLI_CPC_HDLC_CONTROL_UNNUMBERED_TYPE_POLL_FINAL;
       }
     }
-    /* if I-frame, make sure they are not disabled */
+    // if I-frame, make sure they are not disabled
     else {
       FATAL_ON(endpoint->flags & SL_CPC_OPEN_ENDPOINT_FLAG_IFRAME_DISABLE);
     }
   }
 
-  /* Fill the buffer handle */
+  // Fill the buffer handle
   {
     uint8_t control;
 
@@ -1227,15 +1270,19 @@ int core_write(uint8_t endpoint_number, const void* message, size_t message_len,
  ******************************************************************************/
 void core_connect_endpoint(uint8_t endpoint_number, uint8_t flags, uint8_t tx_window_size, bool encryption)
 {
-  sl_cpc_endpoint_t *ep;
   sli_cpc_endpoint_state_t previous_state;
+  sl_cpc_endpoint_t *ep;
+#if defined(ENABLE_ENCRYPTION)
+  uint32_t rx_counter;
+  uint32_t tx_counter;
+#endif
 
   FATAL_ON(tx_window_size < TRANSMIT_WINDOW_MIN_SIZE);
   FATAL_ON(tx_window_size > TRANSMIT_WINDOW_MAX_SIZE);
 
   ep = &core_endpoints[endpoint_number];
 
-  /* Check if endpoint was already opened */
+  // Check if endpoint was already opened
   if (ep->state != SLI_CPC_STATE_CLOSED) {
     BUG("Endpoint already opened, current state=%s, expected=%s",
         core_stringify_state(ep->state),
@@ -1243,8 +1290,12 @@ void core_connect_endpoint(uint8_t endpoint_number, uint8_t flags, uint8_t tx_wi
     return;
   }
 
-  /* Keep the previous state to log the transition */
+  // Keep the previous state to log the transition
   previous_state = ep->state;
+#if defined(ENABLE_ENCRYPTION)
+  rx_counter = ep->frame_counter_rx;
+  tx_counter = ep->frame_counter_tx;
+#endif
   memset(ep, 0x00, sizeof(sl_cpc_endpoint_t));
   ep->state = previous_state;
   if (endpoint_number == SL_CPC_ENDPOINT_SYSTEM) {
@@ -1260,8 +1311,15 @@ void core_connect_endpoint(uint8_t endpoint_number, uint8_t flags, uint8_t tx_wi
   ep->re_transmit_timeout_ms = SL_CPC_MAX_RE_TRANSMIT_TIMEOUT_MS;
 #if defined(ENABLE_ENCRYPTION)
   ep->encrypted = encryption;
-  ep->frame_counter_tx = SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE;
-  ep->frame_counter_rx = SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE;
+
+  if (endpoint_number == SL_CPC_ENDPOINT_SYSTEM) {
+    // do not reset frame counters values, except for the system endpoint
+    ep->frame_counter_tx = SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE;
+    ep->frame_counter_rx = SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE;
+  } else {
+    ep->frame_counter_rx = rx_counter;
+    ep->frame_counter_tx = tx_counter;
+  }
 #else
   (void)encryption;
 #endif
@@ -1269,7 +1327,7 @@ void core_connect_endpoint(uint8_t endpoint_number, uint8_t flags, uint8_t tx_wi
   int timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
   FATAL_SYSCALL_ON(timer_fd < 0);
 
-  /* Setup epoll */
+  // Setup epoll
   {
     epoll_private_data_t* private_data = (epoll_private_data_t*) zalloc(sizeof(epoll_private_data_t));
     FATAL_SYSCALL_ON(private_data == NULL);
@@ -1332,6 +1390,26 @@ sl_status_t core_close_endpoint(uint8_t endpoint_number, bool notify_secondary, 
   ep = find_endpoint(endpoint_number);
 
   BUG_ON(ep->state == SLI_CPC_STATE_CLOSED);
+
+  if (ep->state == SLI_CPC_STATE_REMOTE_SHUTDOWN
+      && notify_secondary && !force_close
+      && !ep->closed_by_server
+      && endpoint_number != SL_CPC_ENDPOINT_SECURITY
+      && (ep->re_transmit_queue != NULL || ep->holding_list != NULL)) {
+    // we end up here because a remote shutdown was received, the data socket
+    // was then shutdown() to prevent the user from sending more data. When the
+    // last packet is read from the socket, the next read returns EOF and the
+    // tear down sequence is called from the server, ultimately closing the
+    // core endpoint. But the last packet was just sent on the wire and not
+    // ack'd yet, so it might be missed by the remote device, meaning
+    // ep->re_transmit_queue still contain the un-ack'd packet.
+
+    ep->closed_by_server = true;
+
+    TRACE_CORE("Deferring close for endpoint #%d, still has unacknowledged packets", endpoint_number);
+
+    return SL_STATUS_OK;
+  }
 
   TRACE_CORE("Closing endpoint #%d", endpoint_number);
 
@@ -1536,6 +1614,13 @@ static void process_ack(sl_cpc_endpoint_t *endpoint, uint8_t ack)
     epoll_watch_back(endpoint->id);
   }
 
+  if (endpoint->state == SLI_CPC_STATE_REMOTE_SHUTDOWN
+      && endpoint->closed_by_server
+      && endpoint->re_transmit_queue == NULL
+      && endpoint->holding_list == NULL) {
+    core_close_endpoint(endpoint->id, true, false);
+  }
+
   TRACE_ENDPOINT_RXD_ACK(endpoint, ack);
 }
 
@@ -1719,10 +1804,10 @@ static bool core_process_tx_queue(void)
 #if defined(ENABLE_ENCRYPTION)
   uint16_t security_buffer_size = 0;
   if (encrypt) {
-    /* add up a few extra bytes to store security tag */
+    // add up a few extra bytes to store security tag
     security_buffer_size = (uint16_t)security_encrypt_get_extra_buffer_size();
 
-    /* bug if the sum is going to overflow */
+    // bug if the sum is going to overflow
     BUG_ON(total_length > UINT16_MAX - security_buffer_size);
     total_length = (uint16_t)(total_length + security_buffer_size);
   }
@@ -1730,8 +1815,8 @@ static bool core_process_tx_queue(void)
   BUG_ON(encrypt);
 #endif
 
-  /* create header after checking if the frame must be encrypted or not
-   * as it has an impact on the total size of the payload, and the fcs */
+  // create header after checking if the frame must be encrypted or not
+  // as it has an impact on the total size of the payload, and the fcs
   hdlc_create_header(frame->hdlc_header, frame->address, total_length, frame->control, true);
 
   uint16_t encrypted_data_length = frame->data_length;
@@ -1744,35 +1829,28 @@ static bool core_process_tx_queue(void)
 
   if (encrypt) {
     uint8_t *security_offset;
-    uint16_t fcs;
     sl_status_t encrypt_status;
 
-    /*
-     * encrypted_data_length is size of encrypted payload + size of security tag.
-     * This operation should be safe to cast to uint16_t as it was already checked
-     * earlier that the following sum doesn't overflow:
-     *   total_length + security_buffer_size
-     *
-     * And total_length is frame->data_length + 2 bytes for the FCS.
-     * So if the first operation doesn't overflow, this one won't as it's
-     * two-byte shorter.
-     */
+    // encrypted_data_length is size of encrypted payload + size of security tag.
+    // This operation should be safe to cast to uint16_t as it was already checked
+    // earlier that the following sum doesn't overflow:
+    //   total_length + security_buffer_size
+    //
+    // And total_length is frame->data_length + 2 bytes for the FCS.
+    // So if the first operation doesn't overflow, this one won't as it's
+    // two-byte shorter.
     encrypted_data_length = (uint16_t)(frame->data_length + security_buffer_size);
 
-    /* allocate buffer and make sure it succeeded */
+    // allocate buffer and make sure it succeeded
     encrypted_payload = (uint8_t*)zalloc(encrypted_data_length);
     FATAL_ON(encrypted_payload == NULL);
 
-    /*
-     * compute offset at which security tag must be stored. It should be right
-     * after the encrypted payload.
-     */
+    // compute offset at which security tag must be stored. It should be right
+    // after the encrypted payload.
     security_offset = &encrypted_payload[frame->data_length];
 
-    /*
-     * 'ack' in the control field of the header should be always set to 0
-     * as it's not part of the authenticated data
-     */
+    // 'ack' in the control field of the header should be always set to 0
+    // as it's not part of the authenticated data
     uint8_t ack = hdlc_get_ack(hdlc_get_control(frame->hdlc_header));
     hdlc_set_control_ack(&((uint8_t*)frame->hdlc_header)[SLI_CPC_HDLC_CONTROL_POS], 0);
 
@@ -1782,9 +1860,7 @@ static bool core_process_tx_queue(void)
                                       encrypted_payload,
                                       security_offset, security_buffer_size);
 
-    /*
-     * restore 'ack' to its value
-     */
+    // restore 'ack' to its value
     hdlc_set_control_ack(&((uint8_t*)frame->hdlc_header)[SLI_CPC_HDLC_CONTROL_POS], ack);
 
     if (encrypt_status != SL_STATUS_OK) {
@@ -1799,15 +1875,13 @@ static bool core_process_tx_queue(void)
       security_session_last_packet_acked = false;
     }
 
-    fcs = sli_cpc_get_crc_sw(encrypted_payload, (uint16_t)encrypted_data_length);
-    frame->fcs[0] = (uint8_t)fcs;
-    frame->fcs[1] = (uint8_t)(fcs >> 8);
+    frame->fcs = sli_cpc_get_crc_sw(encrypted_payload, (uint16_t)encrypted_data_length);
   }
 #else
   BUG_ON(encrypt);
 #endif
 
-  /* Construct and send the frame to the driver */
+  // Construct and send the frame to the driver
   {
     // total_length takes into account FCS and security tag
     size_t frame_length = SLI_CPC_HDLC_HEADER_RAW_SIZE + total_length;
@@ -1815,21 +1889,21 @@ static bool core_process_tx_queue(void)
     frame_t* frame_buffer = (frame_t*) zalloc(frame_length);
     FATAL_ON(frame_buffer == NULL);
 
-    /* copy the header */
+    // copy the header
     memcpy(frame_buffer->header, frame->hdlc_header, SLI_CPC_HDLC_HEADER_RAW_SIZE);
 
     if (encrypted_data_length > 0) {
-      /* copy the payload */
+      // copy the payload
       memcpy(frame_buffer->payload, encrypted_payload, encrypted_data_length);
 
-      memcpy(&frame_buffer->payload[encrypted_data_length], frame->fcs, sizeof(frame->fcs));
+      u16_to_le(frame->fcs, &frame_buffer->payload[encrypted_data_length]);
     }
 
     buffer_list_push_back_item(item, &pending_on_tx_complete);
     core_push_frame_to_driver(frame_buffer, frame_length);
 
     if (frame->data != encrypted_payload) {
-      /* in case a buffer was allocated for allocation, free it */
+      // in case a buffer was allocated for allocation, free it
       free((void*)encrypted_payload);
     }
 
@@ -1862,7 +1936,7 @@ static void re_transmit_timeout(sl_cpc_endpoint_t* endpoint)
       endpoint->re_transmit_timeout_ms = SL_CPC_MAX_RE_TRANSMIT_TIMEOUT_MS;
     }
 
-    TRACE_CORE("New RTO calculated on ep %d, after re_transmit timeout: %ldms", endpoint->id, endpoint->re_transmit_timeout_ms);
+    TRACE_CORE("New RTO calculated on ep %d, after re_transmit timeout: %dms", endpoint->id, endpoint->re_transmit_timeout_ms);
 
     re_transmit_frame(endpoint);
   }
@@ -1907,15 +1981,13 @@ bool should_encrypt_frame(sl_cpc_buffer_handle_t *frame)
 #if defined(ENABLE_ENCRYPTION)
 static bool should_decrypt_frame(sl_cpc_endpoint_t *endpoint, uint16_t payload_len)
 {
-  /*
-   * In normal mode of operation, security_state is set to INITIALIZED and
-   * packets are decrypted below if they have a non-zero length. When the
-   * security session is reset (for instance because the daemon sent a packet
-   * that triggered an overflow), the secondary can still reply with encrypted
-   * packets before it detects on its side that the security session should be
-   * reset. So if packets are received while the state is RESETTING, we should
-   * try to decrypt them.
-   */
+  // In normal mode of operation, security_state is set to INITIALIZED and
+  // packets are decrypted below if they have a non-zero length. When the
+  // security session is reset (for instance because the daemon sent a packet
+  // that triggered an overflow), the secondary can still reply with encrypted
+  // packets before it detects on its side that the security session should be
+  // reset. So if packets are received while the state is RESETTING, we should
+  // try to decrypt them.
   sl_cpc_security_state_t security_state = security_get_state();
 
   if ((security_state != SECURITY_STATE_INITIALIZED
@@ -1998,6 +2070,7 @@ void core_reset_endpoint(uint8_t endpoint_number)
   ep->current_tx_window_space = ep->configured_tx_window_size;
 }
 
+#if defined(ENABLE_ENCRYPTION)
 uint32_t core_endpoint_get_frame_counter(uint8_t endpoint_number, bool tx)
 {
   sl_cpc_endpoint_t *ep = &core_endpoints[endpoint_number];
@@ -2021,6 +2094,8 @@ void core_endpoint_set_frame_counter(uint8_t endpoint_number, uint32_t new_value
 }
 #endif
 
+#endif
+
 /***************************************************************************//**
  * Stops the re-transmit timer for a given endpoint
  ******************************************************************************/
@@ -2029,7 +2104,7 @@ static void stop_re_transmit_timer(sl_cpc_endpoint_t* endpoint)
   int ret;
   epoll_private_data_t* fd_timer_private_data;
 
-  /* Passing itimerspec with it_value of 0 stops the timer. */
+  // Passing itimerspec with it_value of 0 stops the timer.
   const struct itimerspec cancel_time = { .it_interval = { .tv_sec = 0, .tv_nsec = 0 },
                                           .it_value    = { .tv_sec = 0, .tv_nsec = 0 } };
 
@@ -2080,7 +2155,7 @@ static void start_re_transmit_timer(sl_cpc_endpoint_t* endpoint, struct timespec
             // and an endpoint closed right after.
   }
 
-  /* Make sure the timer file descriptor is open*/
+  // Make sure the timer file descriptor is open
   FATAL_ON(fd_timer_private_data == NULL);
   FATAL_ON(fd_timer_private_data->file_descriptor < 0);
 
@@ -2104,7 +2179,7 @@ static void core_process_ep_timeout(epoll_private_data_t *event_private_data)
   int fd_timer = event_private_data->file_descriptor;
   uint8_t endpoint_number = event_private_data->endpoint_number;
 
-  /* Ack the timer */
+  // Ack the timer
   {
     uint64_t expiration;
     ssize_t ret;
@@ -2112,7 +2187,7 @@ static void core_process_ep_timeout(epoll_private_data_t *event_private_data)
     ret = read(fd_timer, &expiration, sizeof(expiration));
     FATAL_ON(ret < 0);
 
-    /* we missed a timeout*/
+    // we missed a timeout
     WARN_ON(expiration != 1);
   }
 
@@ -2135,7 +2210,7 @@ static void core_push_frame_to_driver(const void *frame, size_t frame_len)
 
   ssize_t ret = send(driver_sock_private_data.file_descriptor, frame, frame_len, 0);
 
-  /* Socket closed */
+  // Socket closed
   if (ret < 0 && (errno == ECONNRESET || errno == EPIPE)) {
     TRACE_CORE("Driver closed the data socket");
     epoll_unregister(&driver_sock_private_data);
@@ -2164,8 +2239,9 @@ static void core_push_frame_to_driver(const void *frame, size_t frame_len)
 static bool core_pull_frame_from_driver(frame_t** frame_buf, size_t* frame_buf_len)
 {
   size_t datagram_length;
+  int ret_close;
 
-  /* Poll the socket to get the next pending datagram size */
+  // Poll the socket to get the next pending datagram size
   {
     if (driver_sock_private_data.file_descriptor < 1) {
       TRACE_CORE("Core already closed the data socket");
@@ -2174,45 +2250,56 @@ static bool core_pull_frame_from_driver(frame_t** frame_buf, size_t* frame_buf_l
 
     ssize_t retval = recv(driver_sock_private_data.file_descriptor, NULL, 0, MSG_PEEK | MSG_TRUNC | MSG_DONTWAIT);
 
-    /* Socket closed */
+    // Detect if recv failed due to driver socket being closed
     if (retval == 0 || (retval < 0 && (errno == ECONNRESET || errno == EPIPE))) {
-      TRACE_CORE("Driver closed the data socket");
-      epoll_unregister(&driver_sock_private_data);
-      int ret_close = close(driver_sock_private_data.file_descriptor);
-      FATAL_SYSCALL_ON(ret_close != 0);
-      driver_sock_private_data.file_descriptor = -1;
-      return false;
+      goto driver_socket_closed;
     }
 
     FATAL_SYSCALL_ON(retval < 0);
 
-    /* The socket had no data. This function is intended to be called
-     * when we know the socket has data. */
+    // The socket had no data. This function is intended to be called
+    // when we know the socket has data.
     datagram_length = (size_t)retval;
     BUG_ON(datagram_length == 0);
 
-    /* The length of the frame should be at minimum a header length */
+    // The length of the frame should be at minimum a header length
     BUG_ON(datagram_length < sizeof(frame_t));
   }
 
-  /* Allocate a buffer of the right size */
+  // Allocate a buffer of the right size
   {
     *frame_buf = (frame_t*) zalloc((size_t)datagram_length);
     FATAL_SYSCALL_ON(*frame_buf == NULL);
   }
 
-  /* Fetch the datagram from the driver socket */
+  // Fetch the datagram from the driver socket
   {
     ssize_t ret = recv(driver_sock_private_data.file_descriptor, *frame_buf, (size_t)datagram_length, 0);
 
+    // Detect if recv failed due to driver socket being closed
+    if (ret == 0 || (ret < 0 && (errno == ECONNRESET || errno == EPIPE))) {
+      free(*frame_buf);
+      goto driver_socket_closed;
+    }
+
     FATAL_SYSCALL_ON(ret < 0);
 
-    /* The next pending datagram size should be equal to what we just read */
+    // The next pending datagram size should be equal to what we just read
     FATAL_ON((size_t)ret != (size_t)datagram_length);
   }
 
   *frame_buf_len = (size_t)datagram_length;
   return true;
+
+  driver_socket_closed:
+
+  TRACE_CORE("Driver closed the data socket");
+  epoll_unregister(&driver_sock_private_data);
+  ret_close = close(driver_sock_private_data.file_descriptor);
+  FATAL_SYSCALL_ON(ret_close != 0);
+  driver_sock_private_data.file_descriptor = -1;
+
+  return false;
 }
 
 /***************************************************************************//**

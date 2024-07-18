@@ -14,7 +14,8 @@
  * sections of the MSLA applicable to Source Code.
  *
  ******************************************************************************/
-#define _GNU_SOURCE
+
+#include "config.h"
 
 #include <pthread.h>
 #include <stdbool.h>
@@ -42,8 +43,12 @@
 #include "driver/driver_ezsp.h"
 #include "driver/driver_kill.h"
 
-// This value is a reasonable worst case estimate of the interrupt latency when RAIL is used for the radio
-#define MAXIMUM_REASONABLE_INTERRUPT_LATENCY_US 500
+// Convert a millisecond to microseconds
+#define MS_TO_US                                (1000)
+
+// This value is a reasonable worst case estimate of how long the CPC core can hold
+// the IRQ line when asserting its flow control when it's out of RX buffers.
+#define MAXIMUM_REASONABLE_INTERRUPT_LATENCY_US (20 * MS_TO_US)
 
 static int fd_core;
 static int fd_core_notify;
@@ -280,8 +285,6 @@ static long t2_minus_t1_us(struct timespec *t2, struct timespec *t1)
  */
 static bool wait_for_irq_assert_or_timeout(size_t timeout_us)
 {
-  //TODO CPC-649 Rewrite this method
-
   // In 99.99% of the cases, the secondary executed its header interrupt and lowered IRQ before
   // the host even returns from the SPI ioctl transfer call. Try executing the minimal amount of logic
   // path first
@@ -303,7 +306,6 @@ static bool wait_for_irq_assert_or_timeout(size_t timeout_us)
     struct timespec now_time;
     clock_gettime(CLOCK_MONOTONIC, &now_time);
 
-    // Timeout on 10 * MAXIMUM_REASONABLE_INTERRUPT_LATENCY_US
     if (t2_minus_t1_us(&now_time, &start_time) > (long) timeout_us) {
       return false;
     }
@@ -335,6 +337,7 @@ static void driver_spi_transaction(bool initiated_by_irq_line_event)
   bool    want_to_receive = false;
   bool    want_to_transmit = false;
   bool    rx_header_checksum_error = false;
+  bool    rx_payload_size_invalid = false;
 
   memset(&local_spi_transfer, 0x00, sizeof(local_spi_transfer));
 
@@ -467,6 +470,10 @@ static void driver_spi_transaction(bool initiated_by_irq_line_event)
 
         TRACE_DRIVER_INVALID_HEADER_CHECKSUM();
         TRACE_DRIVER("Header checksum error");
+      } else if ((unsigned long) rx_payload_size > sizeof(rx_buffer)) {
+        rx_payload_size_invalid = true;
+        rx_length = (size_t) rx_payload_size;
+        TRACE_DRIVER("RX buffer size from bus is invalid: %d", rx_payload_size);
       } else {
         rx_length = (size_t) rx_payload_size;
       }
@@ -480,9 +487,9 @@ static void driver_spi_transaction(bool initiated_by_irq_line_event)
   }
 
   // Wait for the secondary to notify us we can clock the payload
-  bool ret = wait_for_irq_assert_or_timeout(10 * MAXIMUM_REASONABLE_INTERRUPT_LATENCY_US);
+  bool wait_successful = wait_for_irq_assert_or_timeout(MAXIMUM_REASONABLE_INTERRUPT_LATENCY_US);
 
-  if (ret == false) { //timed out
+  if (wait_successful == false) { //timed out
     if (secondary_started) {
       BUG("The IRQ it stuck abnormally long in the de-asserted state.");
     } else {
@@ -522,6 +529,13 @@ static void driver_spi_transaction(bool initiated_by_irq_line_event)
       // If we received a bad header, we will clock the maximum theoretical number of bytes the secondary can
       // send us in order to purge its data
       local_spi_transfer.len = SPI_BUFFER_SIZE - SLI_CPC_HDLC_HEADER_RAW_SIZE;
+    } else if (rx_payload_size_invalid) {
+      // If we received a header with an RX size larget than the size of the
+      // RX buffer, send the requested number of bytes to purge its TX data.
+      // Normally, this should never happen however, since the secondary should
+      // prevent any payload larger than 4K to be sent over the bus.
+      local_spi_transfer.len = (unsigned int)(payload_length - SLI_CPC_HDLC_HEADER_RAW_SIZE);
+      local_spi_transfer.rx_buf = (unsigned long) NULL;
     } else {
       local_spi_transfer.len = (unsigned int) payload_length;
     }

@@ -15,6 +15,8 @@
  *
  ******************************************************************************/
 
+#include "config.h"
+
 #include "errno.h"
 
 #include "cpcd/logging.h"
@@ -82,10 +84,10 @@ static void is_endpoint_opened_reply_v4(sli_cpc_property_id_t property_id,
 
   endpoint_id = PROPERTY_ID_TO_EP_ID(property_id);
 
-  /* Sanity checks */
+  // Sanity checks
   {
-    /* This function's signature is for all properties get/set. Make sure we
-     * are dealing with PROP_ENDPOINT_STATE and with the correct property_length*/
+    // This function's signature is for all properties get/set. Make sure we
+    // are dealing with PROP_ENDPOINT_STATE and with the correct property_length
     BUG_ON(property_id < PROP_ENDPOINT_STATE_1 || property_id > PROP_ENDPOINT_STATE_255);
 
     BUG_ON(endpoint_id != ctx->ep->id);
@@ -228,8 +230,8 @@ static void on_connect_reply_v4(sli_cpc_property_id_t property_id,
     case SL_STATUS_IN_PROGRESS:
     case SL_STATUS_OK:
       if (property_length != 0) {
-        TRACE_CORE("Connection confirmation for ep#%d has invalid length (expected %d, got %d)",
-                   ep_id, 0, property_length);
+        TRACE_CORE("Connection confirmation for ep#%d has invalid length (expected %d, got %zd)",
+                   (int)ep_id, 0, property_length);
         callback(ctx->ep, SL_STATUS_INVALID_TYPE);
         break;
       }
@@ -401,8 +403,8 @@ void connect_endpoint_v4(sl_cpc_endpoint_t *ep,
                                  &open_state,
                                  sizeof(open_state),
                                  ctx,
-                                 0, /* unlimited retries */
-                                 100000, /* 100ms between retries*/
+                                 0, // unlimited retries
+                                 100000, // 100ms between retries
                                  SYSTEM_EP_IFRAME);
 }
 
@@ -427,7 +429,7 @@ void terminate_endpoint_v4(sl_cpc_endpoint_t *ep,
                                  &close_state,
                                  sizeof(close_state),
                                  ctx,
-                                 1,      /* 1 retry */
-                                 100000, /* 100ms between retries*/
+                                 1,      // 1 retry
+                                 100000, // 100ms between retries
                                  SYSTEM_EP_IFRAME);
 }

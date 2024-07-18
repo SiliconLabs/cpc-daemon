@@ -15,6 +15,8 @@
  *
  ******************************************************************************/
 
+#include "config.h"
+
 #include <errno.h>
 #include <string.h>
 #include <sys/epoll.h>
@@ -32,14 +34,14 @@ typedef struct {
   struct epoll_private_data* unregistered_epoll_private_data;
 }unwatched_endpoint_list_item_t;
 
-/* List to keep track of every connected library instance over the control socket */
+// List to keep track of every connected library instance over the control socket
 static sl_slist_node_t *unwatched_endpoint_list;
 
 static int fd_epoll;
 
 void epoll_init(void)
 {
-  /* Create the epoll set */
+  // Create the epoll set
   {
     fd_epoll = epoll_create1(EPOLL_CLOEXEC);
     FATAL_SYSCALL_ON(fd_epoll < 0);
@@ -57,7 +59,7 @@ void epoll_register(epoll_private_data_t *private_data)
   FATAL_ON(private_data->callback == NULL);
   FATAL_ON(private_data->file_descriptor < 1);
 
-  event.events = EPOLLIN; /* Level-triggered read() availability */
+  event.events = EPOLLIN; // Level-triggered read() availability
   event.data.ptr = private_data;
 
   ret = epoll_ctl(fd_epoll, EPOLL_CTL_ADD, private_data->file_descriptor, &event);
@@ -73,9 +75,9 @@ void epoll_unregister(epoll_private_data_t *private_data)
   FATAL_ON(private_data->callback == NULL);
   FATAL_ON(private_data->file_descriptor < 1);
 
-  /* Before unregistering, check if this private data if for an endpoint
-   * that was previously unwatched. If so, delete it from the unwatch list
-   * but don't call epoll_ctl::EPOLL_CTL_DEL on it since it was already deleted */
+  // Before unregistering, check if this private data if for an endpoint
+  // that was previously unwatched. If so, delete it from the unwatch list
+  // but don't call epoll_ctl::EPOLL_CTL_DEL on it since it was already deleted
   SL_SLIST_FOR_EACH_ENTRY(unwatched_endpoint_list,
                           item,
                           unwatched_endpoint_list_item_t,
@@ -108,8 +110,8 @@ void epoll_watch_back(uint8_t endpoint_number)
 {
   unwatched_endpoint_list_item_t* item;
 
-  /* More than one library connection can exist for one endpoint. When watching back for an
-   * endpoint, we want to go through all the connections and watch them back */
+  // More than one library connection can exist for one endpoint. When watching back for an
+  // endpoint, we want to go through all the connections and watch them back
 
   sl_slist_node_t *item_node = unwatched_endpoint_list;
   while (1) {
@@ -138,7 +140,7 @@ size_t epoll_wait_for_event(struct epoll_event events[], size_t max_event_number
 
   FATAL_SYSCALL_ON(event_count < 0);
 
-  /* Timeouts should not occur */
+  // Timeouts should not occur
   FATAL_ON(event_count == 0);
 
   return (size_t)event_count;

@@ -14,7 +14,8 @@
  * sections of the MSLA applicable to Source Code.
  *
  ******************************************************************************/
-#define _GNU_SOURCE
+
+#include "config.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -174,9 +175,11 @@ int gpio_get_epoll_fd(gpio_sysfs_t *gpio)
 void gpio_clear_irq(gpio_sysfs_t *gpio)
 {
   char buf[8];
+  ssize_t ret;
 
   lseek(gpio->irq_fd, 0, SEEK_SET);
-  read(gpio->irq_fd, buf, sizeof(buf));
+  ret = read(gpio->irq_fd, buf, sizeof(buf));
+  (void)ret;
 }
 
 void gpio_write(gpio_sysfs_t *gpio, gpio_value_t value)

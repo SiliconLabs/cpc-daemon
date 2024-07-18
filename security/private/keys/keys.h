@@ -47,7 +47,6 @@ uint8_t* security_keys_get_ecdh_public_key(void);
 
 void security_load_binding_key_from_file(void);
 
-void security_set_state_disabled(void);
 void security_keys_generate_shared_key(uint8_t *peer_public_key);
 
 mbedtls_ctr_drbg_context* security_keys_get_rng_context(void);
@@ -82,4 +81,4 @@ sl_status_t __security_decrypt_secondary(sl_cpc_endpoint_t *ep,
                                          const uint8_t *tag, const size_t tag_len);
 #endif // UNIT_TESTING
 
-#endif //SECURITY_KEYS_H
+#endif // SECURITY_KEYS_H
