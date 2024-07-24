@@ -570,6 +570,7 @@ void trace(const bool force_stdout, const char* string, ...)
 {
   char log_string[512];
   size_t log_string_length = 0;
+  int errno_backup = errno;
 
   if (!config.file_tracing && !config.stdout_tracing && !force_stdout) {
     return;
@@ -613,12 +614,15 @@ void trace(const bool force_stdout, const char* string, ...)
   if (config.file_tracing) {
     file_log(log_string, log_string_length);
   }
+
+  errno = errno_backup;
 }
 
 void trace_no_timestamp(const char* string, ...)
 {
   char log_string[512];
   size_t log_string_length = 0;
+  int errno_backup = errno;
 
   if (!config.file_tracing && !config.stdout_tracing) {
     return;
@@ -654,6 +658,8 @@ void trace_no_timestamp(const char* string, ...)
   if (config.file_tracing) {
     file_log(log_string, log_string_length);
   }
+
+  errno = errno_backup;
 }
 
 static inline void byte_to_hex(uint8_t byte, char str[2])
@@ -668,6 +674,7 @@ void trace_frame(const char* string, const void* buffer, size_t len)
   char log_string[4096]; // Arbitrary size. Large buffer frames will most likely overflow.
   size_t log_string_length = 0;
   uint8_t* frame = (uint8_t*) buffer;
+  int errno_backup = errno;
 
   if ((!config.file_tracing && !config.stdout_tracing) || config.enable_frame_trace == false) {
     return;
@@ -736,4 +743,6 @@ void trace_frame(const char* string, const void* buffer, size_t len)
       file_log(log_string, log_string_length);
     }
   }
+
+  errno = errno_backup;
 }

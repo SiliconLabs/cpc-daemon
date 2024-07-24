@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.10)
 
 project(cpc-daemon
-  VERSION "4.5.0.0"
+  VERSION "4.5.1.0"
   LANGUAGES C)
 
 option(BUILD_SHARED_LIBS "Build shared libraries" ON)
