@@ -131,14 +131,14 @@ void run_firmware_update(void)
   status = transfer_firmware();
 
   if (status == SL_STATUS_OK) {
-    PRINT_INFO("Firmware upgrade successful");
+    PRINT_INFO("Firmware transferred successfully");
     if (config.restart_cpcd) {
       config_restart_cpcd_without_fw_update_args();
     } else {
       config_exit_cpcd(EXIT_SUCCESS);
     }
   } else {
-    PRINT_INFO("Firmware upgrade failed");
+    PRINT_INFO("Firmware transfer failed");
     config_exit_cpcd(EXIT_FAILURE);
   }
 }

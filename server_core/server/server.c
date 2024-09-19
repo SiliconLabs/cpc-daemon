@@ -1922,7 +1922,7 @@ sl_status_t server_push_data_to_endpoint(uint8_t endpoint_number, const uint8_t*
 
     // Close unresponsive sockets
     if (wc < 0 && (errno == EAGAIN || errno == EPIPE || errno == ECONNRESET || errno == EWOULDBLOCK)) {
-      WARN("Unresponsive data socket on ep#%d, closing", endpoint_number);
+      WARN("Unresponsive data socket on ep#%d", endpoint_number);
 
       // nb_clients helps to keep track of the number of clients the data have
       // been sent to. The use case here is to return an error *only* if there
@@ -1938,6 +1938,8 @@ sl_status_t server_push_data_to_endpoint(uint8_t endpoint_number, const uint8_t*
           return SL_STATUS_WOULD_BLOCK;
         }
       }
+
+      WARN("Closing socket: ep#%d", endpoint_number);
 
       // Unregister the data socket file descriptor from epoll watch list
       epoll_unregister(&item->data_socket_epoll_private_data);
