@@ -9,6 +9,9 @@ When using the SPI interface, the bus bitrate is controlled by the host/primary.
 
 - else if the parameter `spi_device_bitrate` is specified in the configuration file, that bitrate will be used unless it is greater than the maximum bitrate returned by the secondary, in which case the maximum bitrate will be used instead, and a warning will be printed.
 
+# IRQ Pin configuration
+The IRQ pin on the Host must be configured as a pull-up to ensure a defined logic level when the line is not actively driven. 
+
 # Upgrading from Version 4.2 or Lower to Version 4.3 and Beyond
 Follow the following steps to complete an upgrade
 1. Build a New Secondary Image:

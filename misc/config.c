@@ -89,7 +89,7 @@ config_t config = {
 
   // SPI config
   .spi_file = NULL,
-  .spi_bitrate = 0,
+  .spi_bitrate = 1000000,
   .spi_irq_chip = NULL,
   .spi_irq_pin = 0,
 
