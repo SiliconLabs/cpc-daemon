@@ -305,7 +305,13 @@ static void de_assert_cs(struct spi_interface *spi)
 {
   int ret;
 
-  spi->spi_transfer.len = 0;
+  // Certain SPI controllers skip over the transaction if the length is zero.
+  // This causes an issue, as the CPC secondary waits on a CS notch after the
+  // header in order to de-assert its IRQ line and progress in its state machine.
+  // In the event that both sides had only a header to send, payload length is
+  // zero, and so the CS notch never happens, and both sides desynchronize.
+  // To avoid this, set the minimum payload length to 1 byte.
+  spi->spi_transfer.len = 1;
   spi->spi_transfer.cs_change = 0; // De-assert CS
 
   ret = ioctl(spi->spi_dev_fd, SPI_IOC_MESSAGE(1), &spi->spi_transfer);

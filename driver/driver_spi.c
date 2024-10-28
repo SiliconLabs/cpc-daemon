@@ -477,6 +477,14 @@ static void driver_spi_transaction(bool initiated_by_irq_line_event)
     // The number of payload bytes to clock needs to be the maximum between
     // the number of bytes the host wants and the secondary want to send
     payload_length = (tx_length > rx_length) ? tx_length : rx_length;
+
+    // Certain SPI controllers skip over the transaction if the length is zero.
+    // This causes an issue, as the CPC secondary waits on a CS notch after the
+    // header in order to de-assert its IRQ line and progress in its state machine.
+    // In the event that both sides had only a header to send, payload length is
+    // zero, and so the CS notch never happens, and both sides desynchronize.
+    // To avoid this, set the minimum payload length to 1 byte.
+    payload_length = payload_length ? payload_length : 1;
   }
 
   // Wait for the secondary to notify us we can clock the payload
