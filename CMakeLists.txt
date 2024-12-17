@@ -2,8 +2,12 @@
 cmake_minimum_required(VERSION 3.10)
 
 project(cpc-daemon
-  VERSION "4.5.2.0"
+  VERSION "4.6.0.0"
   LANGUAGES C)
+
+if(DEFINED ENV{NIX_CFLAGS_COMPILE})
+  unset(CMAKE_C_IMPLICIT_INCLUDE_DIRECTORIES)
+endif()
 
 option(BUILD_SHARED_LIBS "Build shared libraries" ON)
 option(BUILD_TESTING "Build tests" OFF)
@@ -19,6 +23,7 @@ option(ENABLE_ENCRYPTION "Enable the encryption of the CPC link using MbedTLS" O
 option(COMPILE_LTTNG "Enable LTTng tracing" OFF)
 option(ENABLE_VALGRIND "Enable Valgrind in tests" OFF)
 option(TARGET_TESTING "Enable target testing" OFF)
+option(ENABLE_SOCKET_DRIVER "Enable socket driver for internal testing" OFF)
 set(CPC_LIBRARY_API_VERSION "3")
 set(CPC_PROTOCOL_VERSION "5")
 set(CPC_SOCKET_DIR "/dev/shm" CACHE STRING "CPC socket directory")
@@ -76,6 +81,15 @@ if(TARGET backtrace)
   set(HAVE_BACKTRACE ON)
 endif()
 
+# https://gcc.gnu.org/onlinedocs/gcc/Instrumentation-Options.html#index-gcov
+# > Unless a strict ISO C dialect option is in effect, fork calls are detected
+# > and correctly handled without double counting.
+if(CMAKE_C_FLAGS MATCHES "--coverage")
+  set(COVERAGE_ENABLED YES)
+else()
+  set(COVERAGE_ENABLED NO)
+endif()
+
 get_git_head_revision(GIT_REFSPEC GIT_SHA1 ALLOW_LOOKING_ABOVE_CMAKE_SOURCE_DIR)
 configure_file("./misc/config.h.in" "config.h" @ONLY)
 configure_file("./libcpc.pc.in" "libcpc.pc" @ONLY)
@@ -86,7 +100,7 @@ add_library(cpc)
 set_target_properties(cpc PROPERTIES
   VERSION ${PROJECT_VERSION} SOVERSION ${CPC_LIBRARY_API_VERSION})
 set_target_properties(cpc PROPERTIES
-  C_STANDARD 99 C_STANDARD_REQUIRED YES C_EXTENSIONS NO)
+  C_STANDARD 99 C_STANDARD_REQUIRED YES C_EXTENSIONS ${COVERAGE_ENABLED})
 target_compile_definitions(cpc PRIVATE _POSIX_C_SOURCE=200809L)
 target_include_directories(cpc PRIVATE "${PROJECT_BINARY_DIR}")
 target_include_directories(cpc PRIVATE "./include")
@@ -102,11 +116,12 @@ set(CPCD_SOURCES
   "${PROJECT_SOURCE_DIR}/driver/driver_ezsp.c"
   "${PROJECT_SOURCE_DIR}/driver/driver_kill.c"
   "${PROJECT_SOURCE_DIR}/driver/driver_spi.c"
+  "${PROJECT_SOURCE_DIR}/driver/driver_sdio.c"
   "${PROJECT_SOURCE_DIR}/driver/driver_uart.c"
   "${PROJECT_SOURCE_DIR}/driver/driver_xmodem.c"
+  "${PROJECT_SOURCE_DIR}/driver/netlink/nl_sdio_interface.c" 
+  "${PROJECT_SOURCE_DIR}/driver/netlink/nl_socket.c"
   "${PROJECT_SOURCE_DIR}/misc/board_controller.c"
-  "${PROJECT_SOURCE_DIR}/misc/config.c"
-  "${PROJECT_SOURCE_DIR}/misc/exit.c"
   "${PROJECT_SOURCE_DIR}/misc/logging.c"
   "${PROJECT_SOURCE_DIR}/misc/sl_slist.c"
   "${PROJECT_SOURCE_DIR}/misc/sleep.c"
@@ -140,14 +155,21 @@ if(ENABLE_ENCRYPTION)
     "${PROJECT_SOURCE_DIR}/security/private/thread/security_thread.c"
     "${PROJECT_SOURCE_DIR}/security/security.c")
 endif()
+if(ENABLE_SOCKET_DRIVER)
+  list(APPEND CPCD_SOURCES
+    "${PROJECT_SOURCE_DIR}/driver/driver_socket.c")
+endif()
 
 add_executable(cpcd "./main.c")
 set_target_properties(cpcd PROPERTIES
-  C_STANDARD 99 C_STANDARD_REQUIRED YES C_EXTENSIONS NO)
+  C_STANDARD 99 C_STANDARD_REQUIRED YES C_EXTENSIONS ${COVERAGE_ENABLED})
 target_compile_definitions(cpcd PRIVATE _GNU_SOURCE)
+if(ENABLE_SOCKET_DRIVER)
+  target_compile_definitions(cpcd PRIVATE ENABLE_SOCKET_DRIVER)
+endif()
 target_include_directories(cpcd PRIVATE "${PROJECT_BINARY_DIR}")
 target_include_directories(cpcd PRIVATE "./include" ".")
-target_sources(cpcd PRIVATE ${CPCD_SOURCES})
+target_sources(cpcd PRIVATE ${CPCD_SOURCES} "${PROJECT_SOURCE_DIR}/misc/config.c" "${PROJECT_SOURCE_DIR}/misc/exit.c")
 target_link_libraries(cpcd PRIVATE Threads::Threads cpc)
 if(TARGET MbedTLS::mbedcrypto)
   target_link_libraries(cpcd PRIVATE MbedTLS::mbedcrypto)
@@ -156,14 +178,10 @@ if(TARGET backtrace)
   target_link_libraries(cpcd PRIVATE backtrace)
 endif()
 
-###
-
 if(BUILD_TESTING AND (CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME))
   message(STATUS "Enabling tests (${BUILD_TESTING})")
   add_subdirectory("./test")
 endif()
-
-###
 
 install(TARGETS cpc
   LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
@@ -171,7 +189,6 @@ install(TARGETS cpc
 install(
   FILES "${PROJECT_BINARY_DIR}/libcpc.pc"
   DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
-
 install(TARGETS cpcd
   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(FILES "./cpcd.conf" DESTINATION "${CMAKE_INSTALL_FULL_SYSCONFDIR}")

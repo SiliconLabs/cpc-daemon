@@ -266,7 +266,9 @@ void server_core_init(int fd_socket_driver_core, int fd_socket_driver_core_notif
     TRACE_SERVER("Creating socket folder %s", socket_folder);
     recursive_mkdir(socket_folder, strlen(socket_folder), S_IRWXU | S_IRWXG | S_ISVTX);
     ret = access(socket_folder, W_OK);
-    FATAL_SYSCALL_ON(ret < 0);
+    if (ret < 0) {
+      FATAL("Failed to access the socket folder %s, %m", socket_folder);
+    }
   }
 
   free(socket_folder);
@@ -512,6 +514,10 @@ char* server_core_get_secondary_app_version(void)
 #if defined(UNIT_TESTING) || defined(TARGET_TESTING)
   return "UNDEFINED";
 #else
+  if (!config.reset_sequence) {
+    return "UNDEFINED";
+  }
+
   BUG_ON(server_core_secondary_app_version == NULL);
   return server_core_secondary_app_version;
 #endif
@@ -1172,5 +1178,8 @@ bool server_core_reset_sequence_in_progress(void)
 
 bool server_core_reset_is_received_reset_reason(void)
 {
+  if (!config.reset_sequence) {
+    return true;
+  }
   return reset_reason_received;
 }

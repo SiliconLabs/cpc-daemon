@@ -160,6 +160,12 @@ static const char* config_bus_to_str(bus_t value)
       return "UART";
     case SPI:
       return "SPI";
+    case NETLINK_SDIO:
+      return "NETLINK_SDIO";
+#if defined(ENABLE_SOCKET_DRIVER)
+    case SOCKET:
+      return "SOCKET";
+#endif
     case UNCHOSEN:
       return "UNCHOSEN";
     default:
@@ -727,6 +733,12 @@ static void config_parse_config_file(void)
         config.bus = UART;
       } else if (0 == strcmp(val, "SPI")) {
         config.bus = SPI;
+      } else if (0 == strcmp(val, "NETLINK_SDIO")) {
+        config.bus = NETLINK_SDIO;
+#if defined(ENABLE_SOCKET_DRIVER)
+      } else if (0 == strcmp(val, "SOCKET")) {
+        config.bus = SOCKET;
+#endif
       } else {
         FATAL("Config file error : bad bus_type value\n");
       }
@@ -952,6 +964,11 @@ static void config_validate_configuration(void)
       }
 
       prevent_device_collision(config.uart_file);
+    } else if (config.bus == NETLINK_SDIO) {
+#if defined(ENABLE_SOCKET_DRIVER)
+    } else if (config.bus == SOCKET) {
+      // TODO check
+#endif
     } else {
       FATAL("Invalid bus configuration.");
     }

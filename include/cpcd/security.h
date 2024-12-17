@@ -48,7 +48,7 @@ typedef struct {
 } sl_cpc_security_frame_t;
 
 typedef void (*sl_cpc_security_on_state_change_t)(sl_cpc_security_state_t old,
-                                                  sl_cpc_security_state_t new);
+                                                  sl_cpc_security_state_t new_state);
 
 /***************************************************************************//**
  * Initialize the security endpoint

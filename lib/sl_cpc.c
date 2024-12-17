@@ -183,8 +183,6 @@ __attribute__((format(printf, 2, 3))) static void lib_trace(FILE *__restrict __s
 
 #define CTRL_SOCKET_TIMEOUT_SEC 2
 
-#define DEFAULT_ENDPOINT_SOCKET_SIZE SL_CPC_READ_MINIMUM_SIZE
-
 #define TX_WINDOW_SIZE_MIN 1
 #define TX_WINDOW_SIZE_MAX 1
 
@@ -1198,14 +1196,6 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
   if (can_open == false) {
     TRACE_LIB_ERROR(lib_handle, -EAGAIN, "endpoint on secondary did not accept connection request");
     SET_CPC_RET(-EAGAIN);
-    goto close_sock_fd;
-  }
-
-  int ep_socket_size = DEFAULT_ENDPOINT_SOCKET_SIZE;
-  tmp_ret = setsockopt(ep->sock_fd, SOL_SOCKET, SO_SNDBUF, &ep_socket_size, sizeof(int));
-  if (tmp_ret != 0) {
-    TRACE_LIB_ERRNO(lib_handle, "setsockopt(%d) failed", ep->sock_fd);
-    SET_CPC_RET(-errno);
     goto close_sock_fd;
   }
 

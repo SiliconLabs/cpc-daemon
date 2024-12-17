@@ -132,7 +132,7 @@ static bool security_is_ready(void);
 static bool should_encrypt_frame(sl_cpc_buffer_handle_t *frame);
 #if defined(ENABLE_ENCRYPTION)
 static bool should_decrypt_frame(sl_cpc_endpoint_t *endpoint, uint16_t payload_len);
-static void core_on_security_state_change(sl_cpc_security_state_t old, sl_cpc_security_state_t new);
+static void core_on_security_state_change(sl_cpc_security_state_t old, sl_cpc_security_state_t new_state);
 #endif
 static void core_fetch_secondary_debug_counters(epoll_private_data_t *event_private_data);
 
@@ -304,14 +304,14 @@ static void core_compute_re_transmit_timeout(sl_cpc_endpoint_t *endpoint)
 }
 
 #if defined(ENABLE_ENCRYPTION)
-static void core_on_security_state_change(sl_cpc_security_state_t old, sl_cpc_security_state_t new)
+static void core_on_security_state_change(sl_cpc_security_state_t old, sl_cpc_security_state_t new_state)
 {
-  TRACE_CORE("Security changed state: %d -> %d", (int)old, (int)new);
+  TRACE_CORE("Security changed state: %d -> %d", (int)old, (int)new_state);
   if (old == SECURITY_STATE_INITIALIZING
-      && new == SECURITY_STATE_INITIALIZED) {
+      && new_state == SECURITY_STATE_INITIALIZED) {
     core_endpoints[SL_CPC_ENDPOINT_SYSTEM].encrypted = true;
   } else if (old == SECURITY_STATE_RESETTING
-             && new == SECURITY_STATE_INITIALIZED) {
+             && new_state == SECURITY_STATE_INITIALIZED) {
     for (size_t i = 0; i < SL_CPC_ENDPOINT_MAX_COUNT; i++) {
       core_endpoints[i].frame_counter_tx = SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE;
       core_endpoints[i].frame_counter_rx = SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE;
@@ -320,7 +320,7 @@ static void core_on_security_state_change(sl_cpc_security_state_t old, sl_cpc_se
       sli_cpc_drv_emul_set_frame_counter((uint8_t)i, SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE, false);
 #endif
     }
-  } else if (new == SECURITY_STATE_INITIALIZING) {
+  } else if (new_state == SECURITY_STATE_INITIALIZING) {
     core_endpoints[SL_CPC_ENDPOINT_SYSTEM].encrypted = false;
   }
 }
@@ -417,7 +417,6 @@ void core_process_transmit_queue(void)
 
 sli_cpc_endpoint_state_t core_get_endpoint_state(uint8_t ep_id)
 {
-  FATAL_ON(ep_id == 0);
   return core_endpoints[ep_id].state;
 }
 
@@ -648,7 +647,6 @@ static void core_process_rx_driver(epoll_private_data_t *event_private_data)
   switch (type) {
     case SLI_CPC_HDLC_FRAME_TYPE_INFORMATION:
       core_process_rx_i_frame(rx_frame);
-      TRACE_CORE_RXD_VALID_IFRAME();
       break;
     case SLI_CPC_HDLC_FRAME_TYPE_SUPERVISORY:
       core_process_rx_s_frame(rx_frame);
@@ -879,8 +877,11 @@ static void core_process_rx_i_frame(frame_t *rx_frame)
     return;
   }
 
-  // Prevent -2 on a zero length
-  BUG_ON(hdlc_get_length(rx_frame->header) < SLI_CPC_HDLC_FCS_SIZE);
+  // Prevent -2 on a zero length, silently drop the frame is lenght is invalid
+  if (hdlc_get_length(rx_frame->header) < SLI_CPC_HDLC_FCS_SIZE) {
+    transmit_reject(endpoint, address, 0, HDLC_REJECT_ERROR);
+    return;
+  }
 
   uint16_t rx_frame_payload_length = (uint16_t) (hdlc_get_length(rx_frame->header) - SLI_CPC_HDLC_FCS_SIZE);
 
@@ -905,7 +906,12 @@ static void core_process_rx_i_frame(frame_t *rx_frame)
       sl_status_t status;
 
       // the payload buffer must be longer than the security tag
-      BUG_ON(rx_frame_payload_length < tag_len);
+      if (rx_frame_payload_length < tag_len) {
+        transmit_reject(endpoint, address, endpoint->ack, HDLC_REJECT_SECURITY_ISSUE);
+        core_set_endpoint_in_error(address, SLI_CPC_STATE_ERROR_SECURITY_INCIDENT);
+        return;
+      }
+
       rx_frame_payload_length = (uint16_t)(rx_frame_payload_length - tag_len);
 
       output = zalloc(rx_frame_payload_length);
@@ -959,14 +965,15 @@ static void core_process_rx_i_frame(frame_t *rx_frame)
         }
       }
     } else {
-      sl_status_t status;
+      sl_status_t status = SL_STATUS_FAIL;
 
       // Only system endpoint can receive final messages
-      BUG_ON(hdlc_is_poll_final(control));
+      if (!hdlc_is_poll_final(control)) {
+        status = core_push_data_to_server(endpoint->id,
+                                          rx_frame->payload,
+                                          rx_frame_payload_length);
+      }
 
-      status = core_push_data_to_server(endpoint->id,
-                                        rx_frame->payload,
-                                        rx_frame_payload_length);
       if (status == SL_STATUS_FAIL) {
         // rollback endpoint's ack increment. It's a bit pointless
         // here but do it for consistency on all error paths.
@@ -1010,6 +1017,8 @@ static void core_process_rx_i_frame(frame_t *rx_frame)
     transmit_reject(endpoint, address, endpoint->ack, HDLC_REJECT_SEQUENCE_MISMATCH);
     return;
   }
+
+  TRACE_CORE_RXD_VALID_IFRAME();
 }
 
 static void core_process_rx_s_frame(frame_t *rx_frame)
@@ -2314,3 +2323,20 @@ static sl_status_t core_push_data_to_server(uint8_t ep_id, const void *data, siz
 {
   return server_push_data_to_endpoint(ep_id, data, data_len);
 }
+
+#if defined(BUILD_TESTING)
+epoll_private_data_t *driver_sock_private_data_export(void)
+{
+  return &driver_sock_private_data;
+}
+
+void core_process_rx_driver_export(epoll_private_data_t *event_private_data)
+{
+  core_process_rx_driver(event_private_data);
+}
+
+sl_cpc_endpoint_t* find_endpoint_export(uint8_t endpoint_number)
+{
+  return find_endpoint(endpoint_number);
+}
+#endif

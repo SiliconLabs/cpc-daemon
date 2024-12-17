@@ -23,7 +23,7 @@ value of `instance_name` is `cpcd_0`.
 ### Bus Type
 
 The bus used to connect the host to the secondary. The bus_type parameter is
-mandatory. The allowed values are `UART` and `SPI`.
+mandatory. The allowed values are `UART`, `SPI` and `NETLINK_SDIO`.
 Depending on the bus type selected, certain configuration parameters that follow
 are either required, optional, or ignored.
 
@@ -48,6 +48,13 @@ Optional when the bus type is `SPI`. The maximum transfer speed in Hz. Default v
 is 1000000.
 
     spi_device_bitrate: 1000000
+
+### SDIO Reset Sequence
+
+Setting reset sequence to `false` would typically imply that the sequence should continue without being resetting the secondary.
+
+    reset_sequence: false
+
 
 ### UART Device File
 
