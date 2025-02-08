@@ -339,8 +339,7 @@ static void driver_spi_transaction(bool initiated_by_irq_line_event)
   size_t  payload_length = 0;
   bool    want_to_receive = false;
   bool    want_to_transmit = false;
-  bool    rx_header_checksum_error = false;
-  bool    rx_payload_size_invalid = false;
+  bool    rx_invalid_header = false;
 
   memset(&local_spi_transfer, 0x00, sizeof(local_spi_transfer));
 
@@ -468,20 +467,20 @@ static void driver_spi_transaction(bool initiated_by_irq_line_event)
       int rx_payload_size = hdlc_extract_payload_size(rx_buffer);
 
       if (rx_payload_size == -1) {
-        rx_header_checksum_error = true;
-        rx_length = 0;
-
         TRACE_DRIVER_INVALID_HEADER_CHECKSUM();
         TRACE_DRIVER("Header checksum error");
-      } else if ((unsigned long) rx_payload_size > sizeof(rx_buffer)) {
-        rx_payload_size_invalid = true;
-        rx_length = (size_t) rx_payload_size;
-        TRACE_DRIVER("RX buffer size from bus is invalid: %d", rx_payload_size);
+
+        rx_invalid_header = true;
+      } else if ((size_t) rx_payload_size > (sizeof(rx_buffer) - SLI_CPC_HDLC_HEADER_RAW_SIZE)) {
+        // The remote attempted to write more than the maximum payload size. Mark the header as
+        // invalid, which will cause the driver to flush the remote to attempt recovery.
+        TRACE_DRIVER("Remote tried to write an oversized payload: %d Bytes", rx_payload_size);
+
+        rx_invalid_header = true;
       } else {
+        // Set RX length to payload length received from the bus.
         rx_length = (size_t) rx_payload_size;
       }
-    } else {
-      rx_length = 0;
     }
 
     // The number of payload bytes to clock needs to be the maximum between
@@ -495,6 +494,8 @@ static void driver_spi_transaction(bool initiated_by_irq_line_event)
     // zero, and so the CS notch never happens, and both sides desynchronize.
     // To avoid this, set the minimum payload length to 1 byte.
     payload_length = payload_length ? payload_length : 1;
+
+    FATAL_ON(payload_length > (SPI_BUFFER_SIZE - SLI_CPC_HDLC_HEADER_RAW_SIZE));
   }
 
   // Wait for the secondary to notify us we can clock the payload
@@ -536,17 +537,10 @@ static void driver_spi_transaction(bool initiated_by_irq_line_event)
 
     local_spi_transfer.rx_buf = (unsigned long) &rx_buffer[SLI_CPC_HDLC_HEADER_RAW_SIZE];
 
-    if (rx_header_checksum_error) {
+    if (rx_invalid_header) {
       // If we received a bad header, we will clock the maximum theoretical number of bytes the secondary can
       // send us in order to purge its data
       local_spi_transfer.len = SPI_BUFFER_SIZE - SLI_CPC_HDLC_HEADER_RAW_SIZE;
-    } else if (rx_payload_size_invalid) {
-      // If we received a header with an RX size larget than the size of the
-      // RX buffer, send the requested number of bytes to purge its TX data.
-      // Normally, this should never happen however, since the secondary should
-      // prevent any payload larger than 4K to be sent over the bus.
-      local_spi_transfer.len = (unsigned int)(payload_length - SLI_CPC_HDLC_HEADER_RAW_SIZE);
-      local_spi_transfer.rx_buf = (unsigned long) NULL;
     } else {
       local_spi_transfer.len = (unsigned int) payload_length;
     }
@@ -566,7 +560,7 @@ static void driver_spi_transaction(bool initiated_by_irq_line_event)
   }
 
   // Send the received frame to the core (if it was negotiated that we pull one of course)
-  if (want_to_receive && !rx_header_checksum_error) {
+  if (want_to_receive && !rx_invalid_header) {
     ssize_t write_retval;
 
     // Add the length of the header to the length of the payload to get the total frame length
