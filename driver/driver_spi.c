@@ -298,15 +298,18 @@ static bool wait_for_irq_assert_or_timeout(size_t timeout_us)
   struct timespec start_time;
   clock_gettime(CLOCK_MONOTONIC, &start_time);
 
+  struct timespec now_time = start_time;
+
   // Busy loop until IRQ==0 or timeout
   while (gpio_read(irq_gpio) == GPIO_VALUE_HIGH) {
-    struct timespec now_time;
-    clock_gettime(CLOCK_MONOTONIC, &now_time);
-
     // Timeout on 10 * MAXIMUM_REASONABLE_INTERRUPT_LATENCY_US
     if (t2_minus_t1_us(&now_time, &start_time) > (long) timeout_us) {
       return false;
     }
+
+    // only update "now_time" at the end of the loop to guarantee that
+    // the irq gpio will be read after the timeout period
+    clock_gettime(CLOCK_MONOTONIC, &now_time);
   }
 
   return true;
@@ -496,7 +499,7 @@ static void driver_spi_transaction(bool initiated_by_irq_line_event)
     } else {
       // The secondary might just not be started
       // Still send to the core at what time the frame was sent.
-      {
+      if (want_to_transmit) {
         struct timespec tx_complete_timestamp;
         clock_gettime(CLOCK_MONOTONIC, &tx_complete_timestamp);
         /* Push write notification to core */
