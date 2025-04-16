@@ -29,10 +29,6 @@
 #include "driver/driver_uart.h"
 #include "driver/driver_spi.h"
 #include "driver/driver_ezsp.h"
-#include "driver/driver_sdio.h"
-#if defined(ENABLE_SOCKET_DRIVER)
-#include "driver/driver_socket.h"
-#endif
 
 void run_normal_mode(void)
 {
@@ -54,15 +50,6 @@ void run_normal_mode(void)
                       config.spi_bitrate,
                       config.spi_irq_chip,
                       config.spi_irq_pin);
-    } else if (config.bus == NETLINK_SDIO) {
-      WARN("NETLINK_SDIO is still considered experimental and may not yet meet production-quality standards.");
-      driver_sdio_init(&fd_socket_driver_core,
-                       &fd_socket_driver_core_notify);
-#if defined(ENABLE_SOCKET_DRIVER)
-    } else if (config.bus == SOCKET) {
-      driver_socket_init(&fd_socket_driver_core,
-                         &fd_socket_driver_core_notify);
-#endif
     } else {
       BUG();
     }
@@ -105,13 +92,6 @@ bool is_bootloader_running(void)
                                                                   config.spi_bitrate,
                                                                   config.spi_irq_chip,
                                                                   config.spi_irq_pin);
-  } else if (config.bus == NETLINK_SDIO) {
-    WARN("NETLINK_SDIO doesn't support firmware updade mode.");
-    secondary_running_bootloader = false; //not implementing for now
-#if defined(ENABLE_SOCKET_DRIVER)
-  } else if (config.bus == SOCKET) {
-    return secondary_running_bootloader;
-#endif
   } else {
     BUG();
   }

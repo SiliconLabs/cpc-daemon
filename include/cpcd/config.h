@@ -24,10 +24,6 @@
 typedef enum {
   UART,
   SPI,
-  NETLINK_SDIO,
-#if defined(ENABLE_SOCKET_DRIVER)
-  SOCKET,
-#endif
   UNCHOSEN
 } bus_t;
 
