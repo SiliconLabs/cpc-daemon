@@ -96,7 +96,7 @@ gpio_t gpio_init(const char *gpio_chip, unsigned int gpio_pin, gpio_direction_t 
 
     ret = ioctl(chip_fd, (int)GPIO_GET_LINEEVENT_IOCTL, &rq);
     if (ret < 0) {
-      FATAL("%s : The kernel must be configured with CONFIG_GPIO_CDEV_V1=y", strerror(errno));
+      FATAL("%m : The kernel must be configured with CONFIG_GPIO_CDEV_V1=y");
     }
 
     gpio = (gpio_t) rq.fd;
@@ -112,7 +112,7 @@ gpio_t gpio_init(const char *gpio_chip, unsigned int gpio_pin, gpio_direction_t 
 
     ret = ioctl(chip_fd, (int)GPIO_GET_LINEHANDLE_IOCTL, &rq);
     if (ret < 0) {
-      FATAL("%s : The kernel must be configured with CONFIG_GPIO_CDEV_V1=y", strerror(errno));
+      FATAL("%m : The kernel must be configured with CONFIG_GPIO_CDEV_V1=y");
     }
 
     gpio = (gpio_t) rq.fd;

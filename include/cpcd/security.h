@@ -45,6 +45,7 @@ typedef enum {
 
 typedef struct {
   uint32_t frame_counter;
+  bool inc_enc_counter;
 } sl_cpc_security_frame_t;
 
 typedef void (*sl_cpc_security_on_state_change_t)(sl_cpc_security_state_t old,

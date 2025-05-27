@@ -27,4 +27,6 @@ sl_status_t xmodem_uart_firmware_upgrade(const char   *image_file,
                                          unsigned int bitrate,
                                          bool         hardflow);
 
+bool xmodem_uart_is_bootloader_running(const char *device, unsigned int baudrate, bool hardflow);
+
 #endif //DRIVER_XMODEM_H

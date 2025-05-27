@@ -108,7 +108,9 @@ static void spidev_setup(const char *device, uint32_t speed, const char *irq_gpi
   ssize_t ret;
 
   spi_dev_descriptor = open(device, O_RDWR | O_CLOEXEC);
-  FATAL_SYSCALL_ON(spi_dev_descriptor < 0);
+  if (spi_dev_descriptor < 0) {
+    FATAL("Failed to open device: %s: %m", device);
+  }
 
   const uint8_t mode = SPI_MODE_0;
   ret = ioctl(spi_dev_descriptor, SPI_IOC_WR_MODE, &mode);

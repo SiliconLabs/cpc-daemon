@@ -6,16 +6,20 @@
   pkg-config,
   protobuf,
   mbedtls,
-  unitySrc ? null,
-  libprotobufMutatorSrc ? null,
+  unity-src ? null,
+  libprotobuf-mutator-src ? null,
 }:
-stdenv.mkDerivation rec {
+let
+  doCheck = (unity-src != null) && (libprotobuf-mutator-src != null);
+in
+stdenv.mkDerivation {
   pname = "cpc-daemon";
-  version = "4.6.0";
+  version = "4.7.0";
 
   src = nix-gitignore.gitignoreSource [ ] ./.;
-  doCheck = (unitySrc != null) && (libprotobufMutatorSrc != null);
-  separateDebugInfo = doCheck;
+
+  inherit doCheck;
+  separateDebugInfo = true;
 
   nativeBuildInputs = [
     cmake
@@ -30,19 +34,25 @@ stdenv.mkDerivation rec {
     with lib.strings;
     [
       (cmakeBool "CMAKE_COMPILE_WARNING_AS_ERROR" doCheck)
-      (cmakeBool "BUILD_TESTING" doCheck)
     ]
     ++ lib.optionals doCheck [
-      (cmakeOptionType "path" "UNITY_DIR" unitySrc.outPath)
-      (cmakeOptionType "path" "LIBPROTOBUF_MUTATOR_DIR" libprotobufMutatorSrc.outPath)
+      (cmakeOptionType "path" "UNITY_DIR" unity-src.outPath)
+      (cmakeOptionType "path" "LIBPROTOBUF_MUTATOR_DIR" libprotobuf-mutator-src.outPath)
     ];
 
-  meta = with lib; {
+  outputs = [
+    "bin"
+    "lib"
+    "dev"
+    "out"
+  ];
+
+  meta = {
     description = "CPC daemon";
     homepage = "https://github.com/SiliconLabs/cpc-daemon";
     license = "MSLA";
     maintainers = [ "iemaghni" ];
-    platform = platforms.linux;
+    platform = lib.platforms.linux;
     mainProgram = "cpcd";
   };
 }

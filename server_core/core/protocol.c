@@ -17,6 +17,7 @@
 
 #include "config.h"
 
+#include "cpcd/config.h"
 #include "cpcd/logging.h"
 #include "cpcd/utils.h"
 
@@ -52,10 +53,28 @@ static struct protocol_ops protocol_v5_ops = {
  ******************************************************************************/
 struct protocol_ops* protocol_get(uint8_t version)
 {
+#if defined(ENABLE_ENCRYPTION)
+  if (version < 6 && config.use_encryption) {
+    // The number of times the session key can be used for encryption and
+    // decryption has changed in protocol v6, so the nonce overflow detection
+    // will not match if cpcd and secondary don't use the same protocol
+    // version, leading to security errors. To prevent that, just block running
+    // cpcd with an older version of the protocol if security is enabled.
+    FATAL("Secondary hasn't been updated and is missing a critical security "
+          "fix. This version of cpcd cannot work under this condition. You "
+          "must either disable encryption in cpcd's config or update "
+          "secondary's firmware to include the security fix.");
+  }
+#endif
+
   switch (version) {
     case 4:
       return &protocol_v4_ops;
     case 5:
+      return &protocol_v5_ops;
+    case 6:
+      // breaking change was introduced for security
+      // but base operations stay the same.
       return &protocol_v5_ops;
     default:
       WARN("Unsupported protocol version %d", version);

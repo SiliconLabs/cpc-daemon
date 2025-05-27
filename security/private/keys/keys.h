@@ -35,6 +35,13 @@
 #define SESSION_INIT_RANDOM_LENGTH_BYTES 64
 #define SHA256_LENGTH_BYTES              32
 #define TAG_LENGTH_BYTES                 8
+
+// As a 64-bit tag is used and the maximum transfer length of encrypted data +
+// authenticated data is 2^16, NIST recommends a maximum invocations of the
+// authenticated-decryption function of 2^29. This value considers all
+// instances of the key in the system, so we must consider both calls to the
+// encrypt and the decrypt functions to accurately track total number of
+// invocations.
 #define NONCE_FRAME_COUNTER_MAX_VALUE    (1UL << 29)
 #define NONCE_FRAME_COUNTER_PRIMARY_ENCRYPT_BITMASK (1UL << 31)
 

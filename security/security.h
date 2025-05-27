@@ -25,8 +25,8 @@ void security_set_state(sl_cpc_security_state_t new_state);
 extern volatile bool security_session_initialized;
 
 #if defined(UNIT_TESTING)
-void security_set_endpoint_frame_counter(uint8_t endpoint, uint32_t value, bool tx_counter);
-uint32_t security_get_endpoint_frame_counter(uint8_t endpoint, bool tx_counter);
+void security_set_encryption_count(uint32_t value);
+uint32_t security_get_encryption_count(void);
 void security_get_nonce_session_id(uint8_t *buf, size_t len);
 void security_set_state_initializing(void);
 #endif

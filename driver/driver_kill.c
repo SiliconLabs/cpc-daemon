@@ -15,30 +15,29 @@
  *
  ******************************************************************************/
 
-#include "config.h"
-
-#include <fcntl.h>              // Definition of O_* constants
-#include <sys/eventfd.h>
-#include <unistd.h>
-
 #include <pthread.h>
 
-#include "cpcd/logging.h"
-
 #include "driver_kill.h"
+
+static pthread_mutex_t driver_kill_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void (*kill_callback)(void) = NULL;
 
 void driver_kill_init(void (*driver_kill_callback)(void))
 {
+  pthread_mutex_lock(&driver_kill_lock);
   if (kill_callback == NULL) {
     kill_callback = (void (*)(void))driver_kill_callback;
   }
+  pthread_mutex_unlock(&driver_kill_lock);
 }
 
 void driver_kill(void)
 {
+  pthread_mutex_lock(&driver_kill_lock);
   if (kill_callback != NULL) {
     kill_callback();
+    kill_callback = NULL;
   }
+  pthread_mutex_unlock(&driver_kill_lock);
 }

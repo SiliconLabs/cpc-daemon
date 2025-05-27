@@ -89,7 +89,7 @@ config_t config = {
 
   // SPI config
   .spi_file = NULL,
-  .spi_bitrate = 0,
+  .spi_bitrate = 1000000,
   .spi_irq_chip = NULL,
   .spi_irq_pin = 0,
 
@@ -978,7 +978,7 @@ static void config_validate_configuration(void)
 
   if (config.operation_mode == MODE_FIRMWARE_UPDATE) {
     if (access(config.fwu_file, F_OK | R_OK) != 0) {
-      FATAL("Firmware update file (%s) : %s", config.fwu_file, strerror(errno));
+      FATAL("Firmware update file (%s) : %m", config.fwu_file);
     }
   }
 
@@ -1007,7 +1007,7 @@ static void config_validate_configuration(void)
       }
 
       if (access(binding_key_folder, W_OK) != 0 ) {
-        FATAL("Binding key folder (%s) : %s", binding_key_folder, strerror(errno));
+        FATAL("Binding key folder (%s) : %m", binding_key_folder);
       }
     }
 

@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.10)
 
 project(cpc-daemon
-  VERSION "4.6.1.0"
+  VERSION "4.7.0.0"
   LANGUAGES C)
 
 if(DEFINED ENV{NIX_CFLAGS_COMPILE})
@@ -25,7 +25,7 @@ option(ENABLE_VALGRIND "Enable Valgrind in tests" OFF)
 option(TARGET_TESTING "Enable target testing" OFF)
 option(ENABLE_SOCKET_DRIVER "Enable socket driver for internal testing" OFF)
 set(CPC_LIBRARY_API_VERSION "3")
-set(CPC_PROTOCOL_VERSION "5")
+set(CPC_PROTOCOL_VERSION "6")
 set(CPC_SOCKET_DIR "/dev/shm" CACHE STRING "CPC socket directory")
 set(DEFAULT_INSTANCE_NAME "cpcd_0" CACHE STRING "Default instance name")
 set(CPCD_CONFIG_FILE_PATH "${CMAKE_INSTALL_FULL_SYSCONFDIR}/cpcd.conf" CACHE STRING "CPCd config file")

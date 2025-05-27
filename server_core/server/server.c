@@ -350,13 +350,13 @@ static void server_process_epoll_fd_event_connection_socket(epoll_private_data_t
   flags = fcntl(new_data_socket, F_GETFL, NULL);
 
   if (flags < 0) {
-    FATAL("fcntl F_GETFL failed.%s", strerror(errno));
+    FATAL("fcntl F_GETFL failed. %m");
   }
 
   flags |= O_NONBLOCK;
 
   if (fcntl(new_data_socket, F_SETFL, flags) < 0) {
-    FATAL("fcntl F_SETFL failed.%s", strerror(errno));
+    FATAL("fcntl F_SETFL failed. %m");
   }
 
   // Add the new data socket in the list of data sockets for that endpoint
@@ -1163,13 +1163,13 @@ static void server_process_epoll_fd_ep_connection_socket(epoll_private_data_t *p
   flags = fcntl(new_data_socket, F_GETFL, NULL);
 
   if (flags < 0) {
-    FATAL("fcntl F_GETFL failed.%s", strerror(errno));
+    FATAL("fcntl F_GETFL failed. %m");
   }
 
   flags |= O_NONBLOCK;
 
   if (fcntl(new_data_socket, F_SETFL, flags) < 0) {
-    FATAL("fcntl F_SETFL failed.%s", strerror(errno));
+    FATAL("fcntl F_SETFL failed. %m");
   }
 
   // store the newly created file descriptor as it will
@@ -1914,7 +1914,7 @@ sl_status_t server_push_data_to_endpoint(uint8_t endpoint_number, const uint8_t*
               data_len,
               MSG_DONTWAIT);
     if (wc < 0) {
-      TRACE_SERVER("send() failed with %s", strerror(errno));
+      TRACE_SERVER("send() failed with %m");
     }
 
     // keep track of number of clients the data have been sent to
@@ -2005,7 +2005,7 @@ static int server_pull_data_from_data_socket(int fd_data_socket, uint8_t** buffe
   {
     rc = recv(fd_data_socket, buffer, (size_t)datagram_length, 0);
     if (rc < 0) {
-      TRACE_SERVER("recv() failed with %s", strerror(errno));
+      TRACE_SERVER("recv() failed with %m");
     }
 
     if (rc == 0 || (rc < 0 && errno == ECONNRESET)) {

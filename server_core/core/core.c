@@ -56,10 +56,6 @@
 #define USE_ON_WRITE_COMPLETE
 #endif
 
-#if !defined(SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE)
-#define SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE 0
-#endif
-
 #define ABS(a)  ((a) < 0 ? -(a) : (a))
 #define X_ENUM_TO_STR(x) #x
 #define ENUM_TO_STR(x) X_ENUM_TO_STR(x)
@@ -91,10 +87,6 @@ static sl_slist_node_t      *transmit_queue = NULL;
 static sl_slist_node_t      *pending_on_security_ready_queue = NULL;
 static sl_slist_node_t      *pending_on_tx_complete = NULL;
 static struct protocol_ops  *protocol = NULL;
-
-#if defined(ENABLE_ENCRYPTION)
-static bool security_session_last_packet_acked = false;
-#endif
 
 /*******************************************************************************
  **************************   LOCAL FUNCTIONS   ********************************
@@ -313,11 +305,11 @@ static void core_on_security_state_change(sl_cpc_security_state_t old, sl_cpc_se
   } else if (old == SECURITY_STATE_RESETTING
              && new_state == SECURITY_STATE_INITIALIZED) {
     for (size_t i = 0; i < SL_CPC_ENDPOINT_MAX_COUNT; i++) {
-      core_endpoints[i].frame_counter_tx = SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE;
-      core_endpoints[i].frame_counter_rx = SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE;
+      core_endpoints[i].frame_counter_tx = 0;
+      core_endpoints[i].frame_counter_rx = 0;
 #if defined(UNIT_TESTING)
-      sli_cpc_drv_emul_set_frame_counter((uint8_t)i, SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE, true);
-      sli_cpc_drv_emul_set_frame_counter((uint8_t)i, SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE, false);
+      sli_cpc_drv_emul_set_frame_counter((uint8_t)i, 0, true);
+      sli_cpc_drv_emul_set_frame_counter((uint8_t)i, 0, false);
 #endif
     }
   } else if (new_state == SECURITY_STATE_INITIALIZING) {
@@ -679,8 +671,8 @@ static void on_set_security_counters_reply(sl_cpc_endpoint_t *ep,
   uint8_t tx_window_size = (uint8_t)((uintptr_t)ctx);
 
   if (status == SL_STATUS_NOT_SUPPORTED) {
-    ep->frame_counter_rx = SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE;
-    ep->frame_counter_tx = SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE;
+    ep->frame_counter_rx = 0;
+    ep->frame_counter_tx = 0;
 
     status = SL_STATUS_OK;
   }
@@ -1323,8 +1315,8 @@ void core_connect_endpoint(uint8_t endpoint_number, uint8_t flags, uint8_t tx_wi
 
   if (endpoint_number == SL_CPC_ENDPOINT_SYSTEM) {
     // do not reset frame counters values, except for the system endpoint
-    ep->frame_counter_tx = SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE;
-    ep->frame_counter_rx = SLI_CPC_SECURITY_NONCE_FRAME_COUNTER_RESET_VALUE;
+    ep->frame_counter_tx = 0;
+    ep->frame_counter_rx = 0;
   } else {
     ep->frame_counter_rx = rx_counter;
     ep->frame_counter_tx = tx_counter;
@@ -1585,12 +1577,6 @@ static void process_ack(sl_cpc_endpoint_t *endpoint, uint8_t ack)
       sl_cpc_system_cmd_poll_acknowledged(frame->data);
     }
 
-#if defined(ENABLE_ENCRYPTION)
-    if (frame->security_session_last_packet) {
-      security_session_last_packet_acked = true;
-    }
-#endif
-
     buffer_release(frame);
 
     // Update number of frames in re-transmit queue
@@ -1759,18 +1745,18 @@ static bool core_process_tx_queue(void)
   uint16_t total_length;
   uint8_t frame_type;
 
-  // If the security is setup, prioritize sending packets that were hold back
+  // If the security is setup, prioritize sending packets that were held back
   // in pending_on_security_ready_queue.
   // If the queue is empty, or if the security is not ready, process packets
   // from the regular transmit queue. Later down this function, it will be
   // determined if the packet can be sent or if it must be hold back.
   if (pending_on_security_ready_queue != NULL && security_is_ready()) {
-    TRACE_CORE("Sending packet that were hold back because security was not ready");
+    TRACE_CORE("Sending packet that were held back because security was not ready");
     item = buffer_list_pop_item(&pending_on_security_ready_queue);
   } else {
     // Return if nothing to transmit
     if (transmit_queue == NULL) {
-      TRACE_CORE("transmit_queue is empty and core is not ready yet to process hold back packets");
+      TRACE_CORE("transmit_queue is empty and core is not ready yet to process held back packets");
       return false;
     }
 
@@ -1799,8 +1785,9 @@ static bool core_process_tx_queue(void)
     // if security subsystem is not ready yet and the frame must be encrypted
     // delay its transmission until ready
     if (!security_is_ready()) {
-      WARN("Tried to encrypt an I-Frame on endpoint #%d but security is not ready. "
-           "Moving packet to pending on security queue", frame->endpoint->id);
+      TRACE_CORE("Tried to encrypt an I-Frame on endpoint #%d but security is not ready. "
+                 "Moving packet to pending on security queue",
+                 frame->endpoint->id);
       buffer_list_push_back_item(item, &pending_on_security_ready_queue);
 
       // Return true to keep processing other packets in the queue
@@ -1832,7 +1819,7 @@ static bool core_process_tx_queue(void)
   uint8_t *encrypted_payload = (uint8_t*)frame->data;
 
 #if defined(ENABLE_ENCRYPTION)
-  if (frame->endpoint && frame->re_transmit_count == 0u && encrypt) {
+  if (encrypt && frame->re_transmit_count == 0u) {
     frame->security_info = security_encrypt_prepare_next_frame(frame->endpoint);
   }
 
@@ -1880,9 +1867,6 @@ static bool core_process_tx_queue(void)
 
     frame->security_session_last_packet = security_session_has_reset();
     security_session_reset_clear_flag();
-    if (frame->security_session_last_packet) {
-      security_session_last_packet_acked = false;
-    }
 
     frame->fcs = sli_cpc_get_crc_sw(encrypted_payload, (uint16_t)encrypted_data_length);
   }
@@ -2013,12 +1997,12 @@ static bool should_decrypt_frame(sl_cpc_endpoint_t *endpoint, uint16_t payload_l
     return false;
   }
 
-  if (security_state == SECURITY_STATE_RESETTING
-      && security_session_last_packet_acked == true) {
+  // security endpoint messages are always cleartext
+  if (endpoint->id == SL_CPC_ENDPOINT_SECURITY) {
     return false;
-  } else {
-    return true;
   }
+
+  return true;
 }
 #endif
 

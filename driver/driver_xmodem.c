@@ -20,8 +20,10 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <termios.h>
 #include <unistd.h>
 #include <errno.h>
 
@@ -35,6 +37,7 @@
 #include "driver/driver_xmodem.h"
 #include "driver/driver_uart.h"
 
+#define BTL_GECKO_PROMPT "\r\nGecko"
 #define BTL_MENU_PROMPT "BL >"
 #define BTL_UPLOAD_CONFIRMATION "Serial upload complete"
 
@@ -248,4 +251,61 @@ sl_status_t xmodem_uart_firmware_upgrade(const char* image_file, const char *dev
   FATAL_SYSCALL_ON(ret != 0);
 
   return SL_STATUS_OK;
+}
+
+/***************************************************************************//**
+ * @brief
+ *   Probes the secondary to see if the bootloader is running
+ *
+ * The maneuver consists of sending a Carriage-Return character and waiting
+ * too see if we receive the gecko bootloader prompt.
+ *
+ * @return
+ *   true if the bootloader is running, false otherwise
+ ******************************************************************************/
+bool xmodem_uart_is_bootloader_running(const char *device, unsigned int baudrate, bool hardflow)
+{
+  const uint32_t max_retries_ms = 20;
+  char buf[128] = { 0 };
+  size_t total_read = 0;
+  uint32_t retries = 0;
+  bool running = false;
+  int fd_uart;
+
+  fd_uart = driver_uart_open(device, baudrate, hardflow);
+  tcflush(fd_uart, TCIOFLUSH);
+
+  {
+    // Send carriage-return to receive the prompt
+    const uint8_t cr = '\r';
+    ssize_t write_retval = write(fd_uart, &cr, sizeof(cr));
+    FATAL_SYSCALL_ON(write_retval < 0);
+  }
+
+  do {
+    int nread = 0;
+    ssize_t ioctl_retval = ioctl(fd_uart, FIONREAD, &nread);
+    FATAL_SYSCALL_ON(ioctl_retval < 0);
+
+    if (nread > 0) {
+      ssize_t read_retval = read(fd_uart, &buf[total_read], sizeof(buf) - 1 - total_read);
+      FATAL_SYSCALL_ON(read_retval < 0);
+
+      if (strstr(buf, BTL_GECKO_PROMPT) && strstr(buf, BTL_MENU_PROMPT)) {
+        running = true;
+        break;
+      }
+
+      total_read += (size_t)read_retval;
+      if (total_read >= sizeof(buf) - 1) {
+        break;
+      }
+    }
+
+    sleep_ms(1);
+  } while (++retries < max_retries_ms);
+
+  close(fd_uart);
+
+  return running;
 }

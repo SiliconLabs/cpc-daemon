@@ -30,6 +30,7 @@
 #include "driver/driver_spi.h"
 #include "driver/driver_ezsp.h"
 #include "driver/driver_sdio.h"
+#include "driver/driver_xmodem.h"
 #if defined(ENABLE_SOCKET_DRIVER)
 #include "driver/driver_socket.h"
 #endif
@@ -97,7 +98,7 @@ bool is_bootloader_running(void)
   secondary_already_probed = true;
 
   if (config.bus == UART) {
-    secondary_running_bootloader = driver_uart_is_bootloader_running(config.uart_file,
+    secondary_running_bootloader = xmodem_uart_is_bootloader_running(config.uart_file,
                                                                      config.uart_baudrate,
                                                                      config.uart_hardflow);
   } else if (config.bus == SPI) {
