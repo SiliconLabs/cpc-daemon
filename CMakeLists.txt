@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.10)
 
 project(cpc-daemon
-  VERSION "4.6.1.0"
+  VERSION "4.6.2.0"
   LANGUAGES C)
 
 if(DEFINED ENV{NIX_CFLAGS_COMPILE})

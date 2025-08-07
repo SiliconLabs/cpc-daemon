@@ -1596,6 +1596,11 @@ int cpc_get_endpoint_state(cpc_handle_t handle, uint8_t id, cpc_endpoint_state_t
                                EXCHANGE_ENDPOINT_STATUS_QUERY, id,
                                (void*)state, sizeof(cpc_endpoint_state_t));
 
+  if (tmp_ret) {
+    TRACE_LIB_ERROR(lib_handle, tmp_ret, "failed to exchange endpoint state query");
+    SET_CPC_RET(tmp_ret);
+  }
+
   tmp_ret = pthread_mutex_unlock(&lib_handle->ctrl_sock_fd_lock);
   if (tmp_ret != 0) {
     TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_unlock(%p) failed", &lib_handle->ctrl_sock_fd_lock);
@@ -2183,6 +2188,7 @@ int cpc_init_endpoint_event(cpc_handle_t handle, cpc_endpoint_event_handle_t *ev
 {
   INIT_CPC_RET(int);
   int tmp_ret = 0;
+  int tmp_ret2 = 0;
   sli_cpc_handle_t *lib_handle = NULL;
   sli_cpc_endpoint_event_handle_t *evt = NULL;
   sli_handle_list_item_t *ep_evt_handle_item = NULL;
@@ -2216,13 +2222,30 @@ int cpc_init_endpoint_event(cpc_handle_t handle, cpc_endpoint_event_handle_t *ev
 
   unlock_cpc_api(&cpc_api_lock);
 
+  tmp_ret = pthread_mutex_lock(&lib_handle->ctrl_sock_fd_lock);
+  if (tmp_ret != 0) {
+    TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_lock(%p) failed", &lib_handle->ctrl_sock_fd_lock);
+    SET_CPC_RET(-tmp_ret);
+
+    goto cleanup;
+  }
+
   tmp_ret = cpc_query_exchange(lib_handle, lib_handle->ctrl_sock_fd,
                                EXCHANGE_OPEN_ENDPOINT_EVENT_SOCKET_QUERY, endpoint_id,
                                NULL, 0);
   if (tmp_ret) {
     TRACE_LIB_ERROR(lib_handle, tmp_ret, "failed exchange open endpoint event socket");
     SET_CPC_RET(tmp_ret);
+  }
 
+  tmp_ret2 = pthread_mutex_unlock(&lib_handle->ctrl_sock_fd_lock);
+  if (tmp_ret2 != 0) {
+    TRACE_LIB_ERROR(lib_handle, -tmp_ret2, "pthread_mutex_unlock(%p) failed", &lib_handle->ctrl_sock_fd_lock);
+    SET_CPC_RET(-tmp_ret2);
+    goto cleanup;
+  }
+
+  if (tmp_ret) {
     goto cleanup;
   }
 
