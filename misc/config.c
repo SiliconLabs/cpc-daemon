@@ -140,6 +140,8 @@ static void config_parse_config_file(void);
 
 static void config_expand_binding_key_location(void);
 
+static void config_parse_multicast_endpoints(const char *input);
+
 /*******************************************************************************
  ****************************  IMPLEMENTATION   ********************************
  ******************************************************************************/
@@ -244,6 +246,48 @@ static const char* config_operation_mode_to_str(operation_mode_t value)
 
 #define CONFIG_PRINT_DEC(value) CONFIG_PRINT_DEC_COND(value, true)
 
+#define CONFIG_PRINT_MULTICAST_ENDPOINTS(value)                                         \
+  do {                                                                                  \
+    char __buf[2048] = { 0 };                                                           \
+    char *__ptr = __buf;                                                                \
+    bool __first = true;                                                                \
+    __ptr += sprintf(__ptr, "[");                                                       \
+    int __start_range = -1;                                                             \
+    for (int i = 0; i < SL_CPC_ENDPOINT_MAX_COUNT; i++) {                               \
+      if ((value)[i]) {                                                                 \
+        if (__start_range == -1) {                                                      \
+          __start_range = i;                                                            \
+        }                                                                               \
+      } else {                                                                          \
+        if (__start_range != -1) {                                                      \
+          if (!__first) {                                                               \
+            __ptr += sprintf(__ptr, ", ");                                              \
+          }                                                                             \
+          if (__start_range == i - 1) {                                                 \
+            __ptr += sprintf(__ptr, "%d", __start_range);                               \
+          } else {                                                                      \
+            __ptr += sprintf(__ptr, "%d-%d", __start_range, i - 1);                     \
+          }                                                                             \
+          __first = false;                                                              \
+          __start_range = -1;                                                           \
+        }                                                                               \
+      }                                                                                 \
+    }                                                                                   \
+    if (__start_range != -1) {                                                          \
+      if (!__first) {                                                                   \
+        __ptr += sprintf(__ptr, ", ");                                                  \
+      }                                                                                 \
+      if (__start_range == SL_CPC_ENDPOINT_MAX_COUNT - 1) {                             \
+        __ptr += sprintf(__ptr, "%d", __start_range);                                   \
+      } else {                                                                          \
+        __ptr += sprintf(__ptr, "%d-%d", __start_range, SL_CPC_ENDPOINT_MAX_COUNT - 1); \
+      }                                                                                 \
+    }                                                                                   \
+    sprintf(__ptr, "]");                                                                \
+    PRINT_INFO("  %s = %s", &(#value)[print_offset], __buf);                            \
+    run_time_total_size += (uint32_t)sizeof(value);                                     \
+  } while (0)
+
 static void config_print(void)
 {
   PRINT_INFO("Reading configuration");
@@ -311,6 +355,8 @@ static void config_print(void)
   CONFIG_PRINT_DEC(config.stats_interval);
 
   CONFIG_PRINT_DEC(config.rlimit_nofile);
+
+  CONFIG_PRINT_MULTICAST_ENDPOINTS(config.multicast_endpoints);
 
   if (run_time_total_size != compile_time_total_size) {
     FATAL("A new config was added to config_t but it was not printed. run_time_total_size (%d) != compile_time_total_size (%d)", run_time_total_size, compile_time_total_size);
@@ -699,14 +745,91 @@ static bool is_comment_or_newline(const char* line)
   return is_nul(c) || is_line_break(c) || is_comment(c);
 }
 
+static void config_parse_multicast_endpoints(const char *input)
+{
+  long endpoint_id, range_end;
+  char *endptr;
+
+  // Clear default values
+  memset(config.multicast_endpoints, false, sizeof(config.multicast_endpoints));
+
+  // Skip leading '['
+  if (*input++ != '[') {
+    FATAL("Config file error: multicast_endpoints must start with '['");
+  }
+
+  // Parse numbers/ranges until we hit ']'
+  while (*input != ']') {
+    // Skip whitespace and commas
+    while (is_white_space(*input) || *input == ',') {
+      input++;
+    }
+
+    // Break if we hit ']'
+    if (*input == ']') {
+      break;
+    }
+
+    // Check for end of string
+    if (is_nul(*input)) {
+      FATAL("Config file error: multicast_endpoints: missing closing bracket ']'");
+    }
+
+    endpoint_id = strtol(input, &endptr, 10);
+
+    // Check if conversion was performed
+    if (input == endptr) {
+      FATAL("Config file error: multicast_endpoints: invalid character");
+    }
+
+    // Check for errors
+    if (endpoint_id == LONG_MAX || endpoint_id == LONG_MIN) {
+      FATAL("Config file error: multicast_endpoints: errno : %m");
+    }
+
+    // Check if value is in valid endpoint range
+    if (endpoint_id < 0 || endpoint_id >= SL_CPC_ENDPOINT_MAX_COUNT) {
+      FATAL("Config file error: multicast_endpoints: endpoint id %ld is out of valid range [0, %d]", endpoint_id, SL_CPC_ENDPOINT_MAX_COUNT - 1);
+    }
+
+    input = endptr;
+
+    // Check for range
+    if (*input == '-') {
+      input++; // skip '-'
+      range_end = strtol(input, &endptr, 10);
+
+      // Check if conversion was performed
+      if (input == endptr) {
+        FATAL("Config file error: multicast_endpoints: invalid character");
+      }
+
+      // Check if value is in valid endpoint range
+      if (range_end < endpoint_id || range_end >= SL_CPC_ENDPOINT_MAX_COUNT) {
+        FATAL("Config file error: multicast_endpoints: invalid range %ld-%ld", endpoint_id, range_end);
+      }
+
+      for (long i = endpoint_id; i <= range_end; ++i) {
+        config.multicast_endpoints[i] = true;
+      }
+      input = endptr;
+    } else {
+      config.multicast_endpoints[endpoint_id] = true;
+    }
+  }
+}
+
 static void config_parse_config_file(void)
 {
   FILE *config_file = NULL;
   char name[128] = { 0 };
-  char val[128] = { 0 };
-  char line[256] = { 0 };
+  char val[2048] = { 0 };
+  char line[2048] = { 0 };
   char *endptr = NULL;
   int tmp_config_file_tracing = 0;
+
+  // By default, all endpoints are enabled for multicast
+  memset(config.multicast_endpoints, true, sizeof(config.multicast_endpoints));
 
   config_file = fopen(config.file_path, "r");
 
@@ -721,7 +844,7 @@ static void config_parse_config_file(void)
     }
 
     // Extract name=value pair
-    if (sscanf(line, "%127[^: ]: %127[^\r\n #]%*c", name, val) != 2) {
+    if (sscanf(line, "%127[^: ]: %2047[^\r\n#]%*c", name, val) != 2) {
       FATAL("Config file line \"%s\" doesn't respect syntax. Expecting YAML format (key: value). Please refer to the provided cpcd.conf", line);
     }
 
@@ -846,6 +969,8 @@ static void config_parse_config_file(void)
     } else if (0 == strcmp(name, "traces_folder")) {
       config.traces_folder = strdup(val);
       FATAL_ON(config.traces_folder == NULL);
+    } else if (0 == strcmp(name, "multicast_endpoints")) {
+      config_parse_multicast_endpoints(val);
     } else if (0 == strcmp(name, "rlimit_nofile")) {
       config.rlimit_nofile = (int)strtoul(val, &endptr, 10);
       if (*endptr != '\0') {

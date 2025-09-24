@@ -707,7 +707,7 @@ static void server_process_epoll_fd_ctrl_data_socket(epoll_private_data_t *priva
     case EXCHANGE_OPEN_ENDPOINT_QUERY:
       // Client requested to open an endpoint socket
     {
-      BUG_ON(buffer_len != sizeof(cpcd_exchange_buffer_t) + sizeof(uint8_t) + sizeof(bool));
+      BUG_ON(buffer_len != sizeof(cpcd_exchange_buffer_t) + sizeof(uint8_t) + sizeof(sl_cpc_open_endpoint_status_t));
 
       TRACE_SERVER("Received an open query for endpoint #%d", interface_buffer->endpoint_number);
 
@@ -715,12 +715,9 @@ static void server_process_epoll_fd_ctrl_data_socket(epoll_private_data_t *priva
       if (interface_buffer->endpoint_number == SL_CPC_ENDPOINT_SECURITY) {
         if (endpoints[SL_CPC_ENDPOINT_SECURITY].data_connections != NULL // Make sure only 1 client is connected (ie, the daemon' security thread)
             || config.use_encryption == false) {                                      // Make sure security is enabled
-          // Reuse the same buffer to send a negative reply
-          bool reply = false;
-          memcpy(&(interface_buffer->payload[1]), &reply, sizeof(bool));
-
+          sl_cpc_open_endpoint_status_t reply = SL_CPC_OPEN_ENDPOINT_ERROR_SECURITY;
+          memcpy(&(interface_buffer->payload[1]), &reply, sizeof(reply));
           ssize_t sret = send(fd_ctrl_data_socket, interface_buffer, buffer_len, 0);
-
           if (sret < 0 && errno == EPIPE) {
             server_handle_client_closed_ctrl_connection(fd_ctrl_data_socket);
           } else {
@@ -729,6 +726,18 @@ static void server_process_epoll_fd_ctrl_data_socket(epoll_private_data_t *priva
           }
           break;
         }
+      } else if (endpoints[interface_buffer->endpoint_number].open_data_connections > 0
+                 && !config.multicast_endpoints[interface_buffer->endpoint_number]) {
+        sl_cpc_open_endpoint_status_t reply = SL_CPC_OPEN_ENDPOINT_ERROR_MULTICAST_DISABLED;
+        memcpy(&(interface_buffer->payload[1]), &reply, sizeof(reply));
+        ssize_t sret = send(fd_ctrl_data_socket, interface_buffer, buffer_len, 0);
+        if (sret < 0 && errno == EPIPE) {
+          server_handle_client_closed_ctrl_connection(fd_ctrl_data_socket);
+        } else {
+          FATAL_SYSCALL_ON(sret < 0 && errno != EPIPE);
+          FATAL_ON((size_t)sret != buffer_len);
+        }
+        break;
       }
 
       pending_connection_list_item_t *entry;
@@ -1021,10 +1030,10 @@ void server_process_pending_connections(void)
  * Send an acknowledge to the ctrl socket about the open endpoint query.
  ******************************************************************************/
 static void system_send_open_endpoint_ack(uint8_t endpoint_id,
-                                          bool can_open,
+                                          sl_cpc_open_endpoint_status_t status,
                                           pending_connection_list_item_t *connection)
 {
-  const size_t buffer_len = sizeof(cpcd_exchange_buffer_t) + sizeof(uint8_t) + sizeof(bool);
+  const size_t buffer_len = sizeof(cpcd_exchange_buffer_t) + sizeof(uint8_t) + sizeof(sl_cpc_open_endpoint_status_t);
   cpcd_exchange_buffer_t *interface_buffer;
   uint8_t buffer[buffer_len];
 
@@ -1034,7 +1043,7 @@ static void system_send_open_endpoint_ack(uint8_t endpoint_id,
   interface_buffer->type = EXCHANGE_OPEN_ENDPOINT_QUERY;
   interface_buffer->endpoint_number = endpoint_id;
   memset(interface_buffer->payload, 0, 1);
-  memcpy(&(interface_buffer->payload[1]), &can_open, sizeof(bool));
+  memcpy(&(interface_buffer->payload[1]), &status, sizeof(status));
 
   ssize_t ret = send(connection->fd_ctrl_data_socket, interface_buffer, buffer_len, 0);
   TRACE_SERVER("Replied to endpoint open query on ep#%d", endpoint_id);
@@ -1058,8 +1067,8 @@ static void server_finalize_open_endpoint(uint8_t endpoint_id,
                                           void *server_ctx)
 {
   pending_connection_list_item_t *connection = (pending_connection_list_item_t*)server_ctx;
+  sl_cpc_open_endpoint_status_t open_status;
   sl_slist_node_t *node;
-  bool can_open;
 
   // remove first element from the list, that's the one we
   // expect to be processing now
@@ -1068,13 +1077,14 @@ static void server_finalize_open_endpoint(uint8_t endpoint_id,
 
   FATAL_ON(node != &connection->node);
 
-  can_open = (status == SL_STATUS_OK);
-
-  if (can_open) {
+  if (status == SL_STATUS_OK) {
     server_open_endpoint(endpoint_id);
+    open_status = SL_CPC_OPEN_ENDPOINT_SUCCESS;
+  } else {
+    open_status = SL_CPC_OPEN_ENDPOINT_ERROR_GENERIC;
   }
 
-  system_send_open_endpoint_ack(endpoint_id, can_open, connection);
+  system_send_open_endpoint_ack(endpoint_id, open_status, connection);
 
   free(connection);
 }
@@ -1695,7 +1705,7 @@ void server_connect_endpoint(uint8_t endpoint_number, bool error)
   int data_socket_fd = endpoints[endpoint_number].connecting_data_socket_fd;
   cpcd_exchange_buffer_t *buffer;
   uint8_t payload[buffer_len];
-  bool can_open = !error;
+  bool can_connect = !error;
   ssize_t sent_bytes;
 
   BUG_ON(data_socket_fd == -1);
@@ -1740,7 +1750,7 @@ void server_connect_endpoint(uint8_t endpoint_number, bool error)
   // back to the daemon in order to identify the connection. The library uses
   // that value as session_id.
   memcpy(buffer->payload, &data_socket_fd, sizeof(data_socket_fd));
-  memcpy(&buffer->payload[sizeof(int)], &can_open, sizeof(bool));
+  memcpy(&buffer->payload[sizeof(int)], &can_connect, sizeof(bool));
 
   sent_bytes = send(data_socket_fd, buffer, buffer_len, 0);
   if (sent_bytes != (ssize_t)buffer_len) {

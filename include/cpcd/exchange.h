@@ -43,4 +43,11 @@ typedef struct {
   uint8_t payload[];
 } cpcd_exchange_buffer_t;
 
+typedef enum {
+  SL_CPC_OPEN_ENDPOINT_SUCCESS = 0,
+  SL_CPC_OPEN_ENDPOINT_ERROR_GENERIC = 1,
+  SL_CPC_OPEN_ENDPOINT_ERROR_SECURITY = 2,
+  SL_CPC_OPEN_ENDPOINT_ERROR_MULTICAST_DISABLED = 3,
+} sl_cpc_open_endpoint_status_t;
+
 #endif // CPCD_EXCHANGE_H

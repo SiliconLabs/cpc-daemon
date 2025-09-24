@@ -81,6 +81,8 @@ static void write_until_success_or_error(int fd, uint8_t* buff, size_t size)
   } while (remaining != 0);
 }
 
+#define LOGGING_BUF_SIZE 4096
+
 #define ASYNC_LOGGER_PAGE_SIZE    4096
 #define ASYNC_LOGGER_PAGE_COUNT   7
 #define ASYNC_LOGGER_BUFFER_DEPTH (ASYNC_LOGGER_PAGE_SIZE * ASYNC_LOGGER_PAGE_COUNT)
@@ -568,7 +570,7 @@ static size_t get_time_string(char *slice, size_t slice_len)
 
 void trace(const bool force_stdout, const char* string, ...)
 {
-  char log_string[512];
+  char log_string[LOGGING_BUF_SIZE];
   size_t log_string_length = 0;
   int errno_backup = errno;
 
@@ -620,7 +622,7 @@ void trace(const bool force_stdout, const char* string, ...)
 
 void trace_no_timestamp(const char* string, ...)
 {
-  char log_string[512];
+  char log_string[LOGGING_BUF_SIZE];
   size_t log_string_length = 0;
   int errno_backup = errno;
 
@@ -671,7 +673,7 @@ static inline void byte_to_hex(uint8_t byte, char str[2])
 
 void trace_frame(const char* string, const void* buffer, size_t len)
 {
-  char log_string[4096]; // Arbitrary size. Large buffer frames will most likely overflow.
+  char log_string[LOGGING_BUF_SIZE];
   size_t log_string_length = 0;
   uint8_t* frame = (uint8_t*) buffer;
   int errno_backup = errno;

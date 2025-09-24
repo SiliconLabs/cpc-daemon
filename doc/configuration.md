@@ -148,3 +148,30 @@ characters representing a 128-bit key. If ECDH encryption is used, this file wil
 be created during the binding operation.
 
     binding_key_file: ~/.cpcd/binding.key
+
+### Multicast Endpoints
+
+This configuration controls whether multiple clients can simultaneously open, write to, and receive data from a given endpoint. When multicast is disabled for an endpoint, only a single client can open and use the endpoint at a time; any additional attempts to open the endpoint will be denied until the existing handle is closed. Note that a client is precisely a libcpc `cpc_endpoint_t` handle which may exist across the same or different processes/threads.
+
+This configuration is optional and if it is not present in the configuration file, multicasting is enabled for all endpoints by default. If it is present, multicasting is enabled *only* for the endpoints specified in the list. Each endpoint ID must be a number between `0` and `255`, or a range in the form `start-end` (e.g., `12-20`). Here are some examples:
+
+This would enable multicasting for endpoints 10 and 90, while preventing it for all other endpoints:
+
+    multicast_endpoints: [10, 90]
+
+This would enable multicasting for endpoints 12, 15, 16, 17, 18, 19, 20, and 25:
+
+    multicast_endpoints: [12, 15-20, 25]
+
+This would disable multicasting for all endpoints:
+
+    multicast_endpoints: []
+
+This would enable multicasting for all endpoints:
+
+    multicast_endpoints: [0-255]
+
+This would also enable multicasting for all endpoints as the configuration is commented (`#`) out:
+
+    #multicast_endpoints: []
+

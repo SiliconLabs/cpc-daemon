@@ -19,7 +19,10 @@
 #define CPCD_CONFIG_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <sys/resource.h>
+
+#include "cpcd/core.h"
 
 typedef enum {
   UART,
@@ -99,6 +102,8 @@ typedef struct __attribute__((packed)) {
   const char *uart_validation_test_option;
 
   int stats_interval;
+
+  bool multicast_endpoints[SL_CPC_ENDPOINT_MAX_COUNT];
 
   int rlimit_nofile;
 } config_t;

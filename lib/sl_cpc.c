@@ -1058,13 +1058,14 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
   INIT_CPC_RET(int);
   int tmp_ret = 0;
   int tmp_ret2 = 0;
-  bool can_open = false;
+  bool can_connect = false;
   sli_cpc_handle_t *lib_handle = NULL;
   sli_cpc_endpoint_t *ep = NULL;
   sli_handle_list_item_t *ep_handle_item = NULL;
   struct sockaddr_un ep_addr = { 0 };
-  uint8_t payload[sizeof(uint8_t) + sizeof(bool)];
-  uint8_t payload2[sizeof(ep->session_id) + sizeof(bool)];
+  sl_cpc_open_endpoint_status_t status;
+  uint8_t payload[sizeof(tx_window_size) + sizeof(status)];
+  uint8_t payload2[sizeof(ep->session_id) + sizeof(can_connect)];
 
   if (id == SL_CPC_ENDPOINT_SYSTEM || endpoint == NULL) {
     SET_CPC_RET(-EINVAL);
@@ -1158,16 +1159,23 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
     goto free_endpoint;
   }
 
-  memcpy(&can_open, &payload[1], sizeof(bool));
-  if (can_open == false) {
-    if (id == SL_CPC_ENDPOINT_SECURITY) {
+  memcpy(&status, &payload[1], sizeof(status));
+  switch (status) {
+    case SL_CPC_OPEN_ENDPOINT_SUCCESS:
+      break;
+    case SL_CPC_OPEN_ENDPOINT_ERROR_SECURITY:
       TRACE_LIB_ERROR(lib_handle, -EPERM, "cannot open security endpoint as a client");
       SET_CPC_RET(-EPERM);
-    } else {
-      TRACE_LIB_ERROR(lib_handle, -EAGAIN, "endpoint on secondary is not opened");
+      goto free_endpoint;
+    case SL_CPC_OPEN_ENDPOINT_ERROR_MULTICAST_DISABLED:
+      TRACE_LIB_ERROR(lib_handle, -EACCES, "multicast is disabled for EP #%d", id);
+      SET_CPC_RET(-EACCES);
+      goto free_endpoint;
+    case SL_CPC_OPEN_ENDPOINT_ERROR_GENERIC:
+    default:
+      TRACE_LIB_ERROR(lib_handle, -EAGAIN, "EP #%d on secondary is not opened", id);
       SET_CPC_RET(-EAGAIN);
-    }
-    goto free_endpoint;
+      goto free_endpoint;
   }
 
   ep->sock_fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
@@ -1191,9 +1199,9 @@ int cpc_open_endpoint(cpc_handle_t handle, cpc_endpoint_t *endpoint, uint8_t id,
   }
 
   memcpy(&ep->session_id, payload2, sizeof(ep->session_id));
-  memcpy(&can_open, &payload2[sizeof(ep->session_id)], sizeof(bool));
+  memcpy(&can_connect, &payload2[sizeof(ep->session_id)], sizeof(can_connect));
 
-  if (can_open == false) {
+  if (can_connect == false) {
     TRACE_LIB_ERROR(lib_handle, -EAGAIN, "endpoint on secondary did not accept connection request");
     SET_CPC_RET(-EAGAIN);
     goto close_sock_fd;
@@ -1595,6 +1603,11 @@ int cpc_get_endpoint_state(cpc_handle_t handle, uint8_t id, cpc_endpoint_state_t
   tmp_ret = cpc_query_exchange(lib_handle, lib_handle->ctrl_sock_fd,
                                EXCHANGE_ENDPOINT_STATUS_QUERY, id,
                                (void*)state, sizeof(cpc_endpoint_state_t));
+
+  if (tmp_ret) {
+    TRACE_LIB_ERROR(lib_handle, tmp_ret, "failed to exchange endpoint state query");
+    SET_CPC_RET(tmp_ret);
+  }
 
   tmp_ret = pthread_mutex_unlock(&lib_handle->ctrl_sock_fd_lock);
   if (tmp_ret != 0) {
@@ -2183,6 +2196,7 @@ int cpc_init_endpoint_event(cpc_handle_t handle, cpc_endpoint_event_handle_t *ev
 {
   INIT_CPC_RET(int);
   int tmp_ret = 0;
+  int tmp_ret2 = 0;
   sli_cpc_handle_t *lib_handle = NULL;
   sli_cpc_endpoint_event_handle_t *evt = NULL;
   sli_handle_list_item_t *ep_evt_handle_item = NULL;
@@ -2216,13 +2230,30 @@ int cpc_init_endpoint_event(cpc_handle_t handle, cpc_endpoint_event_handle_t *ev
 
   unlock_cpc_api(&cpc_api_lock);
 
+  tmp_ret = pthread_mutex_lock(&lib_handle->ctrl_sock_fd_lock);
+  if (tmp_ret != 0) {
+    TRACE_LIB_ERROR(lib_handle, -tmp_ret, "pthread_mutex_lock(%p) failed", &lib_handle->ctrl_sock_fd_lock);
+    SET_CPC_RET(-tmp_ret);
+
+    goto cleanup;
+  }
+
   tmp_ret = cpc_query_exchange(lib_handle, lib_handle->ctrl_sock_fd,
                                EXCHANGE_OPEN_ENDPOINT_EVENT_SOCKET_QUERY, endpoint_id,
                                NULL, 0);
   if (tmp_ret) {
     TRACE_LIB_ERROR(lib_handle, tmp_ret, "failed exchange open endpoint event socket");
     SET_CPC_RET(tmp_ret);
+  }
 
+  tmp_ret2 = pthread_mutex_unlock(&lib_handle->ctrl_sock_fd_lock);
+  if (tmp_ret2 != 0) {
+    TRACE_LIB_ERROR(lib_handle, -tmp_ret2, "pthread_mutex_unlock(%p) failed", &lib_handle->ctrl_sock_fd_lock);
+    SET_CPC_RET(-tmp_ret2);
+    goto cleanup;
+  }
+
+  if (tmp_ret) {
     goto cleanup;
   }
 
