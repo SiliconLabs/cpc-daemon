@@ -263,7 +263,7 @@ static void open_uart_port_subtest(bool flowcontrol)
   }
 
   // Disable reset sequence because we want to do it ourselves
-  config.reset_sequence = false;
+  config.reset_sequence = RESET_SEQUENCE_NONE;
   server_core_init(fd_socket_driver_core, fd_socket_driver_core_notify, SERVER_CORE_MODE_NORMAL);
 }
 

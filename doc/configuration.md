@@ -99,11 +99,20 @@ that is connected to the RESET pin of the secondary.
 
     bootloader_reset_gpio: 23
 
-### Trace to Stdout
+### Trace level
 
-Optional boolean to enable tracing to stdout.  Default value is `false`.
+Optional parameter to control the level of tracing information output to stdout.
+The default value is `info` and remains `info` until the `trace_level` option is parsed. Allowed values are:
 
-    stdout_trace: false
+- `error` - Errors only
+- `warn` - Warnings and above
+- `info` - Informational messages and above (default)
+- `debug` - Debug messages (endpoint, driver, core, security, etc.) and above
+- `frame` - Frame tracing and above
+
+Example:
+
+    trace_level: info
 
 ### Trace to File
 
@@ -119,13 +128,6 @@ will be saved. It is recommended that this point to a folder mounted on tmpfs.
 Default value is `/dev/shm/cpcd-traces`.
 
     traces_folder: /dev/shm/cpcd-traces
-
-### Enable Frame Traces
-
-Optional if `stdout_trace` or `trace_to_file` is enabled. If enabled, traces will
-include all frames transmitted and received. Default value is `false`.
-
-    enable_frame_trace: false
 
 ### Allowable Number of Open File Descriptors
 

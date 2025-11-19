@@ -803,7 +803,7 @@ static sl_status_t firmware_upgrade_fsm(struct fwu_image *image,
   // The bootloader is now ready to receive an image, send the firmware image
   {
     TRACE_EZSP_SPI("Sending the firmware image :");
-    TRACE(" ");
+    TRACE_DEBUG(" ");
 
     size_t remaining_len = image->size;
     size_t data_index = 0;
@@ -835,7 +835,7 @@ static sl_status_t firmware_upgrade_fsm(struct fwu_image *image,
 
       if (data_index % (20 * 128) == 0) {
         TRACE_NAKED("\n");
-        TRACE(" ");
+        TRACE_DEBUG(" ");
       }
     }
 

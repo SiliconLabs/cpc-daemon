@@ -22,4 +22,8 @@
 
 void board_controller_get_config_vcom(const char *ip_address, unsigned int *baudrate, bool *flowcontrol);
 
+// Parse WSTK configuration from buffer (for unit testing)
+// Returns 0 on success, -1 on error
+int board_controller_parse_wstk_config(const char *buffer, unsigned int *baudrate, bool *flowcontrol);
+
 #endif // BOARD_CONTROLLER_H

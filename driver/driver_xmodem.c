@@ -196,7 +196,7 @@ sl_status_t xmodem_uart_firmware_upgrade(const char* image_file, const char *dev
           break;
       }
 
-      trace_no_timestamp("%c", status);
+      TRACE_NAKED("%c", status);
 
       if (proceed_to_next_frame) {
         frame.seq++;
@@ -213,7 +213,7 @@ sl_status_t xmodem_uart_firmware_upgrade(const char* image_file, const char *dev
     TRACE_XMODEM("Transfer of file \"%s\" completed with %u retransmits.", image_file, retransmit_count);
   }
 
-  trace_no_timestamp("\n");
+  TRACE_NAKED("\n");
 
   // Complete the transfer by sending EOF symbol
   const uint8_t eof = XMODEM_CMD_EOT;

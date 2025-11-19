@@ -1,5 +1,4 @@
-# 3.7: VERSION_GREATER_EQUAL
-cmake_minimum_required(VERSION 3.7)
+cmake_minimum_required(VERSION 3.10)
 
 include(FindPackageHandleStandardArgs)
 

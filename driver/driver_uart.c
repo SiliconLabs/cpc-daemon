@@ -314,11 +314,21 @@ int driver_uart_open(const char *device, unsigned int baudrate, bool hardflow)
     { 115200, B115200 },
     { 230400, B230400 },
     { 460800, B460800 },
+    { 500000, B500000 },
+    { 576000, B576000 },
     { 921600, B921600 },
+    { 1000000, B1000000 },
+    { 1152000, B1152000 },
+    { 1500000, B1500000 },
+    { 2000000, B2000000 },
   };
   struct termios tty;
   int sym_baudrate = -1;
   int fd;
+
+  if (baudrate > 921600 && !hardflow) {
+    FATAL("Hardware flow control (RTS/CTS) must be enabled for baudrates above 921600");
+  }
 
   fd = open(device, O_RDWR | O_CLOEXEC);
   if (fd < 0) {

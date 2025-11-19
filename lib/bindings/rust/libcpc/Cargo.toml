@@ -11,7 +11,3 @@ license-file = "LICENSE"
 libcpc-sys = { path = "../libcpc-sys" }
 num_enum = "0.7.2"
 thiserror = "1.0.56"
-
-[dev-dependencies]
-more-asserts = "0.3.1"
-serial_test = "3.0.0"

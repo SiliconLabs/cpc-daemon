@@ -418,67 +418,67 @@ static void logging_print_stats(epoll_private_data_t *event_private_data)
     FATAL_ON(ret < 0);
   }
 
-  TRACE("Host core debug counters:"
-        "\nendpoint_opened %u"
-        "\nendpoint_closed %u"
-        "\nrxd_frame %u"
-        "\nrxd_valid_iframe %u"
-        "\nrxd_valid_uframe %u"
-        "\nrxd_valid_sframe %u"
-        "\nrxd_data_frame_dropped %u"
-        "\ntxd_reject_destination_unreachable %u"
-        "\ntxd_reject_error_fault %u"
-        "\ntxd_completed %u"
-        "\nretxd_data_frame %u"
-        "\ndriver_packet_dropped %u"
-        "\ninvalid_header_checksum %u"
-        "\ninvalid_payload_checksum %u\n",
-        primary_core_debug_counters.endpoint_opened,
-        primary_core_debug_counters.endpoint_closed,
-        primary_core_debug_counters.rxd_frame,
-        primary_core_debug_counters.rxd_valid_iframe,
-        primary_core_debug_counters.rxd_valid_uframe,
-        primary_core_debug_counters.rxd_valid_sframe,
-        primary_core_debug_counters.rxd_data_frame_dropped,
-        primary_core_debug_counters.txd_reject_destination_unreachable,
-        primary_core_debug_counters.txd_reject_error_fault,
-        primary_core_debug_counters.txd_completed,
-        primary_core_debug_counters.retxd_data_frame,
-        primary_core_debug_counters.driver_packet_dropped,
-        primary_core_debug_counters.invalid_header_checksum,
-        primary_core_debug_counters.invalid_payload_checksum);
+  TRACE_DEBUG("Host core debug counters:"
+              "\nendpoint_opened %u"
+              "\nendpoint_closed %u"
+              "\nrxd_frame %u"
+              "\nrxd_valid_iframe %u"
+              "\nrxd_valid_uframe %u"
+              "\nrxd_valid_sframe %u"
+              "\nrxd_data_frame_dropped %u"
+              "\ntxd_reject_destination_unreachable %u"
+              "\ntxd_reject_error_fault %u"
+              "\ntxd_completed %u"
+              "\nretxd_data_frame %u"
+              "\ndriver_packet_dropped %u"
+              "\ninvalid_header_checksum %u"
+              "\ninvalid_payload_checksum %u\n",
+              primary_core_debug_counters.endpoint_opened,
+              primary_core_debug_counters.endpoint_closed,
+              primary_core_debug_counters.rxd_frame,
+              primary_core_debug_counters.rxd_valid_iframe,
+              primary_core_debug_counters.rxd_valid_uframe,
+              primary_core_debug_counters.rxd_valid_sframe,
+              primary_core_debug_counters.rxd_data_frame_dropped,
+              primary_core_debug_counters.txd_reject_destination_unreachable,
+              primary_core_debug_counters.txd_reject_error_fault,
+              primary_core_debug_counters.txd_completed,
+              primary_core_debug_counters.retxd_data_frame,
+              primary_core_debug_counters.driver_packet_dropped,
+              primary_core_debug_counters.invalid_header_checksum,
+              primary_core_debug_counters.invalid_payload_checksum);
 
-  TRACE("RCP core debug counters"
-        "\nendpoint_opened %u"
-        "\nendpoint_closed %u"
-        "\nrxd_frame %u"
-        "\nrxd_valid_iframe %u"
-        "\nrxd_valid_uframe %u"
-        "\nrxd_valid_sframe %u"
-        "\nrxd_data_frame_dropped %u"
-        "\ntxd_reject_destination_unreachable %u"
-        "\ntxd_reject_error_fault %u"
-        "\ntxd_completed %u"
-        "\nretxd_data_frame %u"
-        "\ndriver_error %u"
-        "\ndriver_packet_dropped %u"
-        "\ninvalid_header_checksum %u"
-        "\ninvalid_payload_checksum %u\n",
-        secondary_core_debug_counters.endpoint_opened,
-        secondary_core_debug_counters.endpoint_closed,
-        secondary_core_debug_counters.rxd_frame,
-        secondary_core_debug_counters.rxd_valid_iframe,
-        secondary_core_debug_counters.rxd_valid_uframe,
-        secondary_core_debug_counters.rxd_valid_sframe,
-        secondary_core_debug_counters.rxd_data_frame_dropped,
-        secondary_core_debug_counters.txd_reject_destination_unreachable,
-        secondary_core_debug_counters.txd_reject_error_fault,
-        secondary_core_debug_counters.txd_completed,
-        secondary_core_debug_counters.retxd_data_frame,
-        secondary_core_debug_counters.driver_error,
-        secondary_core_debug_counters.driver_packet_dropped,
-        secondary_core_debug_counters.invalid_header_checksum,
-        secondary_core_debug_counters.invalid_payload_checksum);
+  TRACE_DEBUG("RCP core debug counters"
+              "\nendpoint_opened %u"
+              "\nendpoint_closed %u"
+              "\nrxd_frame %u"
+              "\nrxd_valid_iframe %u"
+              "\nrxd_valid_uframe %u"
+              "\nrxd_valid_sframe %u"
+              "\nrxd_data_frame_dropped %u"
+              "\ntxd_reject_destination_unreachable %u"
+              "\ntxd_reject_error_fault %u"
+              "\ntxd_completed %u"
+              "\nretxd_data_frame %u"
+              "\ndriver_error %u"
+              "\ndriver_packet_dropped %u"
+              "\ninvalid_header_checksum %u"
+              "\ninvalid_payload_checksum %u\n",
+              secondary_core_debug_counters.endpoint_opened,
+              secondary_core_debug_counters.endpoint_closed,
+              secondary_core_debug_counters.rxd_frame,
+              secondary_core_debug_counters.rxd_valid_iframe,
+              secondary_core_debug_counters.rxd_valid_uframe,
+              secondary_core_debug_counters.rxd_valid_sframe,
+              secondary_core_debug_counters.rxd_data_frame_dropped,
+              secondary_core_debug_counters.txd_reject_destination_unreachable,
+              secondary_core_debug_counters.txd_reject_error_fault,
+              secondary_core_debug_counters.txd_completed,
+              secondary_core_debug_counters.retxd_data_frame,
+              secondary_core_debug_counters.driver_error,
+              secondary_core_debug_counters.driver_packet_dropped,
+              secondary_core_debug_counters.invalid_header_checksum,
+              secondary_core_debug_counters.invalid_payload_checksum);
 
 #ifndef UNIT_TESTING
   if (config.bus == UART) {
@@ -568,69 +568,33 @@ static size_t get_time_string(char *slice, size_t slice_len)
   return TIME_STR_LEN;
 }
 
-void trace(const bool force_stdout, const char* string, ...)
+static size_t append_timestamp(char *log_string, size_t log_string_length, size_t buffer_size)
 {
-  char log_string[LOGGING_BUF_SIZE];
-  size_t log_string_length = 0;
-  int errno_backup = errno;
-
-  if (!config.file_tracing && !config.stdout_tracing && !force_stdout) {
-    return;
+  // Check if we have enough space for timestamp: '[' + timestamp + ']' + ' '
+  if (buffer_size < log_string_length + TIME_STR_LEN + 3) {
+    return log_string_length;
   }
 
-  // Append the time stamp
-  {
-    log_string[log_string_length++] = '[';
-    log_string_length += get_time_string(log_string + log_string_length, sizeof(log_string) - log_string_length);
-    log_string[log_string_length++] = ']';
-    log_string[log_string_length++] = ' ';
-  }
+  log_string[log_string_length++] = '[';
+  log_string_length += get_time_string(log_string + log_string_length, buffer_size - log_string_length);
+  log_string[log_string_length++] = ']';
+  log_string[log_string_length++] = ' ';
 
-  // Append formated text
-  {
-    va_list vl;
-
-    va_start(vl, string);
-    {
-      size_t size = sizeof(log_string) - log_string_length;
-
-      int nchar = vsnprintf(&log_string[log_string_length], size, string, vl);
-
-      NO_LOGGING_FATAL_ON(nchar < 0);
-
-      if ((size_t)nchar >= size) {
-        fprintf(stderr, "Truncated log message");
-        // The string was truncated, terminate it properly
-        log_string[sizeof(log_string) - 1] = '\n';
-        log_string_length = sizeof(log_string);
-      } else {
-        log_string_length += (size_t)nchar;
-      }
-    }
-    va_end(vl);
-  }
-
-  if (config.stdout_tracing || force_stdout) {
-    stdio_log(log_string, log_string_length);
-  }
-  if (config.file_tracing) {
-    file_log(log_string, log_string_length);
-  }
-
-  errno = errno_backup;
+  return log_string_length;
 }
 
-void trace_no_timestamp(const char* string, ...)
+void trace(bool timestamp, const char* string, ...)
 {
   char log_string[LOGGING_BUF_SIZE];
   size_t log_string_length = 0;
   int errno_backup = errno;
 
-  if (!config.file_tracing && !config.stdout_tracing) {
-    return;
+  // Append timestamp
+  if (timestamp) {
+    log_string_length = append_timestamp(log_string, log_string_length, sizeof(log_string));
   }
 
-  // Append formated text
+  // Append formatted text
   {
     va_list vl;
 
@@ -654,9 +618,8 @@ void trace_no_timestamp(const char* string, ...)
     va_end(vl);
   }
 
-  if (config.stdout_tracing) {
-    stdio_log(log_string, log_string_length);
-  }
+  stdio_log(log_string, log_string_length);
+
   if (config.file_tracing) {
     file_log(log_string, log_string_length);
   }
@@ -678,28 +641,15 @@ void trace_frame(const char* string, const void* buffer, size_t len)
   uint8_t* frame = (uint8_t*) buffer;
   int errno_backup = errno;
 
-  if ((!config.file_tracing && !config.stdout_tracing) || config.enable_frame_trace == false) {
-    return;
-  }
+  // Append timestamp
+  log_string_length = append_timestamp(log_string, log_string_length, sizeof(log_string));
 
-  // Append the time stamp
-  {
-    log_string[log_string_length++] = '[';
-    log_string_length += get_time_string(log_string + log_string_length, sizeof(log_string) - log_string_length);
-    if (sizeof(log_string) > (log_string_length + 2)) {
-      log_string[log_string_length++] = ']';
-      log_string[log_string_length++] = ' ';
-    }
-  }
-
-  // Append  string up to buffer
+  // Append string up to buffer
   for (size_t i = 0; string[i] != '\0'; i++) {
     // Edge case where the string itself can fill the whole buffer..
     if (log_string_length >= sizeof(log_string)) {
       // Flush the buffer
-      if (config.stdout_tracing) {
-        stdio_log(log_string, log_string_length);
-      }
+      stdio_log(log_string, log_string_length);
       if (config.file_tracing) {
         file_log(log_string, log_string_length);
       }
@@ -717,9 +667,7 @@ void trace_frame(const char* string, const void* buffer, size_t len)
     // in the middle of the parsing, flush the buffer
     if (log_string_length >= sizeof(log_string) - sizeof("xx:")) {
       // Flush the buffer
-      if (config.stdout_tracing) {
-        stdio_log(log_string, log_string_length);
-      }
+      stdio_log(log_string, log_string_length);
       if (config.file_tracing) {
         file_log(log_string, log_string_length);
       }
@@ -738,9 +686,7 @@ void trace_frame(const char* string, const void* buffer, size_t len)
   if (log_string_length) {
     log_string[log_string_length - 1] = '\n';
 
-    if (config.stdout_tracing) {
-      stdio_log(log_string, log_string_length);
-    }
+    stdio_log(log_string, log_string_length);
     if (config.file_tracing) {
       file_log(log_string, log_string_length);
     }

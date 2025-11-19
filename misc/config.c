@@ -66,7 +66,7 @@ config_t config = {
 
   .operation_mode = MODE_NORMAL,
 
-  .use_encryption = false,
+  .use_encryption = true,
 
   .binding_key_file = "~/.cpcd/binding.key",
 
@@ -74,17 +74,16 @@ config_t config = {
 
   .binding_method = NULL,
 
-  .stdout_tracing = false,
+  .trace_level = CPC_TRACE_LEVEL_INFO,
   .file_tracing = true, // Set to true to have the chance to catch early traces. It will be set to false after config file parsing.
   .lttng_tracing = false,
-  .enable_frame_trace = false,
   .traces_folder = "/dev/shm/cpcd-traces", // must be mounted on a tmpfs
 
   .bus = UNCHOSEN,
 
   // UART config
   .uart_baudrate = 115200,
-  .uart_hardflow = false,
+  .uart_hardflow = true,
   .uart_file = NULL,
 
   // SPI config
@@ -113,7 +112,7 @@ config_t config = {
 
   .use_noop_keep_alive = false,
 
-  .reset_sequence = true,
+  .reset_sequence = RESET_SEQUENCE_HARD_RESET,
 
   .uart_validation_test_option = NULL,
 
@@ -136,15 +135,24 @@ static void config_set_rlimit_nofile(void);
 
 static void config_validate_configuration(void);
 
-static void config_parse_config_file(void);
+static cpc_trace_level_t config_parse_config_file(void);
 
 static void config_expand_binding_key_location(void);
 
 static void config_parse_multicast_endpoints(const char *input);
 
+static void config_set_trace_level(cpc_trace_level_t level);
+
+static const char* config_trace_level_to_str(cpc_trace_level_t value);
+
 /*******************************************************************************
  ****************************  IMPLEMENTATION   ********************************
  ******************************************************************************/
+static void config_set_trace_level(cpc_trace_level_t level)
+{
+  config.trace_level = level;
+}
+
 static const char* config_bool_to_str(bool value)
 {
   return value ? "true" : "false";
@@ -197,6 +205,38 @@ static const char* config_operation_mode_to_str(operation_mode_t value)
   }
 }
 
+static const char* config_reset_sequence_to_str(reset_sequence_mode_t value)
+{
+  switch (value) {
+    case RESET_SEQUENCE_NONE:
+      return "None";
+    case RESET_SEQUENCE_SOFT_RESET:
+      return "Soft Reset";
+    case RESET_SEQUENCE_HARD_RESET:
+      return "Hard Reset";
+    default:
+      FATAL("reset_sequence_mode_t value not supported (%d)", value);
+  }
+}
+
+static const char* config_trace_level_to_str(cpc_trace_level_t value)
+{
+  switch (value) {
+    case CPC_TRACE_LEVEL_ERROR:
+      return "error";
+    case CPC_TRACE_LEVEL_WARN:
+      return "warn";
+    case CPC_TRACE_LEVEL_INFO:
+      return "info";
+    case CPC_TRACE_LEVEL_DEBUG:
+      return "debug";
+    case CPC_TRACE_LEVEL_FRAME:
+      return "frame";
+    default:
+      BUG("cpc_trace_level_t value not supported (%d)", value);
+  }
+}
+
 #define CONFIG_PREFIX_LEN(variable) (strlen(#variable) + 1)
 
 #define CONFIG_PRINT_SILENCE(value)                 \
@@ -230,10 +270,22 @@ static const char* config_operation_mode_to_str(operation_mode_t value)
     run_time_total_size += (uint32_t)sizeof(value);                                        \
   } while (0)
 
+#define CONFIG_PRINT_RESET_SEQUENCE_TO_STR(value)                                          \
+  do {                                                                                     \
+    PRINT_INFO("  %s = %s", &(#value)[print_offset], config_reset_sequence_to_str(value)); \
+    run_time_total_size += (uint32_t)sizeof(value);                                        \
+  } while (0)
+
 #define CONFIG_PRINT_BUS_TO_STR(value)                                          \
   do {                                                                          \
     PRINT_INFO("  %s = %s", &(#value)[print_offset], config_bus_to_str(value)); \
     run_time_total_size += (uint32_t)sizeof(value);                             \
+  } while (0)
+
+#define CONFIG_PRINT_TRACE_LEVEL_TO_STR(name, value)                                   \
+  do {                                                                                 \
+    PRINT_INFO("  %s = %s", &(#name)[print_offset], config_trace_level_to_str(value)); \
+    run_time_total_size += (uint32_t)sizeof(value);                                    \
   } while (0)
 
 #define CONFIG_PRINT_DEC_COND(value, cond)                     \
@@ -288,10 +340,8 @@ static const char* config_operation_mode_to_str(operation_mode_t value)
     run_time_total_size += (uint32_t)sizeof(value);                                     \
   } while (0)
 
-static void config_print(void)
+static void config_print(cpc_trace_level_t trace_level)
 {
-  PRINT_INFO("Reading configuration");
-
   size_t print_offset = CONFIG_PREFIX_LEN(config);
 
   uint32_t compile_time_total_size = (uint32_t)sizeof(config_t);
@@ -312,10 +362,9 @@ static void config_print(void)
 
   CONFIG_PRINT_STR(config.binding_method);
 
-  CONFIG_PRINT_BOOL_TO_STR(config.stdout_tracing);
+  CONFIG_PRINT_TRACE_LEVEL_TO_STR(config.trace_level, trace_level);
   CONFIG_PRINT_BOOL_TO_STR(config.file_tracing);
   CONFIG_PRINT_BOOL_TO_STR(config.lttng_tracing);
-  CONFIG_PRINT_BOOL_TO_STR(config.enable_frame_trace);
   CONFIG_PRINT_STR(config.traces_folder);
 
   CONFIG_PRINT_BUS_TO_STR(config.bus);
@@ -348,7 +397,7 @@ static void config_print(void)
 
   CONFIG_PRINT_BOOL_TO_STR(config.use_noop_keep_alive);
 
-  CONFIG_PRINT_BOOL_TO_STR(config.reset_sequence);
+  CONFIG_PRINT_RESET_SEQUENCE_TO_STR(config.reset_sequence);
 
   CONFIG_PRINT_STR(config.uart_validation_test_option);
 
@@ -365,9 +414,11 @@ static void config_print(void)
 
 void config_init(int argc, char *argv[])
 {
+  cpc_trace_level_t trace_level;
+
   config_parse_cli_arg(argc, argv);
 
-  config_parse_config_file();
+  trace_level = config_parse_config_file();
 
   config_expand_binding_key_location();
 
@@ -375,7 +426,9 @@ void config_init(int argc, char *argv[])
 
   config_set_rlimit_nofile();
 
-  config_print();
+  config_print(trace_level);
+
+  config_set_trace_level(trace_level);
 }
 
 static void config_expand_binding_key_location(void)
@@ -454,25 +507,41 @@ static void print_cli_args(int argc, char *argv[])
 #define ARGV_OPT_ENTER_BOOTLOADER       "enter-bootloader"
 #define ARGV_OPT_CONNECT_TO_BOOTLOADER  "connect-to-bootloader"
 #define ARGV_OPT_UART_VALIDATION        "uart-validation"
-#define ARGV_OPT_BOARD_CONTROLLER       "board-controller"
+#define ARGV_OPT_WIRELESS_KIT           "wireless-kit-ip"
+
+#define ARGV_OPT_SHORT_CONF                   'c'
+#define ARGV_OPT_SHORT_PRINT_STATS            's'
+#define ARGV_OPT_SHORT_HELP                   'h'
+#define ARGV_OPT_SHORT_VERSION                'v'
+#define ARGV_OPT_SHORT_SECONDARY_VERSIONS     'p'
+#define ARGV_OPT_SHORT_APP_VERSION            'a'
+#define ARGV_OPT_SHORT_BIND                   'b'
+#define ARGV_OPT_SHORT_UNBIND                 'u'
+#define ARGV_OPT_SHORT_KEY                    'k'
+#define ARGV_OPT_SHORT_FIRMWARE_UPDATE        'f'
+#define ARGV_OPT_SHORT_RESTART_CPCD           'r'
+#define ARGV_OPT_SHORT_ENTER_BOOTLOADER       'e'
+#define ARGV_OPT_SHORT_CONNECT_TO_BOOTLOADER  'l'
+#define ARGV_OPT_SHORT_UART_VALIDATION        't'
+#define ARGV_OPT_SHORT_WIRELESS_KIT           'w'
 
 const struct option argv_opt_list[] =
 {
-  { ARGV_OPT_CONF, required_argument, 0, 'c' },
-  { ARGV_OPT_PRINT_STATS, required_argument, 0, 's' },
-  { ARGV_OPT_HELP, no_argument, 0, 'h' },
-  { ARGV_OPT_VERSION, no_argument, 0, 'v' },
-  { ARGV_OPT_SECONDARY_VERSIONS, no_argument, 0, 'p' },
-  { ARGV_OPT_BIND, required_argument, 0, 'b' },
-  { ARGV_OPT_UNBIND, no_argument, 0, 'u' },
-  { ARGV_OPT_KEY, required_argument, 0, 'k' },
-  { ARGV_OPT_FIRMWARE_UPDATE, required_argument, 0, 'f' },
-  { ARGV_OPT_APP_VERSION, required_argument, 0, 'a' },
-  { ARGV_OPT_RESTART_CPCD, no_argument, 0, 'r' },
-  { ARGV_OPT_ENTER_BOOTLOADER, no_argument, 0, 'e' },
-  { ARGV_OPT_CONNECT_TO_BOOTLOADER, no_argument, 0, 'l' },
-  { ARGV_OPT_UART_VALIDATION, required_argument, 0, 't' },
-  { ARGV_OPT_BOARD_CONTROLLER, required_argument, 0, 'w' },
+  { ARGV_OPT_CONF, required_argument, 0, ARGV_OPT_SHORT_CONF },
+  { ARGV_OPT_PRINT_STATS, required_argument, 0, ARGV_OPT_SHORT_PRINT_STATS },
+  { ARGV_OPT_HELP, no_argument, 0, ARGV_OPT_SHORT_HELP },
+  { ARGV_OPT_VERSION, no_argument, 0, ARGV_OPT_SHORT_VERSION },
+  { ARGV_OPT_SECONDARY_VERSIONS, no_argument, 0, ARGV_OPT_SHORT_SECONDARY_VERSIONS },
+  { ARGV_OPT_BIND, required_argument, 0, ARGV_OPT_SHORT_BIND },
+  { ARGV_OPT_UNBIND, no_argument, 0, ARGV_OPT_SHORT_UNBIND },
+  { ARGV_OPT_KEY, required_argument, 0, ARGV_OPT_SHORT_KEY },
+  { ARGV_OPT_FIRMWARE_UPDATE, required_argument, 0, ARGV_OPT_SHORT_FIRMWARE_UPDATE },
+  { ARGV_OPT_APP_VERSION, required_argument, 0, ARGV_OPT_SHORT_APP_VERSION },
+  { ARGV_OPT_RESTART_CPCD, no_argument, 0, ARGV_OPT_SHORT_RESTART_CPCD },
+  { ARGV_OPT_ENTER_BOOTLOADER, no_argument, 0, ARGV_OPT_SHORT_ENTER_BOOTLOADER },
+  { ARGV_OPT_CONNECT_TO_BOOTLOADER, no_argument, 0, ARGV_OPT_SHORT_CONNECT_TO_BOOTLOADER },
+  { ARGV_OPT_UART_VALIDATION, required_argument, 0, ARGV_OPT_SHORT_UART_VALIDATION },
+  { ARGV_OPT_WIRELESS_KIT, required_argument, 0, ARGV_OPT_SHORT_WIRELESS_KIT },
   { 0, 0, 0, 0  }
 };
 
@@ -498,26 +567,26 @@ static void config_parse_cli_arg(int argc, char *argv[])
     switch (opt) {
       case 0:
         break;
-      case 'c':
+      case ARGV_OPT_SHORT_CONF:
         config.file_path = optarg;
         break;
-      case 's':
+      case ARGV_OPT_SHORT_PRINT_STATS:
         config.stats_interval = (int)strtol(optarg, NULL, 0);
         FATAL_ON(config.stats_interval <= 0);
         break;
-      case 'h':
+      case ARGV_OPT_SHORT_HELP:
         config_print_help(stdout, 0);
         break;
-      case 'v':
+      case ARGV_OPT_SHORT_VERSION:
         config_print_version(stdout, 0);
         break;
-      case 'a':
+      case ARGV_OPT_SHORT_APP_VERSION:
         config.application_version_validation = optarg;
         break;
-      case 'p':
+      case ARGV_OPT_SHORT_SECONDARY_VERSIONS:
         config.print_secondary_versions_and_exit = true;
         break;
-      case 'b':
+      case ARGV_OPT_SHORT_BIND:
         if (config.operation_mode == MODE_NORMAL) {
           config.operation_mode = MODE_BINDING_UNKNOWN;
         } else {
@@ -536,19 +605,19 @@ static void config_parse_cli_arg(int argc, char *argv[])
           }
         }
         break;
-      case 'u':
+      case ARGV_OPT_SHORT_UNBIND:
         if (config.operation_mode == MODE_NORMAL) {
           config.operation_mode = MODE_BINDING_UNBIND;
         } else {
           FATAL("Multiple non normal mode flag detected.");
         }
         break;
-      case 'k':
+      case ARGV_OPT_SHORT_KEY:
         config.binding_key_override = true;
         config.binding_key_file = strdup(optarg);
         FATAL_ON(config.binding_key_file == NULL);
         break;
-      case 'f':
+      case ARGV_OPT_SHORT_FIRMWARE_UPDATE:
         config.fwu_file = optarg;
         if (config.operation_mode == MODE_NORMAL) {
           config.operation_mode = MODE_FIRMWARE_UPDATE;
@@ -556,10 +625,10 @@ static void config_parse_cli_arg(int argc, char *argv[])
           FATAL("Multiple non normal mode flag detected.");
         }
         break;
-      case 'r':
+      case ARGV_OPT_SHORT_RESTART_CPCD:
         config.restart_cpcd = true;
         break;
-      case 't':
+      case ARGV_OPT_SHORT_UART_VALIDATION:
         config.uart_validation_test_option = optarg;
         if (config.operation_mode == MODE_NORMAL) {
           config.operation_mode = MODE_UART_VALIDATION;
@@ -567,13 +636,13 @@ static void config_parse_cli_arg(int argc, char *argv[])
           FATAL("Multiple non normal mode flag detected.");
         }
         break;
-      case 'w':
+      case ARGV_OPT_SHORT_WIRELESS_KIT:
         config.board_controller_ip_addr = optarg;
         break;
-      case 'l':
+      case ARGV_OPT_SHORT_CONNECT_TO_BOOTLOADER:
         config.fwu_connect_to_bootloader = true;
         break;
-      case 'e':
+      case ARGV_OPT_SHORT_ENTER_BOOTLOADER:
         config.fwu_enter_bootloader = true;
         break;
       case '?':
@@ -819,7 +888,7 @@ static void config_parse_multicast_endpoints(const char *input)
   }
 }
 
-static void config_parse_config_file(void)
+static cpc_trace_level_t config_parse_config_file(void)
 {
   FILE *config_file = NULL;
   char name[128] = { 0 };
@@ -827,6 +896,9 @@ static void config_parse_config_file(void)
   char line[2048] = { 0 };
   char *endptr = NULL;
   int tmp_config_file_tracing = 0;
+  cpc_trace_level_t tmp_config_trace_level = CPC_TRACE_LEVEL_INFO;
+
+  PRINT_INFO("Reading configuration");
 
   // By default, all endpoints are enabled for multicast
   memset(config.multicast_endpoints, true, sizeof(config.multicast_endpoints));
@@ -926,14 +998,6 @@ static void config_parse_config_file(void)
       } else {
         FATAL("Config file error : bad noop_keep_alive value");
       }
-    } else if (0 == strcmp(name, "stdout_trace")) {
-      if (0 == strcmp(val, "true")) {
-        config.stdout_tracing = true;
-      } else if (0 == strcmp(val, "false")) {
-        config.stdout_tracing = false;
-      } else {
-        FATAL("Config file error : bad stdout_trace value");
-      }
     } else if (0 == strcmp(name, "trace_to_file")) {
       if (0 == strcmp(val, "true")) {
         tmp_config_file_tracing = true;
@@ -942,13 +1006,33 @@ static void config_parse_config_file(void)
       } else {
         FATAL("Config file error : bad trace_to_file value");
       }
+    } else if (0 == strcmp(name, "trace_level")) {
+      if (0 == strcmp(val, "error")) {
+        tmp_config_trace_level = CPC_TRACE_LEVEL_ERROR;
+      } else if (0 == strcmp(val, "warn")) {
+        tmp_config_trace_level = CPC_TRACE_LEVEL_WARN;
+      } else if (0 == strcmp(val, "info")) {
+        tmp_config_trace_level = CPC_TRACE_LEVEL_INFO;
+      } else if (0 == strcmp(val, "debug")) {
+        tmp_config_trace_level = CPC_TRACE_LEVEL_DEBUG;
+      } else if (0 == strcmp(val, "frame")) {
+        tmp_config_trace_level = CPC_TRACE_LEVEL_FRAME;
+      } else {
+        FATAL("Config file error : bad trace_level value (must be: error, warn, info, debug, or frame)");
+      }
+    } else if (0 == strcmp(name, "stdout_trace")) {
+      if (0 == strcmp(val, "true")) {
+        tmp_config_trace_level = tmp_config_trace_level > CPC_TRACE_LEVEL_DEBUG ? tmp_config_trace_level : CPC_TRACE_LEVEL_DEBUG;
+        WARN("DEPRECATED: 'stdout_trace' config option is deprecated, use 'trace_level' instead. 'trace_level' is now set to %s.", config_trace_level_to_str(tmp_config_trace_level));
+      } else if (0 != strcmp(val, "false")) {
+        FATAL("DEPRECATED: 'stdout_trace' only supports true/false. This config option is deprecated, use 'trace_level' instead.");
+      }
     } else if (0 == strcmp(name, "enable_frame_trace")) {
       if (0 == strcmp(val, "true")) {
-        config.enable_frame_trace = true;
-      } else if (0 == strcmp(val, "false")) {
-        config.enable_frame_trace = false;
-      } else {
-        FATAL("Config file error : bad enable_frame_trace value");
+        tmp_config_trace_level = CPC_TRACE_LEVEL_FRAME;
+        WARN("DEPRECATED: 'enable_frame_trace' config option is deprecated, use 'trace_level' instead. 'trace_level' is now set to %s.", config_trace_level_to_str(tmp_config_trace_level));
+      } else if (0 != strcmp(val, "false")) {
+        FATAL("DEPRECATED: 'enable_frame_trace' only supports true/false. This config option is deprecated, use 'trace_level' instead.");
       }
     } else if (0 == strcmp(name, "disable_encryption")) {
       if (0 == strcmp(val, "true")) {
@@ -959,10 +1043,17 @@ static void config_parse_config_file(void)
         FATAL("Config file error : bad disable_encryption value");
       }
     } else if (0 == strcmp(name, "reset_sequence")) {
-      if (0 == strcmp(val, "true")) {
-        config.reset_sequence = true;
-      } else if (0 == strcmp(val, "false")) {
-        config.reset_sequence = false;
+      // Legacy mode only supported "true" or "false" value.
+      // Now cpcd supports: false|none, soft, true|hard. Legacy values behave
+      // the same as before, but with the introduction of the "soft" mode,
+      // "none" and "hard" have been added to complement and be more
+      // comprehensive.
+      if (0 == strcmp(val, "true") || 0 == strcmp(val, "hard")) {
+        config.reset_sequence = RESET_SEQUENCE_HARD_RESET;
+      } else if (0 == strcmp(val, "false") || 0 == strcmp(val, "none")) {
+        config.reset_sequence = RESET_SEQUENCE_NONE;
+      } else if (0 == strcmp(val, "soft")) {
+        config.reset_sequence = RESET_SEQUENCE_SOFT_RESET;
       } else {
         FATAL("Config file error : bad reset_sequence value");
       }
@@ -1001,6 +1092,8 @@ static void config_parse_config_file(void)
   config.file_tracing = tmp_config_file_tracing;
 
   fclose(config_file);
+
+  return tmp_config_trace_level;
 }
 
 /*
@@ -1232,20 +1325,20 @@ static void config_print_help(FILE *stream, int exit_code)
   fprintf(stream, "Start CPC daemon\n");
   fprintf(stream, "\n");
   fprintf(stream, "Usage:\n");
-  fprintf(stream, "  cpcd -h/--help : prints this message.\n");
-  fprintf(stream, "  cpcd -c/--conf <file> : manually specify the config file.\n");
-  fprintf(stream, "  cpcd -v/--version : get the version of the daemon and exit.\n");
-  fprintf(stream, "  cpcd -p/--secondary-versions : get all secondary versions (protocol, cpc, app) and exit.\n");
-  fprintf(stream, "  cpcd -a/--app-version <version> : specify the application version to match.\n");
-  fprintf(stream, "  cpcd -f/--firmware-update <file> : specify the .gbl file to update the secondary's firmware with.\n");
-  fprintf(stream, "  cpcd -r/--restart-cpcd : restart the daemon. Only supported with --firmware-update or --bind.\n");
-  fprintf(stream, "  cpcd -e/--enter-bootloader : restart the secondary device in bootloader and exit.\n");
-  fprintf(stream, "  cpcd -l/--connect-to-bootloader : connect directly to bootloader. Only supported with --firmware-update.\n");
-  fprintf(stream, "  cpcd -b/--bind <method> : bind to the secondary using the provided key in the config file or the --key argument. Currently supported methods: ecdh or plain-text.\n");
-  fprintf(stream, "  cpcd -u/--unbind : attempt to unbind from the secondary.\n");
-  fprintf(stream, "  cpcd -k/--key <file> : provide the binding keyfile to read from or write to, this argument will override the BINDING_KEY_FILE config.\n");
-  fprintf(stream, "  cpcd -s/--print-stats <interval> : print debug statistics to traces. Must provide a given interval in seconds.\n");
-  fprintf(stream, "  cpcd -w/--wireless-kit-ip <ipaddress> : validates board controller vcom configuration.\n");
-  fprintf(stream, "  cpcd -t/--uart-validation <test> : provide test option to run: 1 -> RX/TX, 2 -> RTS/CTS.\n");
+  fprintf(stream, "  cpcd -%c/--%s : prints this message.\n", ARGV_OPT_SHORT_HELP, ARGV_OPT_HELP);
+  fprintf(stream, "  cpcd -%c/--%s <file> : manually specify the config file.\n", ARGV_OPT_SHORT_CONF, ARGV_OPT_CONF);
+  fprintf(stream, "  cpcd -%c/--%s : get the version of the daemon and exit.\n", ARGV_OPT_SHORT_VERSION, ARGV_OPT_VERSION);
+  fprintf(stream, "  cpcd -%c/--%s : get all secondary versions (protocol, cpc, app) and exit.\n", ARGV_OPT_SHORT_SECONDARY_VERSIONS, ARGV_OPT_SECONDARY_VERSIONS);
+  fprintf(stream, "  cpcd -%c/--%s <version> : specify the application version to match.\n", ARGV_OPT_SHORT_APP_VERSION, ARGV_OPT_APP_VERSION);
+  fprintf(stream, "  cpcd -%c/--%s <file> : specify the .gbl file to update the secondary's firmware with.\n", ARGV_OPT_SHORT_FIRMWARE_UPDATE, ARGV_OPT_FIRMWARE_UPDATE);
+  fprintf(stream, "  cpcd -%c/--%s : restart the daemon. Only supported with --%s or --%s.\n", ARGV_OPT_SHORT_RESTART_CPCD, ARGV_OPT_RESTART_CPCD, ARGV_OPT_FIRMWARE_UPDATE, ARGV_OPT_BIND);
+  fprintf(stream, "  cpcd -%c/--%s : restart the secondary device in bootloader and exit.\n", ARGV_OPT_SHORT_ENTER_BOOTLOADER, ARGV_OPT_ENTER_BOOTLOADER);
+  fprintf(stream, "  cpcd -%c/--%s : connect directly to bootloader. Only supported with --%s.\n", ARGV_OPT_SHORT_CONNECT_TO_BOOTLOADER, ARGV_OPT_CONNECT_TO_BOOTLOADER, ARGV_OPT_FIRMWARE_UPDATE);
+  fprintf(stream, "  cpcd -%c/--%s <method> : bind to the secondary using the provided key in the config file or the --%s argument. Currently supported methods: ecdh or plain-text.\n", ARGV_OPT_SHORT_BIND, ARGV_OPT_BIND, ARGV_OPT_KEY);
+  fprintf(stream, "  cpcd -%c/--%s : attempt to unbind from the secondary.\n", ARGV_OPT_SHORT_UNBIND, ARGV_OPT_UNBIND);
+  fprintf(stream, "  cpcd -%c/--%s <file> : provide the binding keyfile to read from or write to, this argument will override the BINDING_KEY_FILE config.\n", ARGV_OPT_SHORT_KEY, ARGV_OPT_KEY);
+  fprintf(stream, "  cpcd -%c/--%s <interval> : print debug statistics to traces. Must provide a given interval in seconds.\n", ARGV_OPT_SHORT_PRINT_STATS, ARGV_OPT_PRINT_STATS);
+  fprintf(stream, "  cpcd -%c/--%s <ipaddress> : validates board controller vcom configuration.\n", ARGV_OPT_SHORT_WIRELESS_KIT, ARGV_OPT_WIRELESS_KIT);
+  fprintf(stream, "  cpcd -%c/--%s <test> : provide test option to run: 1 -> RX/TX, 2 -> RTS/CTS.\n", ARGV_OPT_SHORT_UART_VALIDATION, ARGV_OPT_UART_VALIDATION);
   exit(exit_code);
 }

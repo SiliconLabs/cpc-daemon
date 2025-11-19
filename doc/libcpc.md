@@ -190,7 +190,7 @@ blocking or non-blocking, and change the timeout value when reads are blocking.
   FD_ZERO(&fds);
   FD_SET(ep, &fds);
 
-  ret = select(ep + 1, &fds, NULL, NULL, NULL);
+  ret = select(fd + 1, &fds, NULL, NULL, NULL);
   // check that ret == 1
 
   // 3. Read data from the endpoint

@@ -1,3 +1,15 @@
+cpc-daemon (4.8.0) unstable; urgency=medium
+
+  * See https://github.com/SiliconLabs/cpc-daemon/releases/tag/v4.8.0
+
+ -- Issam Maghni <issam.maghni@silabs.com>  Thu, 29 Jan 2026 15:07:13 -0500
+
+cpc-daemon (4.7.0) unstable; urgency=medium
+
+  * See https://github.com/SiliconLabs/cpc-daemon/releases/tag/v4.7.0
+
+ -- Issam Maghni <issam.maghni@silabs.com>  Tue, 11 Nov 2025 15:44:30 -0400
+
 cpc-daemon (4.6.0) unstable; urgency=medium
 
   * See https://github.com/SiliconLabs/cpc-daemon/releases/tag/v4.6.0

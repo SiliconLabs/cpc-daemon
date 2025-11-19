@@ -55,7 +55,7 @@ static const sli_cpc_system_primary_version_t primary_version = {
   .major = PROJECT_VER_MAJOR,
   .minor = PROJECT_VER_MINOR,
   .patch = PROJECT_VER_PATCH,
-  .tweak = PROJECT_VER_TWEAK
+  .tweak = 0
 };
 #endif
 
@@ -66,6 +66,7 @@ static bool secondary_bus_max_bitrate_received = false;
 
 #if !defined(UNIT_TESTING)
 static bool set_reset_mode_ack = false;
+static bool set_soft_reset_ack = false;
 static bool secondary_cpc_version_received = false;
 static bool set_primary_version_reply_received = false;
 static bool secondary_app_version_received_or_not_available = false;
@@ -97,6 +98,7 @@ static enum {
   SET_NORMAL_REBOOT_MODE,
   WAIT_NORMAL_REBOOT_MODE_ACK,
   WAIT_NORMAL_RESET_ACK,
+  WAIT_SET_SOFT_RESET_ACK,
   WAIT_RESET_REASON,
   WAIT_FOR_CAPABILITIES,
   WAIT_FOR_RX_CAPABILITY,
@@ -154,6 +156,11 @@ static void security_fetch_remote_security_state(epoll_private_data_t *private_d
 
 #if !defined(UNIT_TESTING)
 static void property_set_reset_mode_callback(sli_cpc_property_id_t property_id,
+                                             void *property_value,
+                                             size_t property_length,
+                                             void *user_data,
+                                             sl_status_t status);
+static void property_set_soft_reset_callback(sli_cpc_property_id_t property_id,
                                              void *property_value,
                                              size_t property_length,
                                              void *user_data,
@@ -275,7 +282,7 @@ void server_core_init(int fd_socket_driver_core, int fd_socket_driver_core_notif
 
   // The server is not initialized immediately because we want to perform a successful reset sequence
   // of the secondary before. That is, unless we explicitly disable the reset sequence in the config file
-  if (config.reset_sequence == false) {
+  if (config.reset_sequence == RESET_SEQUENCE_NONE) {
     // FIXME : If we don't perform a reset sequence, the rx_capability won't be fetched. Lets put a very conservative
     // value in place to be able to work.
     rx_capability = 256;
@@ -355,7 +362,7 @@ static void* server_core_thread_func(void* param)
 
   while (1) {
 #if !defined(UNIT_TESTING)
-    if ((config.reset_sequence == true) && (server_core_mode == SERVER_CORE_MODE_NORMAL)) {
+    if ((config.reset_sequence != RESET_SEQUENCE_NONE) && (server_core_mode == SERVER_CORE_MODE_NORMAL)) {
       process_reset_sequence(false);
     }
 
@@ -437,6 +444,51 @@ static void property_set_reset_mode_callback(sli_cpc_property_id_t property_id,
       break;
   }
 }
+
+static void property_set_soft_reset_callback(sli_cpc_property_id_t property_id,
+                                             void *property_value,
+                                             size_t property_length,
+                                             void *user_data,
+                                             sl_status_t status)
+{
+  (void) user_data;
+
+  switch (status) {
+    case SL_STATUS_IN_PROGRESS:
+    case SL_STATUS_OK:
+
+      if (property_id == PROP_LAST_STATUS) {
+        PRINT_INFO("Device doesn't support soft reset, continuing with hard reset");
+        set_soft_reset_ack = true;
+        break;
+      }
+
+      if (property_length != sizeof(sl_cpc_system_status_t)) {
+        FATAL("Set soft reset reply length doesn't match");
+      }
+
+      sl_cpc_system_status_t system_status = (sl_cpc_system_status_t) u32_from_le((const uint8_t *)property_value);
+
+      if (system_status != STATUS_OK) {
+        FATAL("Device did not accept request to enable soft reset");
+      }
+
+      set_soft_reset_ack = true;
+      break;
+
+    case SL_STATUS_TIMEOUT:
+    case SL_STATUS_ABORT:
+      PRINT_INFO("Failed to connect, secondary seems unresponsive");
+      ignore_reset_reason = false; // Don't ignore a secondary that resets
+      reset_sequence_state = SET_NORMAL_REBOOT_MODE;
+      break;
+
+    default:
+      PRINT_INFO("Device doesn't support soft reset, continuing with hard reset");
+      set_soft_reset_ack = true;
+      break;
+  }
+}
 #endif
 
 void reset_callback(sl_status_t status,
@@ -514,7 +566,7 @@ char* server_core_get_secondary_app_version(void)
 #if defined(UNIT_TESTING) || defined(TARGET_TESTING)
   return "UNDEFINED";
 #else
-  if (!config.reset_sequence) {
+  if (config.reset_sequence == RESET_SEQUENCE_NONE) {
     return "UNDEFINED";
   }
 
@@ -821,6 +873,21 @@ static void application_version_check(void)
   }
 }
 
+static void send_reboot_cmd(void)
+{
+  TRACE_RESET("Sending reboot command");
+
+  // Now, request a reset
+  sl_cpc_system_cmd_reboot(reset_callback,
+                           5,       // 5 retries
+                           100000); // 100ms between retries
+
+  reset_sequence_state = WAIT_NORMAL_RESET_ACK;
+
+  // Set it back to false because it will be used for the bootloader reboot sequence
+  set_reset_mode_ack = false;
+}
+
 static void process_reset_sequence(bool firmware_reset_mode)
 {
   switch (reset_sequence_state) {
@@ -853,20 +920,39 @@ static void process_reset_sequence(bool firmware_reset_mode)
       break;
 
     case WAIT_NORMAL_REBOOT_MODE_ACK:
-
       if (set_reset_mode_ack == true) {
-        // Now, request a reset
-        sl_cpc_system_cmd_reboot(reset_callback,
-                                 5,       // 5 retries
-                                 100000); // 100ms between retries
+        uint8_t soft_reset_mode = 1;
 
-        reset_sequence_state = WAIT_NORMAL_RESET_ACK;
+        TRACE_RESET("Reboot mode reply received");
 
-        // Set it back to false because it will be used for the bootloader reboot sequence
-        set_reset_mode_ack = false;
+        if (config.reset_sequence == RESET_SEQUENCE_SOFT_RESET) {
+          sl_cpc_system_cmd_property_set(property_set_soft_reset_callback,
+                                         PROP_SOFT_RESET,
+                                         &soft_reset_mode,
+                                         sizeof(soft_reset_mode),
+                                         NULL,
+                                         1,       // retry once
+                                         2000000, // 2s between retries
+                                         SYSTEM_EP_UFRAME);
 
-        TRACE_RESET("Reboot mode reply received, reset request sent");
+          reset_sequence_state = WAIT_SET_SOFT_RESET_ACK;
+
+          TRACE_RESET("set soft reset sent");
+        } else {
+          send_reboot_cmd();
+        }
       }
+      break;
+
+    case WAIT_SET_SOFT_RESET_ACK:
+      if (set_soft_reset_ack == true) {
+        if (config.reset_sequence == RESET_SEQUENCE_SOFT_RESET) {
+          TRACE_RESET("set soft reset reply received");
+        }
+
+        send_reboot_cmd();
+      }
+
       break;
 
     case WAIT_NORMAL_RESET_ACK:
@@ -1178,7 +1264,7 @@ bool server_core_reset_sequence_in_progress(void)
 
 bool server_core_reset_is_received_reset_reason(void)
 {
-  if (!config.reset_sequence) {
+  if (config.reset_sequence == RESET_SEQUENCE_NONE) {
     return true;
   }
   return reset_reason_received;

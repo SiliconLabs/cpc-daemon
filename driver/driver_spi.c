@@ -31,6 +31,7 @@
 #include <signal.h>
 #include <string.h>
 #include <sys/eventfd.h>
+#include <time.h>
 
 #include "cpcd/logging.h"
 #include "cpcd/sleep.h"
@@ -62,7 +63,7 @@ static bool secondary_started = false;
 
 typedef void (*driver_epoll_callback_t)(void);
 
-static bool wait_for_irq_assert_or_timeout(size_t timeout_us);
+static bool wait_for_irq_assert_or_timeout(time_t timeout_us);
 static void driver_spi_event_core(void);
 static void driver_spi_event_irq(void);
 static void driver_spi_transaction(bool initiated_by_irq_line_event);
@@ -266,9 +267,9 @@ static void driver_spi_event_irq(void)
   driver_spi_transaction(true);
 }
 
-static long t2_minus_t1_us(struct timespec *t2, struct timespec *t1)
+static time_t t2_minus_t1_us(struct timespec *t2, struct timespec *t1)
 {
-  long time_diff_sec = t2->tv_sec - t1->tv_sec;    // calculate time difference in seconds
+  time_t time_diff_sec = t2->tv_sec - t1->tv_sec;  // calculate time difference in seconds
   long time_diff_nsec = t2->tv_nsec - t1->tv_nsec; // calculate time difference in nanoseconds
 
   if (time_diff_nsec < 0) {
@@ -276,7 +277,7 @@ static long t2_minus_t1_us(struct timespec *t2, struct timespec *t1)
     time_diff_nsec += 1000000000L;
   }
 
-  long time_diff_microsec = time_diff_sec * 1000000 + time_diff_nsec / 1000; // convert to microseconds
+  time_t time_diff_microsec = time_diff_sec * 1000000 + time_diff_nsec / 1000; // convert to microseconds
 
   return time_diff_microsec;
 }
@@ -285,7 +286,7 @@ static long t2_minus_t1_us(struct timespec *t2, struct timespec *t1)
  * @return : true when the secondary asserted IRQ in time
  *           false when the secondary timed out to assert IRQ
  */
-static bool wait_for_irq_assert_or_timeout(size_t timeout_us)
+static bool wait_for_irq_assert_or_timeout(time_t timeout_us)
 {
   // In 99.99% of the cases, the secondary executed its header interrupt and lowered IRQ before
   // the host even returns from the SPI ioctl transfer call. Try executing the minimal amount of logic
@@ -307,7 +308,7 @@ static bool wait_for_irq_assert_or_timeout(size_t timeout_us)
 
   // Busy loop until IRQ==0 or timeout
   while (gpio_read(irq_gpio) == GPIO_VALUE_HIGH) {
-    if (t2_minus_t1_us(&now_time, &start_time) > (long) timeout_us) {
+    if (t2_minus_t1_us(&now_time, &start_time) > timeout_us) {
       return false;
     }
 

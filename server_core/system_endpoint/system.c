@@ -752,6 +752,7 @@ static void on_final_property_is(sl_cpc_system_command_handle_t * command_handle
       case PROP_SECONDARY_CPC_VERSION:
       case PROP_SECONDARY_APP_VERSION:
       case PROP_BOOTLOADER_REBOOT_MODE:
+      case PROP_SOFT_RESET:
       case PROP_LAST_STATUS:
         break;
       default:

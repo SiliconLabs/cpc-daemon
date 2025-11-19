@@ -34,17 +34,22 @@ This function allows for printing the journal's contents.
 Traces are additional logs about the daemon events.
 The traces can be enabled in the CPCd configuration file.
 
-#### stdout Tracing
-When the `stdout_trace` option is enabled, traces will be shown on the standard output.
+#### Trace Level
+The trace level can be controlled using the `trace_level` configuration option.
+Available trace levels are:
+- `error` - Errors only
+- `warn` - Warnings and above
+- `info` - Informational messages and above (default)
+- `debug` - Debug messages (endpoint, driver, core, security, etc.) and above
+- `frame` - Frame tracing and above
+
+Set `trace_level: debug` to enable debug traces to stdout, or `trace_level: frame`
+for additional frame-level tracing information.
 
 #### File Tracing
 Traces can be saved to a file when the `trace_to_file` option is enabled.
 The target folder is specified with the `trace_folder` option.
 To minimize performance impact, save files to volatile storage.
-
-#### Frame Tracing
-If the issue is reproduced fairly quickly, the `enable_frame_trace` configuration
-can be used to enable an additional level of information to the traces.
 
 #### Log Rotation
 When an issue takes a longer time to reproduce, trace files might occupy excessive space on the target.

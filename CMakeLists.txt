@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.10)
 
 project(cpc-daemon
-  VERSION "4.7.1.0"
+  VERSION "4.8.0"
   LANGUAGES C)
 
 if(DEFINED ENV{NIX_CFLAGS_COMPILE})
@@ -119,7 +119,7 @@ set(CPCD_SOURCES
   "${PROJECT_SOURCE_DIR}/driver/driver_sdio.c"
   "${PROJECT_SOURCE_DIR}/driver/driver_uart.c"
   "${PROJECT_SOURCE_DIR}/driver/driver_xmodem.c"
-  "${PROJECT_SOURCE_DIR}/driver/netlink/nl_sdio_interface.c" 
+  "${PROJECT_SOURCE_DIR}/driver/netlink/nl_sdio_interface.c"
   "${PROJECT_SOURCE_DIR}/driver/netlink/nl_socket.c"
   "${PROJECT_SOURCE_DIR}/misc/board_controller.c"
   "${PROJECT_SOURCE_DIR}/misc/logging.c"
@@ -158,6 +158,9 @@ endif()
 if(ENABLE_SOCKET_DRIVER)
   list(APPEND CPCD_SOURCES
     "${PROJECT_SOURCE_DIR}/driver/driver_socket.c")
+endif()
+if(NOT (CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME))
+  set(CPCD_SOURCES "${CPCD_SOURCES}" PARENT_SCOPE)
 endif()
 
 add_executable(cpcd "./main.c")

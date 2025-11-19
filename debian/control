@@ -7,7 +7,7 @@ Build-Depends:
   cmake,
   pkgconf | pkg-config,
   libmbedtls-dev (>= 2.16),
-Standards-Version: 4.7.0
+Standards-Version: 4.8.0
 
 Package: libcpc3
 Architecture: linux-any

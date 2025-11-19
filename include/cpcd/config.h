@@ -44,6 +44,20 @@ typedef enum {
   MODE_UART_VALIDATION
 } operation_mode_t;
 
+typedef enum {
+  CPC_TRACE_LEVEL_ERROR,
+  CPC_TRACE_LEVEL_WARN,
+  CPC_TRACE_LEVEL_INFO,
+  CPC_TRACE_LEVEL_DEBUG,
+  CPC_TRACE_LEVEL_FRAME
+} cpc_trace_level_t;
+
+typedef enum {
+  RESET_SEQUENCE_NONE,
+  RESET_SEQUENCE_SOFT_RESET,
+  RESET_SEQUENCE_HARD_RESET
+} reset_sequence_mode_t;
+
 typedef struct __attribute__((packed)) {
   const char *file_path;
 
@@ -61,10 +75,9 @@ typedef struct __attribute__((packed)) {
 
   const char *binding_method;
 
-  bool stdout_tracing;
+  cpc_trace_level_t trace_level;
   bool file_tracing;
   int lttng_tracing;
-  bool enable_frame_trace;
   const char *traces_folder;
 
   bus_t bus;
@@ -97,7 +110,7 @@ typedef struct __attribute__((packed)) {
 
   bool use_noop_keep_alive;
 
-  bool reset_sequence;
+  reset_sequence_mode_t reset_sequence;
 
   const char *uart_validation_test_option;
 

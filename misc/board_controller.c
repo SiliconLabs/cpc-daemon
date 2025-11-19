@@ -1,4 +1,4 @@
-/***************************************************************************//**
+/***************************************************************************/ /**
  * @file
  * @brief Co-Processor Communication Protocol(CPC) - Board Controller
  *******************************************************************************
@@ -28,18 +28,60 @@
 #include "cpcd/board_controller.h"
 #include "cpcd/logging.h"
 
-void board_controller_get_config_vcom(const char *ip_address, unsigned int *baudrate, bool *flowcontrol)
+int board_controller_parse_wstk_config(const char *buffer,
+                                       unsigned int *baudrate,
+                                       bool *flowcontrol)
+{
+  if (!buffer || !baudrate || !flowcontrol) {
+    return -1;
+  }
+
+  // Extract baudrate
+  {
+    const char *label_pos = strstr(buffer, "Active port speed");
+    if (!label_pos) {
+      return -1;
+    }
+
+    // sscanf whitespace matches any amount of whitespace (including zero)
+    if (sscanf(label_pos, "Active port speed : %u", baudrate) != 1) {
+      return -1;
+    }
+  }
+
+  // Extract flow control
+  {
+    const char *label_pos = strstr(buffer, "Actual handshake");
+    if (!label_pos) {
+      return -1;
+    }
+
+    char handshake_value[32] = { 0 };
+    // sscanf whitespace matches any amount of whitespace (including zero)
+    // Use field width to prevent buffer overflow (31 chars + null terminator)
+    if (sscanf(label_pos, "Actual handshake : %31s", handshake_value) != 1) {
+      return -1;
+    }
+    *flowcontrol = (strcmp(handshake_value, "rtscts") == 0);
+  }
+
+  return 0;
+}
+
+void board_controller_get_config_vcom(const char *ip_address,
+                                      unsigned int *baudrate,
+                                      bool *flowcontrol)
 {
   int socket_handle;
   struct sockaddr_in server;
   const unsigned short telnet_port = 4902;
-  char recv_buf[256] = { 0 };
+  char recv_buf[256]               = { 0 };
 
   socket_handle = socket(AF_INET, SOCK_STREAM, 0);
   FATAL_SYSCALL_ON(socket_handle == -1);
 
-  server.sin_family = AF_INET;
-  server.sin_port = htons(telnet_port);
+  server.sin_family      = AF_INET;
+  server.sin_port        = htons(telnet_port);
   server.sin_addr.s_addr = inet_addr(ip_address);
   if (connect(socket_handle, (const struct sockaddr *)&server, sizeof(server)) < 0) {
     close(socket_handle);
@@ -60,43 +102,10 @@ void board_controller_get_config_vcom(const char *ip_address, unsigned int *baud
     recv(socket_handle, recv_buf, sizeof(recv_buf), MSG_DONTWAIT);
   }
 
-  // Extract baudrate
-  {
-    char *endptr;
-    const char *active_port_speed = "Active port speed  : ";
-    const char *speed_begin = strstr(recv_buf, active_port_speed);
-    if (!speed_begin) {
-      close(socket_handle);
-      FATAL_ON(speed_begin == NULL);
-    }
-
-    char *speed_end = strstr(speed_begin, "\r");
-    if (!speed_end) {
-      close(socket_handle);
-      FATAL_ON(speed_end == NULL);
-    }
-    *speed_end = '\0';
-    *baudrate = (unsigned int)strtol(speed_begin + strlen(active_port_speed), &endptr, 10);
-    *speed_end = '\r';
-  }
-
-  // Extract flow control
-  {
-    const char *actual_handshake = "Actual handshake   : ";
-    const char *flowcontrol_begin = strstr(recv_buf, actual_handshake);
-    if (!flowcontrol_begin) {
-      close(socket_handle);
-      FATAL_ON(flowcontrol_begin == NULL);
-    }
-
-    char *flowcontrol_end = strstr(flowcontrol_begin, "\r");
-    if (!flowcontrol_end) {
-      close(socket_handle);
-      FATAL_ON(flowcontrol_end == NULL);
-    }
-    *flowcontrol_end = '\0';
-    *flowcontrol = strcmp(flowcontrol_begin + strlen(actual_handshake), "rtscts") == 0;
-    *flowcontrol_end = '\r';
+  // Parse the WSTK configuration from the buffer
+  if (board_controller_parse_wstk_config(recv_buf, baudrate, flowcontrol) != 0) {
+    close(socket_handle);
+    FATAL("Cannot parse board controller response");
   }
 
   close(socket_handle);

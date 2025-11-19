@@ -78,7 +78,7 @@ int main(int argc, char *argv[])
   }
 #endif
 
-  if (config.reset_sequence) {
+  if (config.reset_sequence != RESET_SEQUENCE_NONE) {
     secondary_already_running_bootloader = is_bootloader_running();
   }
 
