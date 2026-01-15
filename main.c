@@ -61,6 +61,10 @@ int main(int argc, char *argv[])
 
   logging_init();
 
+#ifdef COMPILE_SYSLOG_TRACE
+  openlog("cpcd", LOG_PID | LOG_NDELAY, LOG_DAEMON);
+#endif
+
   PRINT_INFO("[CPCd v%s] [Library API v%d] [RCP Protocol v%d]", PROJECT_VER, LIBRARY_API_VERSION, PROTOCOL_VERSION);
   PRINT_INFO("Git commit: %s / branch: %s", GIT_SHA1, GIT_REFSPEC);
 
@@ -161,6 +165,10 @@ int main(int argc, char *argv[])
       BUG();
       break;
   }
+
+#ifdef COMPILE_SYSLOG_TRACE
+  closelog();
+#endif
 
   return 0;
 }

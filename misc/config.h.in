@@ -43,5 +43,6 @@
 #cmakedefine HAVE_BACKTRACE
 #cmakedefine COMPILE_LTTNG
 #cmakedefine TARGET_TESTING
+#cmakedefine COMPILE_SYSLOG_TRACE
 
 #endif // CONFIG_H
