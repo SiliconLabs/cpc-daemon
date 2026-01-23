@@ -74,9 +74,16 @@ extern core_debug_counters_t secondary_core_debug_counters;
 #define LTTNG_TRACE(string, ...) (void)0
 #endif
 
-#define TRACE(string, ...)                    do { LTTNG_TRACE(string, ##__VA_ARGS__); trace(false, string, ##__VA_ARGS__); } while (0)
+#ifdef COMPILE_SYSLOG_TRACE
+#include <syslog.h>
+#define SYSLOG_TRACE(string, ...)  syslog(LOG_DEBUG, string, ##__VA_ARGS__);
+#else
+#define SYSLOG_TRACE(string, ...) (void)0
+#endif
 
-#define TRACE_FORCE_STDOUT(string, ...)       do { LTTNG_TRACE(string, ##__VA_ARGS__); trace(true, string, ##__VA_ARGS__); } while (0)
+#define TRACE(string, ...)                    do { SYSLOG_TRACE(string, ##__VA_ARGS__); LTTNG_TRACE(string, ##__VA_ARGS__); trace(false, string, ##__VA_ARGS__); } while (0)
+
+#define TRACE_FORCE_STDOUT(string, ...)       do { SYSLOG_TRACE(string, ##__VA_ARGS__); LTTNG_TRACE(string, ##__VA_ARGS__); trace(true, string, ##__VA_ARGS__); } while (0)
 
 #define TRACE_NAKED(string)           trace_no_timestamp(string)
 
