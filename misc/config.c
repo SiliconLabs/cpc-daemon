@@ -76,6 +76,7 @@ config_t config = {
 
   .trace_level = CPC_TRACE_LEVEL_INFO,
   .file_tracing = true, // Set to true to have the chance to catch early traces. It will be set to false after config file parsing.
+  .forward_to_syslog = false,
   .lttng_tracing = false,
   .traces_folder = "/dev/shm/cpcd-traces", // must be mounted on a tmpfs
 
@@ -364,6 +365,7 @@ static void config_print(cpc_trace_level_t trace_level)
 
   CONFIG_PRINT_TRACE_LEVEL_TO_STR(config.trace_level, trace_level);
   CONFIG_PRINT_BOOL_TO_STR(config.file_tracing);
+  CONFIG_PRINT_BOOL_TO_STR(config.forward_to_syslog);
   CONFIG_PRINT_BOOL_TO_STR(config.lttng_tracing);
   CONFIG_PRINT_STR(config.traces_folder);
 
@@ -1006,6 +1008,14 @@ static cpc_trace_level_t config_parse_config_file(void)
       } else {
         FATAL("Config file error : bad trace_to_file value");
       }
+    } else if (0 == strcmp(name, "forward_to_syslog")) {
+      if (0 == strcmp(val, "true")) {
+        config.forward_to_syslog = true;
+      } else if (0 == strcmp(val, "false")) {
+        config.forward_to_syslog = false;
+      } else {
+        FATAL("Config file error : bad forward_to_syslog value");
+      }
     } else if (0 == strcmp(name, "trace_level")) {
       if (0 == strcmp(val, "error")) {
         tmp_config_trace_level = CPC_TRACE_LEVEL_ERROR;
@@ -1273,7 +1283,7 @@ static void config_validate_configuration(void)
   }
 
   if (config.file_tracing) {
-    init_file_logging();
+    init_file_logging(config.forward_to_syslog);
   }
 
   if (config.stats_interval > 0) {

@@ -24,6 +24,7 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <errno.h>
+#include <syslog.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <string.h>
@@ -67,14 +68,27 @@
     }                                                                                                                                         \
   } while (0)
 
-static void write_until_success_or_error(int fd, uint8_t* buff, size_t size)
+typedef ssize_t (*write_fn_t)(int, const void *, size_t);
+
+static ssize_t write_to_fd_func(int fd, const void * buff, size_t size)
+{
+  return write(fd, buff, size);
+}
+
+static ssize_t write_to_fd_syslog(int, const void * buff, size_t size)
+{
+  syslog(LOG_DEBUG, "%s\n", (const char*)buff);
+  return (ssize_t)size;
+}
+
+static void write_until_success_or_error(write_fn_t write_fn, int fd, uint8_t* buff, size_t size)
 {
   ssize_t ret;
   size_t written = 0;
   size_t remaining = size;
 
   do {
-    ret = write(fd, &buff[written], remaining);
+    ret = write_fn(fd, &buff[written], remaining);
     NO_LOGGING_FATAL_SYSCALL_ON(ret < 0);
     remaining -= (size_t) ret;
     written += (size_t) ret;
@@ -109,6 +123,7 @@ typedef struct {
   pthread_mutex_t mutex;
   struct timespec timeout;
   const char*     name;
+  write_fn_t write_fn;
 } async_logger_t;
 
 static async_logger_t file_logger;
@@ -162,6 +177,7 @@ static void stdout_logging_init(void)
 {
   int ret;
 
+  stdout_logger.write_fn = write_to_fd_func;
   async_logger_init(&stdout_logger, STDOUT_FILENO, "stdout");
 
   ret = pthread_create(&stdout_logger_thread,
@@ -218,6 +234,7 @@ static void file_logging_init(void)
     PRINT_INFO("Logging to file enabled in file %s.", buf);
   }
 
+  file_logger.write_fn = write_to_fd_func;
   file_logger.fd = fileno(file_logger.file);
 
   ret = pthread_create(&file_logger_thread,
@@ -228,6 +245,24 @@ static void file_logging_init(void)
   file_logger_thread_started = true;
 
   pthread_setname_np(file_logger_thread, "file_logger");
+}
+
+static void syslog_logging_init(void)
+{
+  file_logger.write_fn = write_to_fd_syslog;
+  file_logger.fd = -1;
+
+  WARN("Logs are written to syslog");
+  openlog("cpcd", LOG_PID | LOG_NDELAY, LOG_DAEMON);
+
+  int ret = pthread_create(&file_logger_thread,
+                       NULL,
+                       async_logger_thread_func,
+                       &file_logger);
+  NO_LOGGING_FATAL_ON(ret != 0);
+  file_logger_thread_started = true;
+
+  pthread_setname_np(file_logger_thread, "syslog_logger");
 }
 
 static void async_logger_write(async_logger_t* logger, void* data, size_t length)
@@ -324,13 +359,15 @@ static void* async_logger_thread_func(void* param)
                        logger->highwater_mark,
                        100.0f * ((float) logger->highwater_mark / (float) logger->buffer_size),
                        logger->lost_logs);
-        ret = write(logger->fd, buf, (size_t)ret);
+        ret = logger->write_fn(logger->fd, buf, (size_t)ret);
         // Dont check for 'ret' overflow, we know 256 bytes was sufficient.
         (void)ret;
-        fsync(logger->fd);
-        if (logger->fd != STDOUT_FILENO) {
-          ret = fclose(logger->file);
-          FATAL_ON(ret != 0);
+        if(logger->fd > 0) {
+          fsync(logger->fd);
+          if (logger->fd != STDOUT_FILENO) {
+            ret = fclose(logger->file);
+            FATAL_ON(ret != 0);
+          }
         }
         free(logger->buffer);
         pthread_exit(NULL);
@@ -350,15 +387,18 @@ static void* async_logger_thread_func(void* param)
     // this chunk is still in the buffer and cannot be overridden.
     {
       if (remaining >= chunk_size) {
-        write_until_success_or_error(logger->fd,
+        write_until_success_or_error(logger->write_fn,
+                                     logger->fd,
                                      &logger->buffer[logger->buffer_tail],
                                      chunk_size);
       } else { // Split write at the buffer boundary
-        write_until_success_or_error(logger->fd,
+        write_until_success_or_error(logger->write_fn,
+                                     logger->fd,
                                      &logger->buffer[logger->buffer_tail],
                                      remaining);
 
-        write_until_success_or_error(logger->fd,
+        write_until_success_or_error(logger->write_fn,
+                                     logger->fd,
                                      &logger->buffer[0],
                                      chunk_size - remaining);
       }
@@ -515,9 +555,13 @@ void init_stats_logging(void)
   }
 }
 
-void init_file_logging(void)
+void init_file_logging(bool forward_to_syslog)
 {
-  file_logging_init();
+  if(forward_to_syslog) {
+    syslog_logging_init();
+  } else {
+    file_logging_init();
+  }
 }
 
 void logging_kill(void)
@@ -536,6 +580,10 @@ void logging_kill(void)
     pthread_cond_signal(&file_logger.condition);
     pthread_join(file_logger_thread, NULL);
     file_logger_thread_started = false;
+  }
+
+  if(config.forward_to_syslog) {
+    closelog();
   }
 
   free(logging_private_data);
