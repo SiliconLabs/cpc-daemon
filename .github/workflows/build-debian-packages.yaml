@@ -2,6 +2,23 @@ name: Build Debian packages
 on: push
 jobs:
   amd64:
+    if: ${{ github.repository_owner == 'SiliconLabs' }}
+    runs-on: [ubuntu-latest]
+    container: buildpack-deps:bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install scripts
+        run: apt-get update && apt-get install -y --no-install-recommends devscripts equivs
+      - name: Install build dependencies
+        run: mk-build-deps -ir -t "apt-get -o Debug::pkgProblemResolver=yes -y --no-install-recommends"
+      - name: Build packages
+        run: debuild -b -uc -us
+      - name: Install packages
+        run: apt-get install -y --no-install-recommends ../*.deb
+      - name: Print CPCd version
+        run: cpcd --version
+  amd64-internal:
+    if: ${{ github.repository_owner != 'SiliconLabs' }}
     runs-on: [self-hosted, X64, Linux]
     container: buildpack-deps:bookworm
     steps:
