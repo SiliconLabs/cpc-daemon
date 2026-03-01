@@ -48,7 +48,7 @@ typedef struct {
 
 void logging_init(void);
 
-void init_file_logging(void);
+void init_file_logging(bool forward_to_syslog);
 
 void init_stats_logging(void);
 

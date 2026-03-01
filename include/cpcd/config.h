@@ -77,6 +77,7 @@ typedef struct __attribute__((packed)) {
 
   cpc_trace_level_t trace_level;
   bool file_tracing;
+  bool forward_to_syslog;
   int lttng_tracing;
   const char *traces_folder;
 
