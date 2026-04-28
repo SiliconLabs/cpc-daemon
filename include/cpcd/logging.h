@@ -46,15 +46,15 @@ typedef struct {
   uint32_t invalid_payload_checksum;
 } core_debug_counters_t;
 
-void logging_init(void);
+void logging_init_stdout(void);
+void logging_init_file(void);
+void logging_init_syslog(void);
 
-void init_file_logging(void);
-
-void init_stats_logging(void);
+void logging_init_stats(void);
 
 void logging_kill(void);
 
-void trace(bool timestamp, const char* string, ...) __attribute__((format(printf, 2, 3)));
+void trace(int level, bool timestamp, const char* string, ...) __attribute__((format(printf, 3, 4)));
 
 void trace_frame(const char* string, const void* buffer, size_t len);
 
@@ -79,7 +79,7 @@ extern core_debug_counters_t secondary_core_debug_counters;
   do {                                       \
     if (TRACE_LEVEL_ENABLED(level)) {        \
       LTTNG_TRACE(string, ##__VA_ARGS__);    \
-      trace(true, string, ##__VA_ARGS__);    \
+      trace(level, true, string, ##__VA_ARGS__);    \
     }                                        \
   } while (0)
 
@@ -87,14 +87,14 @@ extern core_debug_counters_t secondary_core_debug_counters;
   do {                                                    \
     if (TRACE_LEVEL_ENABLED(level)) {                     \
       LTTNG_TRACE(string, ##__VA_ARGS__);                 \
-      trace(false, string, ##__VA_ARGS__);                \
+      trace(level, false, string, ##__VA_ARGS__);                \
     }                                                     \
   } while (0)
 
 // Level-specific macros
-#define TRACE_ERROR(string, ...)                                 TRACE_WITH_LEVEL(CPC_TRACE_LEVEL_ERROR, "ERROR : " string "\n", ##__VA_ARGS__)
-#define TRACE_WARN(string, ...)                                  TRACE_WITH_LEVEL(CPC_TRACE_LEVEL_WARN, "WARNING : " string "\n", ##__VA_ARGS__)
-#define PRINT_INFO(string, ...)                                  TRACE_WITH_LEVEL(CPC_TRACE_LEVEL_INFO, "Info : " string "\n", ##__VA_ARGS__)
+#define TRACE_ERROR(string, ...)                                 TRACE_WITH_LEVEL(CPC_TRACE_LEVEL_ERROR, string "\n", ##__VA_ARGS__)
+#define TRACE_WARN(string, ...)                                  TRACE_WITH_LEVEL(CPC_TRACE_LEVEL_WARN, string "\n", ##__VA_ARGS__)
+#define PRINT_INFO(string, ...)                                  TRACE_WITH_LEVEL(CPC_TRACE_LEVEL_INFO, string "\n", ##__VA_ARGS__)
 #define TRACE_DEBUG(string, ...)                                 TRACE_WITH_LEVEL(CPC_TRACE_LEVEL_DEBUG, string, ##__VA_ARGS__)
 #define TRACE_FRAME(string, buffer, length)           \
   do {                                                \

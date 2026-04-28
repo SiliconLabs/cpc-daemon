@@ -75,7 +75,8 @@ config_t config = {
   .binding_method = NULL,
 
   .trace_level = CPC_TRACE_LEVEL_INFO,
-  .file_tracing = true, // Set to true to have the chance to catch early traces. It will be set to false after config file parsing.
+  .file_tracing = false,
+  .syslog_tracing = false,
   .lttng_tracing = false,
   .traces_folder = "/dev/shm/cpcd-traces", // must be mounted on a tmpfs
 
@@ -135,24 +136,17 @@ static void config_set_rlimit_nofile(void);
 
 static void config_validate_configuration(void);
 
-static cpc_trace_level_t config_parse_config_file(void);
+static void config_parse_config_file(void);
 
 static void config_expand_binding_key_location(void);
 
 static void config_parse_multicast_endpoints(const char *input);
-
-static void config_set_trace_level(cpc_trace_level_t level);
 
 static const char* config_trace_level_to_str(cpc_trace_level_t value);
 
 /*******************************************************************************
  ****************************  IMPLEMENTATION   ********************************
  ******************************************************************************/
-static void config_set_trace_level(cpc_trace_level_t level)
-{
-  config.trace_level = level;
-}
-
 static const char* config_bool_to_str(bool value)
 {
   return value ? "true" : "false";
@@ -340,12 +334,15 @@ static const char* config_trace_level_to_str(cpc_trace_level_t value)
     run_time_total_size += (uint32_t)sizeof(value);                                     \
   } while (0)
 
-static void config_print(cpc_trace_level_t trace_level)
+void config_print(void)
 {
   size_t print_offset = CONFIG_PREFIX_LEN(config);
 
   uint32_t compile_time_total_size = (uint32_t)sizeof(config_t);
   uint32_t run_time_total_size = 0;
+
+  cpc_trace_level_t store_configured_trace_level = config.trace_level;
+  config.trace_level = CPC_TRACE_LEVEL_INFO;
 
   CONFIG_PRINT_STR(config.file_path);
 
@@ -362,8 +359,9 @@ static void config_print(cpc_trace_level_t trace_level)
 
   CONFIG_PRINT_STR(config.binding_method);
 
-  CONFIG_PRINT_TRACE_LEVEL_TO_STR(config.trace_level, trace_level);
+  CONFIG_PRINT_TRACE_LEVEL_TO_STR(config.trace_level, store_configured_trace_level);
   CONFIG_PRINT_BOOL_TO_STR(config.file_tracing);
+  CONFIG_PRINT_BOOL_TO_STR(config.syslog_tracing);
   CONFIG_PRINT_BOOL_TO_STR(config.lttng_tracing);
   CONFIG_PRINT_STR(config.traces_folder);
 
@@ -410,25 +408,21 @@ static void config_print(cpc_trace_level_t trace_level)
   if (run_time_total_size != compile_time_total_size) {
     FATAL("A new config was added to config_t but it was not printed. run_time_total_size (%d) != compile_time_total_size (%d)", run_time_total_size, compile_time_total_size);
   }
+
+  config.trace_level = store_configured_trace_level;
 }
 
 void config_init(int argc, char *argv[])
 {
-  cpc_trace_level_t trace_level;
-
   config_parse_cli_arg(argc, argv);
 
-  trace_level = config_parse_config_file();
+  config_parse_config_file();
 
   config_expand_binding_key_location();
 
   config_validate_configuration();
 
   config_set_rlimit_nofile();
-
-  config_print(trace_level);
-
-  config_set_trace_level(trace_level);
 }
 
 static void config_expand_binding_key_location(void)
@@ -468,10 +462,12 @@ static void config_expand_binding_key_location(void)
   }
 }
 
-static void print_cli_args(int argc, char *argv[])
+void config_print_cli_args(int argc, char *argv[])
 {
   char *cli_args;
   size_t cli_args_size = 0;
+
+  PRINT_INFO("Reading cli arguments");
 
   for (int i = 0; i < argc; i++) {
     if (argv[i]) {
@@ -548,10 +544,6 @@ const struct option argv_opt_list[] =
 static void config_parse_cli_arg(int argc, char *argv[])
 {
   int opt;
-
-  PRINT_INFO("Reading cli arguments");
-
-  print_cli_args(argc, argv);
 
   while (1) {
     opt = getopt_long(argc, argv, "c:hupvrs:f:k:a:b:t:w:el", argv_opt_list, NULL);
@@ -888,17 +880,14 @@ static void config_parse_multicast_endpoints(const char *input)
   }
 }
 
-static cpc_trace_level_t config_parse_config_file(void)
+static void config_parse_config_file(void)
 {
   FILE *config_file = NULL;
   char name[128] = { 0 };
   char val[2048] = { 0 };
   char line[2048] = { 0 };
   char *endptr = NULL;
-  int tmp_config_file_tracing = 0;
   cpc_trace_level_t tmp_config_trace_level = CPC_TRACE_LEVEL_INFO;
-
-  PRINT_INFO("Reading configuration");
 
   // By default, all endpoints are enabled for multicast
   memset(config.multicast_endpoints, true, sizeof(config.multicast_endpoints));
@@ -1000,11 +989,19 @@ static cpc_trace_level_t config_parse_config_file(void)
       }
     } else if (0 == strcmp(name, "trace_to_file")) {
       if (0 == strcmp(val, "true")) {
-        tmp_config_file_tracing = true;
+        config.file_tracing = true;
       } else if (0 == strcmp(val, "false")) {
-        tmp_config_file_tracing = false;
+        config.file_tracing = false;
       } else {
         FATAL("Config file error : bad trace_to_file value");
+      }
+    } else if (0 == strcmp(name, "trace_to_syslog")) {
+      if (0 == strcmp(val, "true")) {
+        config.syslog_tracing = true;
+      } else if (0 == strcmp(val, "false")) {
+        config.syslog_tracing = false;
+      } else {
+        FATAL("Config file error : bad trace_to_syslog value");
       }
     } else if (0 == strcmp(name, "trace_level")) {
       if (0 == strcmp(val, "error")) {
@@ -1089,11 +1086,9 @@ static cpc_trace_level_t config_parse_config_file(void)
     }
   }
 
-  config.file_tracing = tmp_config_file_tracing;
-
   fclose(config_file);
 
-  return tmp_config_trace_level;
+  config.trace_level = tmp_config_trace_level;
 }
 
 /*
@@ -1273,11 +1268,15 @@ static void config_validate_configuration(void)
   }
 
   if (config.file_tracing) {
-    init_file_logging();
+    logging_init_file();
+  }
+
+  if (config.syslog_tracing) {
+    logging_init_syslog();
   }
 
   if (config.stats_interval > 0) {
-    init_stats_logging();
+    logging_init_stats();
   }
 }
 

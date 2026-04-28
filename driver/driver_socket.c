@@ -72,13 +72,13 @@ pthread_t driver_socket_init(int *fd_to_core,
   int ret;
 
   // Create socketpair for communicating with the core.
-  ret = socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd_sockets);
+  ret = socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, fd_sockets);
   FATAL_SYSCALL_ON(ret < 0);
 
   fd_core  = fd_sockets[0];
   *fd_to_core = fd_sockets[1];
 
-  ret = socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd_sockets_notify);
+  ret = socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, fd_sockets_notify);
   FATAL_SYSCALL_ON(ret < 0);
 
   fd_core_notify  = fd_sockets_notify[0];
@@ -199,7 +199,7 @@ static void driver_socket_process_new_connection(void)
 
   // FATAL_ON(fd_data_socket != -1);
 
-  fd_data_socket_temp = accept(fd_driver_socket, (struct sockaddr *)&addr, &addrlen);
+  fd_data_socket_temp = accept4(fd_driver_socket, (struct sockaddr *)&addr, &addrlen, SOCK_CLOEXEC);
   FATAL_SYSCALL_ON(fd_data_socket_temp < 0);
 
   // Set fd_data_socket to non-blocking.

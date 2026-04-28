@@ -94,7 +94,7 @@ void driver_emul_init(int* fd_core, int *fd_notify_core)
 
   sl_slist_init(&sli_rx_pending_list_head);
 
-  if (0 != socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd_sockets)) {
+  if (0 != socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, fd_sockets)) {
     FATAL("Create driver socket pair : %m");
   }
 
@@ -119,7 +119,7 @@ void driver_emul_init(int* fd_core, int *fd_notify_core)
 
   *fd_core = fd_sockets[1];
 
-  if (0 != socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd_notify_sockets)) {
+  if (0 != socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, fd_notify_sockets)) {
     FATAL("Create driver notification socket pair : %m");
   }
 

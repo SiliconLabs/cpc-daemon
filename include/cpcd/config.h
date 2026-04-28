@@ -77,6 +77,7 @@ typedef struct __attribute__((packed)) {
 
   cpc_trace_level_t trace_level;
   bool file_tracing;
+  bool syslog_tracing;
   int lttng_tracing;
   const char *traces_folder;
 
@@ -124,6 +125,8 @@ typedef struct __attribute__((packed)) {
 extern config_t config;
 
 void config_init(int argc, char *argv[]);
+void config_print(void);
+void config_print_cli_args(int argc, char *argv[]);
 void config_exit_cpcd(int status);
 void config_restart_cpcd(char **argv);
 void config_restart_cpcd_without_fw_update_args(void);

@@ -114,7 +114,7 @@ static int sli_create_nl_socket(int32_t protocol, int32_t groups)
   int fd;
   struct sockaddr_nl local;
 
-  fd = socket(AF_NETLINK, SOCK_RAW, protocol);
+  fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, protocol);
   FATAL_SYSCALL_ON(fd < 0);
 
   memset(&local, 0, sizeof(local));

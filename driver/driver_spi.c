@@ -141,13 +141,13 @@ void driver_spi_init(int *fd_to_core,
 
   spidev_setup(device, speed, irq_gpio_chip, irq_gpio_pin);
 
-  ret = socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd_sockets);
+  ret = socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, fd_sockets);
   FATAL_SYSCALL_ON(ret < 0);
 
   fd_core  = fd_sockets[0];
   *fd_to_core = fd_sockets[1];
 
-  ret = socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd_sockets_notify);
+  ret = socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, fd_sockets_notify);
   FATAL_SYSCALL_ON(ret < 0);
 
   fd_core_notify  = fd_sockets_notify[0];

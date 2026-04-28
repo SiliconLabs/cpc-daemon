@@ -141,7 +141,7 @@ static void setup_server_core_sockets(void)
   int ret;
   int fd_sockets[2];
 
-  ret = socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd_sockets);
+  ret = socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, fd_sockets);
   FATAL_SYSCALL_ON(ret < 0);
 
   server_core_fd = fd_sockets[0];

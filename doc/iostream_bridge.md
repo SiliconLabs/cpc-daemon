@@ -4,9 +4,9 @@ The CPC host code comes with the python script ***cpc_iostream_bridge.py*** unde
 This can be used in conjunction with the ***cpc_iostream*** and ***cli*** components on the secondary side. Refer to the [CLI documentation](https://docs.silabs.com/gecko-platform/latest/service/cli/overview) and [IO stream documentation](https://docs.silabs.com/gecko-platform/latest/service/api/group-iostream) to se tup a CLI application on your secondary device.
 Once your secondary application and the CPC daemon are running, calling the script opens the CLI endpoint on the host side and opens a network bridge to redirect any data received and transfered on the CPC CLI endpoint over to the network connection. Once the bridge is ready and listening, a telnet terminal can be opened to send and receive data over CPC CLI endpoint.
 
-The ***cpc_iostream_bridge.py*** script takes 3 mandatory arguments: 
-- -n, --name *INSTANCE_NAME*: The CPC daemon instance name
-- -l, --library *LIB_NAME*: Path and name of the CPC library
+The ***cpc_iostream_bridge.py*** script takes 3 mandatory arguments:
+- -i, --instance *INSTANCE_NAME*: The CPC daemon instance name
+- -l, --library *LIBRARY_NAME*: Path and name of the CPC library
 - -p, --port *PORT_NUMBER*: Network bridge port number to use
 
 And one optional argument (-v, --verbose) can be passed to enable verbose tracing.

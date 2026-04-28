@@ -35,6 +35,7 @@
 #include <sys/statfs.h>
 #include <sys/timerfd.h>
 #include <linux/magic.h>
+#include <syslog.h>
 
 #include "cpcd/config.h"
 #include "cpcd/logging.h"
@@ -81,6 +82,7 @@ static void write_until_success_or_error(int fd, uint8_t* buff, size_t size)
   } while (remaining != 0);
 }
 
+#define MAX_LOGGERS      3
 #define LOGGING_BUF_SIZE 4096
 
 #define ASYNC_LOGGER_PAGE_SIZE    4096
@@ -91,38 +93,89 @@ static void write_until_success_or_error(int fd, uint8_t* buff, size_t size)
 
 #define TIME_STR_LEN (27)
 
-static volatile bool gracefully_exit = false;
+typedef struct log_backend {
+  void (*log)(int level, struct timespec *now, const char *msg, size_t len);
+  void (*init)(void);
+  void (*kill)(void);
+} log_backend_t;
+
+static log_backend_t *loggers[MAX_LOGGERS];
 
 static int stats_timer_fd;
 
 typedef struct {
-  FILE            *file;
-  int             fd;
-  uint8_t*        buffer;
-  volatile size_t buffer_size;
-  volatile size_t buffer_head;
-  volatile size_t buffer_tail;
-  volatile size_t buffer_count;
-  size_t          highwater_mark;
-  size_t          lost_logs;
-  pthread_cond_t  condition;
-  pthread_mutex_t mutex;
-  struct timespec timeout;
-  const char*     name;
+  struct log_backend backend;
+  FILE               *file;
+  int                fd;
+  uint8_t            *buffer;
+  volatile size_t    buffer_size;
+  volatile size_t    buffer_head;
+  volatile size_t    buffer_tail;
+  volatile size_t    buffer_count;
+  size_t             highwater_mark;
+  size_t             lost_logs;
+  pthread_t          thread;
+  bool               thread_started;
+  volatile bool      gracefully_exit;
+  pthread_cond_t     condition;
+  pthread_mutex_t    mutex;
+  struct timespec    timeout;
+  const char         *name;
 } async_logger_t;
-
-static async_logger_t file_logger;
-static async_logger_t stdout_logger;
-
-static pthread_t file_logger_thread;
-static bool file_logger_thread_started = false;
-
-static pthread_t stdout_logger_thread;
-static bool stdout_logger_thread_started = false;
 
 static epoll_private_data_t* logging_private_data;
 
-static void* async_logger_thread_func(void* param);
+/*****************************************************************************
+ ****                      ASYNC LOGGER SHARED IMPLEMENTATION            *****
+ *****************************************************************************/
+
+static const char *cpc_log_level_to_str(int log_level)
+{
+  switch (log_level) {
+  case CPC_TRACE_LEVEL_ERROR:
+    return "ERR";
+    break;
+  case CPC_TRACE_LEVEL_WARN:
+    return "WRN";
+    break;
+  case CPC_TRACE_LEVEL_DEBUG:
+    return "DBG";
+    break;
+  case CPC_TRACE_LEVEL_FRAME:
+    return "TRC";
+    break;
+  case CPC_TRACE_LEVEL_INFO:
+  default:
+    return "INF";
+  }
+}
+
+static int async_logger_format_header(int level, struct timespec *now, char *slice, size_t slice_len)
+{
+  if (now) {
+  char formatted_date[20];
+  struct tm tm;
+  int ret;
+
+    ret = gmtime_r(&now->tv_sec, &tm) == NULL;
+    if (ret != 0) {
+      return ret;
+    }
+
+    if (slice_len < TIME_STR_LEN) {
+      return -1;
+    }
+
+    // XXXX-XX-XXTXX:XX:XX + .XXXXXX + Z
+    strftime(formatted_date, sizeof(formatted_date), "%FT%T", &tm);
+    return snprintf(slice, slice_len, "[%s.%06luZ] %s : ",
+                    formatted_date, (long)now->tv_nsec / 1000,
+                    cpc_log_level_to_str(level));
+  } else {
+    return snprintf(slice, slice_len, "%s : ",
+                    cpc_log_level_to_str(level));
+  }
+}
 
 static void async_logger_init(async_logger_t* logger, int file_descriptor, const char* name)
 {
@@ -158,107 +211,49 @@ static void async_logger_init(async_logger_t* logger, int file_descriptor, const
   logger->timeout.tv_nsec = (ASYNC_LOGGER_TIMEOUT_MS % 1000) * 1000000;
 }
 
-static void stdout_logging_init(void)
+static void async_logger_append(async_logger_t *logger, const char *data, size_t length)
 {
-  int ret;
+  size_t remaining = logger->buffer_size - logger->buffer_head;
 
-  async_logger_init(&stdout_logger, STDOUT_FILENO, "stdout");
-
-  ret = pthread_create(&stdout_logger_thread,
-                       NULL,
-                       async_logger_thread_func,
-                       &stdout_logger);
-  NO_LOGGING_FATAL_ON(ret != 0);
-  stdout_logger_thread_started = true;
-
-  pthread_setname_np(stdout_logger_thread, "stdout_logger");
-}
-
-static void file_logging_init(void)
-{
-  int ret;
-  struct statfs statfs_buf;
-
-  ret = recursive_mkdir(config.traces_folder, strlen(config.traces_folder), S_IRWXU | S_IRWXG | S_ISVTX);
-  NO_LOGGING_FATAL_SYSCALL_ON(ret < 0);
-
-  ret = statfs(config.traces_folder, &statfs_buf);
-  NO_LOGGING_FATAL_SYSCALL_ON(ret < 0);
-  if (statfs_buf.f_type != TMPFS_MAGIC) {
-    WARN("Traces folder %s is not mounted on a tmpfs", config.traces_folder);
+  if (remaining >= length) {
+    memcpy(&logger->buffer[logger->buffer_head], data, length);
+    logger->buffer_head += length;
+  } else { // Split write at buffer boundary
+    memcpy(&logger->buffer[logger->buffer_head], data, remaining);
+    memcpy(&logger->buffer[0], (const uint8_t *)data + remaining, length - remaining);
+    logger->buffer_head = length - remaining;
   }
 
-  ret = access(config.traces_folder, W_OK);
-  NO_LOGGING_FATAL_SYSCALL_ON(ret < 0);
+  logger->buffer_count += length;
 
-  // Build file string and open file
-  {
-    time_t t = time(NULL);
-    struct tm tm = *localtime(&t);
-    char buf[512];
-    int nchars;
-
-    nchars = snprintf(buf,
-                      sizeof(buf),
-                      "%s/trace-%d-%02d-%02d_%02d-%02d-%02d.log",
-                      config.traces_folder,
-                      tm.tm_year + 1900,
-                      tm.tm_mon + 1,
-                      tm.tm_mday,
-                      tm.tm_hour,
-                      tm.tm_min,
-                      tm.tm_sec);
-
-    // Make sure the path fitted entirely in the struct's static buffer
-    NO_LOGGING_FATAL_SYSCALL_ON(nchars < 0 || (size_t) nchars >= sizeof(buf));
-
-    file_logger.file = fopen(buf, "w+");
-    NO_LOGGING_FATAL_SYSCALL_ON(file_logger.file == NULL);
-
-    PRINT_INFO("Logging to file enabled in file %s.", buf);
+  // Register the high water mark
+  if (logger->buffer_count > logger->highwater_mark) {
+    logger->highwater_mark = logger->buffer_count;
   }
-
-  file_logger.fd = fileno(file_logger.file);
-
-  ret = pthread_create(&file_logger_thread,
-                       NULL,
-                       async_logger_thread_func,
-                       &file_logger);
-  NO_LOGGING_FATAL_ON(ret != 0);
-  file_logger_thread_started = true;
-
-  pthread_setname_np(file_logger_thread, "file_logger");
 }
 
-static void async_logger_write(async_logger_t* logger, void* data, size_t length)
+static void async_logger_write(async_logger_t* logger, int level, struct timespec *t, const char *data, size_t length)
 {
+  char header[40];
   bool do_signal = false;
   size_t count_cpy;
+  int header_length;
+
+  // header array should always be big enough to contain the formatted header
+  header_length = async_logger_format_header(level, t, header, sizeof(header));
+  NO_LOGGING_FATAL_ON(header_length < 0 || (size_t)header_length >= sizeof(header));
 
   pthread_mutex_lock(&logger->mutex);
   {
-    if (logger->buffer_size - logger->buffer_count < length) {
+    count_cpy = (size_t)header_length + length;
+
+    if (logger->buffer_size - logger->buffer_count < count_cpy) {
       // Overflowing traces are discarded
       fprintf(stderr, "WARNING : %s logger buffer full, lost log.\n", logger->name);
       logger->lost_logs++;
     } else {
-      size_t remaining = logger->buffer_size - logger->buffer_head;
-
-      if (remaining >= length) {
-        memcpy(&logger->buffer[logger->buffer_head], data, length);
-        logger->buffer_head += length;
-      } else { // Split write at buffer boundary
-        memcpy(&logger->buffer[logger->buffer_head], data, remaining);
-        memcpy(&logger->buffer[0], (const uint8_t *)data + remaining, length - remaining);
-        logger->buffer_head = length - remaining;
-      }
-
-      logger->buffer_count += length;
-
-      // Register the high water mark
-      if (logger->buffer_count > logger->highwater_mark) {
-        logger->highwater_mark = logger->buffer_count;
-      }
+      async_logger_append(logger, header, (size_t)header_length);
+      async_logger_append(logger, data, length);
 
       do_signal = true;
       count_cpy = logger->buffer_count;
@@ -289,7 +284,7 @@ static void* async_logger_thread_func(void* param)
     {
       // Wait until there is at least the preferred no-wake-up-until data amount, a timeout or
       // a graceful exit request has been sent to us.
-      while (logger->buffer_count < ASYNC_LOGGER_DONT_TRIGG_UNLESS_THIS_CHUNK_SIZE && gracefully_exit == false) {
+      while (logger->buffer_count < ASYNC_LOGGER_DONT_TRIGG_UNLESS_THIS_CHUNK_SIZE && logger->gracefully_exit == false) {
         struct timespec max_wait;
 
         clock_gettime(CLOCK_REALTIME, &max_wait);
@@ -299,7 +294,7 @@ static void* async_logger_thread_func(void* param)
         ret = pthread_cond_timedwait(&logger->condition,
                                      &logger->mutex,
                                      &max_wait);
-        FATAL_ON(ret != 0 && ret != ETIMEDOUT);
+        NO_LOGGING_FATAL_ON(ret != 0 && ret != ETIMEDOUT);
 
         if (ret == ETIMEDOUT) {
           // We have timed out or a graceful exit is pending, don't block on the condition again
@@ -314,7 +309,7 @@ static void* async_logger_thread_func(void* param)
     pthread_mutex_unlock(&logger->mutex);
 
     if (chunk_size == 0) {
-      if (gracefully_exit == true) {
+      if (logger->gracefully_exit == true) {
         // Graceful exit requested and no data, kill this thread right away.
         char buf[256];
         ret = snprintf(buf,
@@ -330,7 +325,7 @@ static void* async_logger_thread_func(void* param)
         fsync(logger->fd);
         if (logger->fd != STDOUT_FILENO) {
           ret = fclose(logger->file);
-          FATAL_ON(ret != 0);
+          NO_LOGGING_FATAL_ON(ret != 0);
         }
         free(logger->buffer);
         pthread_exit(NULL);
@@ -382,29 +377,199 @@ static void* async_logger_thread_func(void* param)
   return NULL;
 }
 
-static void stdio_log(void* data, size_t length)
+static void async_logger_kill(async_logger_t *logger)
 {
-  async_logger_write(&stdout_logger, data, length);
+  logger->gracefully_exit = true;
+
+  if (logger->thread_started) {
+    pthread_cond_signal(&logger->condition);
+    pthread_join(logger->thread, NULL);
+    logger->thread_started = false;
+  }
 }
 
-static void file_log(void* data, size_t length)
+/*****************************************************************************
+ ****                             STDOUT (using async logger)            *****
+ *****************************************************************************/
+
+static void stdout_logging_init(void);
+static void stdout_logging_kill(void);
+static void stdout_log(int level, struct timespec *t, const char *data, size_t length);
+
+static async_logger_t stdout_logger = {
+  .backend = {
+    .log = stdout_log,
+    .init = stdout_logging_init,
+    .kill = stdout_logging_kill,
+  },
+};
+
+static void stdout_logging_init(void)
 {
-  async_logger_write(&file_logger, data, length);
+  int ret;
+
+  async_logger_init(&stdout_logger, STDOUT_FILENO, "stdout");
+
+  ret = pthread_create(&stdout_logger.thread,
+                       NULL,
+                       async_logger_thread_func,
+                       &stdout_logger);
+  NO_LOGGING_FATAL_ON(ret != 0);
+  stdout_logger.thread_started = true;
+
+  pthread_setname_np(stdout_logger.thread, "stdout_logger");
 }
 
-void logging_init(void)
+static void stdout_logging_kill(void)
 {
-  // Completely initialize stdout logging no matter what, because we still print some
-  // info /early info even if the complete logging is not enabled.
-  stdout_logging_init();
-
-  // Partially init the file logger (the log struct) to be able to record early log and
-  // write them later on if the config file enables it.
-  async_logger_init(&file_logger,
-                    -1,  // No file descriptor for the moment
-                    "file");
+  async_logger_kill(&stdout_logger);
 }
 
+static void stdout_log(int level, struct timespec *t, const char *data, size_t length)
+{
+  async_logger_write(&stdout_logger, level, t, data, length);
+}
+
+/*****************************************************************************
+ ****                        FILE LOGGER (using async logger)            *****
+ *****************************************************************************/
+
+static void file_logging_init(void);
+static void file_logging_kill(void);
+static void file_log(int level, struct timespec *t, const char *data, size_t length);
+
+static async_logger_t file_logger = {
+  .backend = {
+    .log = file_log,
+    .init = file_logging_init,
+    .kill = file_logging_kill,
+  }
+};
+
+static void file_logging_init(void)
+{
+  struct statfs statfs_buf;
+  int ret;
+
+  // No file descriptor for the moment
+  async_logger_init(&file_logger, -1,  "file");
+
+  ret = recursive_mkdir(config.traces_folder, strlen(config.traces_folder), S_IRWXU | S_IRWXG | S_ISVTX);
+  NO_LOGGING_FATAL_SYSCALL_ON(ret < 0);
+
+  ret = statfs(config.traces_folder, &statfs_buf);
+  NO_LOGGING_FATAL_SYSCALL_ON(ret < 0);
+  if (statfs_buf.f_type != TMPFS_MAGIC) {
+    WARN("Traces folder %s is not mounted on a tmpfs", config.traces_folder);
+  }
+
+  ret = access(config.traces_folder, W_OK);
+  NO_LOGGING_FATAL_SYSCALL_ON(ret < 0);
+
+  // Build file string and open file
+  {
+    time_t t = time(NULL);
+    struct tm tm = *localtime(&t);
+    char buf[512];
+    int nchars;
+
+    nchars = snprintf(buf,
+                      sizeof(buf),
+                      "%s/trace-%d-%02d-%02d_%02d-%02d-%02d.log",
+                      config.traces_folder,
+                      tm.tm_year + 1900,
+                      tm.tm_mon + 1,
+                      tm.tm_mday,
+                      tm.tm_hour,
+                      tm.tm_min,
+                      tm.tm_sec);
+
+    // Make sure the path fitted entirely in the struct's static buffer
+    NO_LOGGING_FATAL_SYSCALL_ON(nchars < 0 || (size_t) nchars >= sizeof(buf));
+
+    file_logger.file = fopen(buf, "w+");
+    NO_LOGGING_FATAL_SYSCALL_ON(file_logger.file == NULL);
+
+    PRINT_INFO("Logging to file enabled in file %s.", buf);
+  }
+
+  file_logger.fd = fileno(file_logger.file);
+
+  ret = pthread_create(&file_logger.thread,
+                       NULL,
+                       async_logger_thread_func,
+                       &file_logger);
+  NO_LOGGING_FATAL_ON(ret != 0);
+  file_logger.thread_started = true;
+
+  pthread_setname_np(file_logger.thread, "file_logger");
+}
+
+static void file_logging_kill(void)
+{
+  async_logger_kill(&file_logger);
+}
+
+static void file_log(int level, struct timespec *t, const char *data, size_t length)
+{
+  async_logger_write(&file_logger, level, t, data, length);
+}
+
+/*****************************************************************************
+ ****                             SYSLOG LOGGER                          *****
+ *****************************************************************************/
+
+static void syslog_logging_init(void);
+static void syslog_logging_kill(void);
+static void syslog_log(int level, struct timespec *t, const char *data, size_t length);
+
+static log_backend_t syslog_logger = {
+  .log = syslog_log,
+  .init = syslog_logging_init,
+  .kill = syslog_logging_kill,
+};
+
+static void syslog_logging_init(void)
+{
+  openlog("cpcd", LOG_PID | LOG_NDELAY, LOG_DAEMON);
+}
+
+static void syslog_logging_kill(void)
+{
+  closelog();
+}
+
+static int cpc_to_syslog_prio(int level) {
+  switch (level) {
+    case CPC_TRACE_LEVEL_ERROR:
+      return LOG_ERR;
+    case CPC_TRACE_LEVEL_WARN:
+      return LOG_WARNING;
+    case CPC_TRACE_LEVEL_INFO:
+      return LOG_INFO;
+    case CPC_TRACE_LEVEL_DEBUG:
+    case CPC_TRACE_LEVEL_FRAME:
+      return LOG_DEBUG;
+    default:
+      return LOG_INFO;
+  }
+}
+
+static void syslog_log(int level, struct timespec *t, const char *data, size_t length)
+{
+  (void)t;
+
+  // syslog records shouldn't carry trailing newlines
+  while (length && (data[length - 1] == '\n'
+                 || data[length - 1] == '\r'))
+    length--;
+
+  syslog(cpc_to_syslog_prio(level), "%.*s", (int)length, data);
+}
+
+/*****************************************************************************
+ ****                      STATISTICS REPORTING                          *****
+ *****************************************************************************/
 static void logging_print_stats(epoll_private_data_t *event_private_data)
 {
   int fd_timer = event_private_data->file_descriptor;
@@ -487,7 +652,7 @@ static void logging_print_stats(epoll_private_data_t *event_private_data)
 #endif
 }
 
-void init_stats_logging(void)
+void logging_init_stats(void)
 {
   // Setup timer
   stats_timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
@@ -515,114 +680,56 @@ void init_stats_logging(void)
   }
 }
 
-void init_file_logging(void)
+static void log_to_backends(int level, bool include_timestamp, char *str, size_t len)
 {
-  file_logging_init();
-}
-
-void logging_kill(void)
-{
-  // Note we don't cancel the threads, we let them finish
-
-  gracefully_exit = true;
-
-  pthread_cond_signal(&stdout_logger.condition);
-  if (stdout_logger_thread_started) {
-    pthread_join(stdout_logger_thread, NULL);
-    stdout_logger_thread_started = false;
-  }
-
-  if (config.file_tracing && file_logger_thread_started) {
-    pthread_cond_signal(&file_logger.condition);
-    pthread_join(file_logger_thread, NULL);
-    file_logger_thread_started = false;
-  }
-
-  free(logging_private_data);
-}
-
-static size_t get_time_string(char *slice, size_t slice_len)
-{
-  int ret;
+  struct timespec *p_now = NULL;
   struct timespec now;
-  struct tm tm;
+  int ret;
 
-  if (slice_len < TIME_STR_LEN) {
-    return 0;
+  if (include_timestamp) {
+    ret = clock_gettime(CLOCK_REALTIME, &now);
+    if (ret < 0) {
+      return;
+    }
+
+    p_now = &now;
   }
 
-  ret = clock_gettime(CLOCK_REALTIME, &now);
-  if (ret < 0) {
-    return 0;
+  for (int i = 0; i < MAX_LOGGERS; i++) {
+    if (loggers[i] != NULL)
+      loggers[i]->log(level, p_now, str, len);
   }
-
-  ret = gmtime_r(&now.tv_sec, &tm) == NULL;
-  if (ret != 0) {
-    return 0;
-  }
-
-  // XXXX-XX-XXTXX:XX:XX + .XXXXXX + Z
-  strftime(slice, 19 + 1, "%FT%T", &tm);
-  snprintf(slice + 19, 7 + 1, ".%06lu", (long)now.tv_nsec / 1000);
-  slice[26] = 'Z';
-  return TIME_STR_LEN;
 }
 
-static size_t append_timestamp(char *log_string, size_t log_string_length, size_t buffer_size)
-{
-  // Check if we have enough space for timestamp: '[' + timestamp + ']' + ' '
-  if (buffer_size < log_string_length + TIME_STR_LEN + 3) {
-    return log_string_length;
-  }
-
-  log_string[log_string_length++] = '[';
-  log_string_length += get_time_string(log_string + log_string_length, buffer_size - log_string_length);
-  log_string[log_string_length++] = ']';
-  log_string[log_string_length++] = ' ';
-
-  return log_string_length;
-}
-
-void trace(bool timestamp, const char* string, ...)
+void trace(int level, bool include_timestamp, const char* string, ...)
 {
   char log_string[LOGGING_BUF_SIZE];
-  size_t log_string_length = 0;
+  size_t total_length = 0;
   int errno_backup = errno;
-
-  // Append timestamp
-  if (timestamp) {
-    log_string_length = append_timestamp(log_string, log_string_length, sizeof(log_string));
-  }
 
   // Append formatted text
   {
     va_list vl;
+    int ret;
 
     va_start(vl, string);
     {
-      size_t size = sizeof(log_string) - log_string_length;
+      ret = vsnprintf(log_string, sizeof(log_string), string, vl);
 
-      int nchar = vsnprintf(&log_string[log_string_length], size, string, vl);
+      NO_LOGGING_FATAL_ON(ret < 0);
 
-      NO_LOGGING_FATAL_ON(nchar < 0);
-
-      if ((size_t)nchar >= size) {
-        fprintf(stderr, "Truncated log message");
+      total_length = (size_t)ret;
+      if (total_length >= sizeof(log_string)) {
+        fprintf(stderr, "Truncated log message\n");
         // The string was truncated, terminate it properly
         log_string[sizeof(log_string) - 1] = '\n';
-        log_string_length = sizeof(log_string);
-      } else {
-        log_string_length += (size_t)nchar;
+        total_length = sizeof(log_string);
       }
     }
     va_end(vl);
   }
 
-  stdio_log(log_string, log_string_length);
-
-  if (config.file_tracing) {
-    file_log(log_string, log_string_length);
-  }
+  log_to_backends(level, include_timestamp, log_string, total_length);
 
   errno = errno_backup;
 }
@@ -640,22 +747,18 @@ void trace_frame(const char* string, const void* buffer, size_t len)
   size_t log_string_length = 0;
   uint8_t* frame = (uint8_t*) buffer;
   int errno_backup = errno;
-
-  // Append timestamp
-  log_string_length = append_timestamp(log_string, log_string_length, sizeof(log_string));
+  bool include_timestamp = true;
 
   // Append string up to buffer
   for (size_t i = 0; string[i] != '\0'; i++) {
     // Edge case where the string itself can fill the whole buffer..
     if (log_string_length >= sizeof(log_string)) {
-      // Flush the buffer
-      stdio_log(log_string, log_string_length);
-      if (config.file_tracing) {
-        file_log(log_string, log_string_length);
-      }
+
+      log_to_backends(CPC_TRACE_LEVEL_FRAME, include_timestamp, log_string, log_string_length);
 
       // Start at the beginning
       log_string_length = 0;
+      include_timestamp = false;
     }
 
     log_string[log_string_length++] = string[i];
@@ -667,13 +770,11 @@ void trace_frame(const char* string, const void* buffer, size_t len)
     // in the middle of the parsing, flush the buffer
     if (log_string_length >= sizeof(log_string) - sizeof("xx:")) {
       // Flush the buffer
-      stdio_log(log_string, log_string_length);
-      if (config.file_tracing) {
-        file_log(log_string, log_string_length);
-      }
+      log_to_backends(CPC_TRACE_LEVEL_FRAME, include_timestamp, log_string, log_string_length);
 
       // Start at the beginning
       log_string_length = 0;
+      include_timestamp = false;
     }
 
     byte_to_hex(frame[i], log_string + log_string_length);
@@ -686,11 +787,54 @@ void trace_frame(const char* string, const void* buffer, size_t len)
   if (log_string_length) {
     log_string[log_string_length - 1] = '\n';
 
-    stdio_log(log_string, log_string_length);
-    if (config.file_tracing) {
-      file_log(log_string, log_string_length);
-    }
+    log_to_backends(CPC_TRACE_LEVEL_FRAME, include_timestamp, log_string, log_string_length);
   }
 
   errno = errno_backup;
+}
+
+static void enable_logger(log_backend_t *logger)
+{
+  bool enabled = false;
+
+  for (int i = 0; i < MAX_LOGGERS; i++) {
+    if (loggers[i] == NULL) {
+      logger->init();
+      loggers[i] = logger;
+      enabled = true;
+
+      break;
+    }
+  }
+
+  NO_LOGGING_FATAL_ON(!enabled);
+}
+
+void logging_init_stdout(void)
+{
+  enable_logger(&stdout_logger.backend);
+}
+
+void logging_init_file(void)
+{
+  enable_logger(&file_logger.backend);
+}
+
+void logging_init_syslog(void)
+{
+  enable_logger(&syslog_logger);
+}
+
+void logging_kill(void)
+{
+  // Note we don't cancel the threads, we let them finish
+  for (int i = MAX_LOGGERS - 1; i >= 0; i--) {
+    log_backend_t *logger = loggers[i];
+    if (logger) {
+      loggers[i] = NULL;
+      logger->kill();
+    }
+  }
+
+  free(logging_private_data);
 }

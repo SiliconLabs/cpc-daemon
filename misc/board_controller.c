@@ -77,7 +77,7 @@ void board_controller_get_config_vcom(const char *ip_address,
   const unsigned short telnet_port = 4902;
   char recv_buf[256]               = { 0 };
 
-  socket_handle = socket(AF_INET, SOCK_STREAM, 0);
+  socket_handle = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
   FATAL_SYSCALL_ON(socket_handle == -1);
 
   server.sin_family      = AF_INET;

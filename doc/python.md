@@ -18,7 +18,7 @@ standalone module in `libcpc.py` in the `lib/bindings/python` directory.
     #  - cpc daemon instance name
     #  - enable library tracing
     #  - on reset callback
-    cpc = libcpc.CPC("/usr/lib/libcpc.so", "cpcd_0", False, on_reset)
+    cpc = libcpc.CPC(reset_callback=on_reset)
 
     # Open an endpoint. Use an integer value or a predefined value
     endpoint = cpc.open_endpoint(libcpc.Endpoint.Id.CLI)

@@ -30,7 +30,7 @@ int sl_nl_sdio_init(void)
   int32_t retval;
 
   // Open a socket for issueing ioctls
-  driver_cbPtr->ioctl_sd = socket(AF_INET, SOCK_DGRAM, 0);
+  driver_cbPtr->ioctl_sd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
   FATAL_SYSCALL_ON(driver_cbPtr->ioctl_sd < 0);
 
   // Open a netlink socket

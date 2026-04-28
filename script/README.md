@@ -9,8 +9,8 @@ The **cpc_iostream_bridge.py** script is used in conjunction with the **cpc_iost
 ### Usage
 
 The script accepts the following mandatory arguments:
-- `-n, --name INSTANCE_NAME`: The CPC daemon instance name.
-- `-l, --library LIB_NAME`: The path and name of the CPC library.
+- `-i, --instance INSTANCE_NAME`: The CPC daemon instance name.
+- `-l, --library LIBRARY_NAME`: The path and name of the CPC library.
 - `-p, --port PORT_NUMBER`: The network bridge port number to use.
 
 An optional `-v, --verbose` flag is available for verbose output.

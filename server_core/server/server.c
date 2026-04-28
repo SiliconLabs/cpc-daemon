@@ -343,7 +343,7 @@ static void server_process_epoll_fd_event_connection_socket(epoll_private_data_t
   }
 
   // Accept the new connection for that endpoint
-  new_data_socket = accept(fd_connection_socket, NULL, NULL);
+  new_data_socket = accept4(fd_connection_socket, NULL, NULL, SOCK_CLOEXEC);
   FATAL_SYSCALL_ON(new_data_socket < 0);
 
   // Set socket as non-blocking
@@ -395,7 +395,7 @@ static void server_process_epoll_fd_ctrl_connection_socket(epoll_private_data_t 
   int ret;
 
   // Accept the new ctrl connection for that client
-  new_data_socket = accept(fd_socket_ctrl, NULL, NULL);
+  new_data_socket = accept4(fd_socket_ctrl, NULL, NULL, SOCK_CLOEXEC);
   FATAL_SYSCALL_ON(new_data_socket < 0);
 
   // Set socket as non-blocking
@@ -436,7 +436,7 @@ static void server_process_epoll_fd_reset_connection_socket(epoll_private_data_t
   int ret;
 
   // Accept the new reset connection for that client
-  reset_data_socket = accept(fd_socket_reset, NULL, NULL);
+  reset_data_socket = accept4(fd_socket_reset, NULL, NULL, SOCK_CLOEXEC);
   FATAL_SYSCALL_ON(reset_data_socket < 0);
 
   // Set socket as non-blocking
@@ -1166,7 +1166,7 @@ static void server_process_epoll_fd_ep_connection_socket(epoll_private_data_t *p
   }
 
   // Accept the new connection for that endpoint
-  new_data_socket = accept(fd_connection_socket, NULL, NULL);
+  new_data_socket = accept4(fd_connection_socket, NULL, NULL, SOCK_CLOEXEC);
   FATAL_SYSCALL_ON(new_data_socket < 0);
 
   // Set socket as non-blocking

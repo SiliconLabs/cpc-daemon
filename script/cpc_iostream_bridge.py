@@ -97,11 +97,9 @@ if __name__ == '__main__':
     group = parser.add_argument_group('required arguments')
 
     group.add_argument("-i", "--instance",
-                      dest="instance_name", type=str, required=True,
                       help="CPC instance name")
 
     group.add_argument("-l", "--library",
-                      dest="lib_name", type=str, required=True,
                       help="CPC lib wrapper name + path")
 
     group.add_argument("-p", "--port",
@@ -126,7 +124,7 @@ if __name__ == '__main__':
     verboseprint("Listen OK")
 
     try:
-        cpc = libcpc.CPC(args.lib_name, args.instance_name, verbose, reset_callback)
+        cpc = libcpc.CPC(args.library, args.instance, verbose, reset_callback)
         verboseprint("CPC Init success")
     except:
         verboseprint("CPC Init fail")

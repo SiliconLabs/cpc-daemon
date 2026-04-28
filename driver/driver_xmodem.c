@@ -56,7 +56,8 @@ static bool wait_for_bootloader_string(int fd, const char *string)
   do {
     sleep_s(1);
 
-    int remaining = (int)sizeof(btl_buffer) - (int)(btl_chunk - btl_buffer);
+    // Reserve the trailing byte so btl_buffer is always NUL-terminated for strstr().
+    int remaining = (int)sizeof(btl_buffer) - 1 - (int)(btl_chunk - btl_buffer);
     if (remaining <= 0) {
       return false;
     }
@@ -67,7 +68,9 @@ static bool wait_for_bootloader_string(int fd, const char *string)
     ret = read(fd, btl_chunk, (size_t)remaining);
     FATAL_SYSCALL_ON(ret == -1 && errno != EAGAIN);
 
-    btl_chunk += ret;
+    if (ret > 0) {
+      btl_chunk += ret;
+    }
 
     retries--;
     if (retries == 0) {

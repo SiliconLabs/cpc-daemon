@@ -20,7 +20,7 @@ and exchange a message on that endpoint:
 ```
 import libcpc
 
-cpc = libcpc.CPC("/usr/lib/libcpc.so", "cpcd_0", enable_tracing=False, reset_callback=None)
+cpc = libcpc.CPC()
 
 ep = cpc.open_endpoint(90)
 ep.write(b'foobar')

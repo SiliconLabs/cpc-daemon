@@ -346,15 +346,12 @@ class CPC(Structure):
     _fields_ = [("ptr", c_void_p)]
 
     # int cpc_init(cpc_handle_t *handle, const char* instance_name, bool enable_tracing, cpc_reset_callback_t reset_callback)
-    def __init__(self, shared_lib_path, instance_name=None, enable_tracing=False, reset_callback=None):
-        self.lib_cpc = CDLL(shared_lib_path, use_errno=True)
+    def __init__(self, library_name=None, instance_name=None, enable_tracing=False, reset_callback=None):
+        library_name = "libcpc.so.3" if library_name is None else library_name
+        self.lib_cpc = CDLL(library_name, use_errno=True)
 
-        self.reset_callback = None
-
-        if instance_name == None:
-            name = create_string_buffer(bytes("cpcd_0", 'utf8'))
-        else:
-            name = create_string_buffer(bytes(instance_name, 'utf8'))
+        instance_name = "cpcd_0" if instance_name is None else instance_name
+        name = create_string_buffer(bytes(instance_name, 'utf8'))
 
         # populate return type to make sure we return correct values for functions
         # that don't return an int
@@ -362,8 +359,8 @@ class CPC(Structure):
         self.lib_cpc.cpc_write_endpoint.restype = c_ssize_t
 
         trace = c_bool(enable_tracing)
-        if reset_callback != None:
-            self.reset_callback = reset_callback
+        self.reset_callback = reset_callback
+        if reset_callback is not None:
             signal.signal(signal.SIGUSR1, self.reset_cb)
 
         ret = self.lib_cpc.cpc_init(byref(self), name, trace, None)

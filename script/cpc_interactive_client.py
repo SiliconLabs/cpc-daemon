@@ -20,11 +20,9 @@ class CPCInteractiveClient(cmd.Cmd):
 
   open_endpoints = dict()
 
-  def __init__(self, completekey, instance, lib_name):
+  def __init__(self, completekey, library_name, instance_name):
     super().__init__(completekey=completekey)
-    lib_name = lib_name or "/usr/local/lib/libcpc.so"
-    instance = instance or "cpcd_0"
-    self.cpc = libcpc.CPC(lib_name, instance, True, None)
+    self.cpc = libcpc.CPC(library_name, instance_name, True)
 
   def do_open_endpoint(self, arg):
     'Open endpoint by endpoint id: > open_endpoint 90'
@@ -100,7 +98,7 @@ class CPCInteractiveClient(cmd.Cmd):
     'Close all endpoints and quit application: > quit'
     for ep in list(CPCInteractiveClient.open_endpoints.keys()):
       self.do_close_endpoint(ep)
-    
+
     sys.exit()
 
 if __name__ == '__main__':
@@ -108,14 +106,11 @@ if __name__ == '__main__':
   parser = OptionParser()
 
   parser.add_option("-i", "--instance",
-                dest="instance_name", type='str',
                 help="CPC instance name, e.g. cpcd_0")
 
   parser.add_option("-l", "--library",
-                dest="lib_name", type='str',
                 help="Full path of CPC library, e.g. /usr/local/lib/libcpc.so")
 
   (options, args) = parser.parse_args()
 
-  CPCInteractiveClient(completekey='tab', instance=options.instance_name, lib_name=options.lib_name).cmdloop()
-
+  CPCInteractiveClient('tab', options.library, options.instance).cmdloop()
