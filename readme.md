@@ -33,8 +33,8 @@ of CMake required to generate the project is `3.10`.
   CPCd requires MbedTLS to encrypt the endpoints. The minimal MbedTLS version
 required is 2.7.0. `libmbedtls-dev` must be installed to compile from sources.
 With the APT package manager, use the command:
-`sudo apt-get install libmbedtls-dev`. 
-  
+`sudo apt-get install libmbedtls-dev`.
+
   For development purposes, encryption can be disabled by providing
 `ENABLE_ENCRYPTION=FALSE`
 `cmake ../ -DENABLE_ENCRYPTION=FALSE`
@@ -47,7 +47,7 @@ to be compiled with the following configurations:
   CONFIG_GPIOLIB=y
   CONFIG_GPIO_CDEV=y
   CONFIG_GPIO_CDEV_V1=y
-  ``` 
+  ```
 
 ## Compiling CPCd
 
@@ -69,7 +69,52 @@ sudo make install
 sudo ldconfig
 ```
 
-Note that the library comes with `pkg-config` support.
+### What gets installed
+`make install` deploys:
+
+- The `cpcd` binary (typically in `/usr/local/bin/`)
+- The `libcpc.so` shared library and its headers
+- The default configuration file at `/usr/local/etc/cpcd.conf`
+  (see `CMAKE_INSTALL_SYSCONFDIR`)
+
+No background service is started or enabled. To run `cpcd` interactively:
+```
+sudo cpcd --conf /usr/local/etc/cpcd.conf
+```
+
+### Running CPCd as a systemd service
+The build generates a `cpcd.service` unit from `cpcd.service.in`, with the
+`ExecStart` paths populated from the install configuration (`CMAKE_INSTALL_BINDIR`
+and `CMAKE_INSTALL_SYSCONFDIR`). It is produced in the build directory next to
+the `cpcd` binary.
+
+Install the generated unit and enable it:
+```
+sudo cp cpcd.service /etc/systemd/system/cpcd.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now cpcd
+sudo systemctl status cpcd
+```
+
+### Granting access to the device
+`cpcd` communicates over the bus device configured in `cpcd.conf`, make sure the
+daemon has access to that device.
+
+When using UART (e.g. `/dev/ttyACM0`), the device is owned by the `dialout`
+group on many distributions:
+```
+sudo usermod -aG dialout $USER
+```
+
+When using SPI (e.g. `/dev/spidev0.0`), the device is owned by the `spi` group
+on Raspberry Pi OS (see the `SUBSYSTEM=="spidev", GROUP="spi"` rule in
+`/etc/udev/rules.d/99-com.rules`):
+```
+sudo usermod -aG spi $USER
+```
+
+### Using libcpc from another project
+The library comes with `pkg-config` support.
 Build systems can take advantage of that to find the library at
 build time to apply conditional rules for their application.
 

@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.10)
 
 project(cpc-daemon
-  VERSION "4.9.0"
+  VERSION "4.9.1"
   LANGUAGES C)
 
 if(DEFINED ENV{NIX_CFLAGS_COMPILE})
@@ -93,6 +93,7 @@ endif()
 get_git_head_revision(GIT_REFSPEC GIT_SHA1 ALLOW_LOOKING_ABOVE_CMAKE_SOURCE_DIR)
 configure_file("./misc/config.h.in" "config.h" @ONLY)
 configure_file("./libcpc.pc.in" "libcpc.pc" @ONLY)
+configure_file("./templates/cpcd.service.in" "cpcd.service" @ONLY)
 
 ###
 

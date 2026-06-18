@@ -225,6 +225,7 @@ SL_ENUM(sl_cpc_service_endpoint_id_t){
   SL_CPC_ENDPOINT_ACP = 15,                    ///< ACP endpoint
   SL_CPC_ENDPOINT_SE = 16,                     ///< Secure Engine endpoint
   SL_CPC_ENDPOINT_NVM3 = 17,                   ///< NVM3 endpoint
+  SL_CPC_ENDPOINT_MATTER = 18,                 ///< Matter endpoint
 };
 
 /// @brief Enumeration representing user endpoint.
