@@ -1,3 +1,9 @@
+cpc-daemon (4.8.1) unstable; urgency=medium
+
+  * See https://github.com/SiliconLabs/cpc-daemon/releases/tag/v4.8.1
+
+ -- Alexandre Autotte <alexandre.autotte@silabs.com>  Fri, 23 oct 2026 15:46:00 -0400
+
 cpc-daemon (4.8.0) unstable; urgency=medium
 
   * See https://github.com/SiliconLabs/cpc-daemon/releases/tag/v4.8.0
