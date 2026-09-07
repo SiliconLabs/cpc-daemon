@@ -1,0 +1,22 @@
+Add a cpcdctrl utility to control a long-running cpcd over Linux IPC
+
+Motivation
+
+cpcd is already designed to run as a long-lived service (cpcd.service systemd unit). Host applications talk to it over Unix domain sockets via libcpc. Binding (--bind ecdh / --bind plain-text) and firmware update (--firmware-update) are still exclusive process modes: the daemon must be stopped, restarted with different command-line arguments, then started again in normal mode.
+
+That model is a poor fit for industrial Linux hosts:
+
+Stacks that keep CPC endpoints open (Zigbee / OpenThread / Bluetooth RCP, etc.) lose the link when cpcd is killed for bind or firmware-update.
+Scripts and operators cannot query status without scraping logs or inspecting the process.
+It goes against usual Linux practice: the daemon stays up, and a small control utility talks to it over IPC (wpa_cli / wpa_supplicant, bluetoothctl / bluetoothd).
+Proposal
+
+Keep cpcd in normal (daemon) mode and add a cpcdctrl control utility that sends commands over Linux IPC (a Unix domain socket, in the same spirit as the existing libcpc socket model). A dedicated control socket is preferable so data and control traffic stay separate.
+
+Example usage
+
+cpcdctrl status
+cpcdctrl bind ecdh
+cpcdctrl unbind
+cpcdctrl bind plain [--key <path>]
+cpcdctrl firmware-update <image.gbl>
